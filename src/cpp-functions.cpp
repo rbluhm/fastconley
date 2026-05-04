@@ -384,41 +384,56 @@ CsrGraph build_csr(const std::vector<std::size_t>& sorted_idx,
   return g;
 }
 
-struct MeatGeneralWorker : public Worker {
+struct StreamMeatGeneralWorker : public Worker {
   const arma::mat& X;
   const arma::vec& e;
   const std::vector<std::size_t>& sorted_idx;
-  const std::vector<std::size_t>& row_ptr;
-  const std::vector<std::size_t>& col_idx;
-  const std::vector<double>& weight;
+  const std::vector<std::size_t>& row_end;
+  const CoordCache& coord;
+  const double cutoff;
+  const int kernel_id;
+  const int dist_id;
+  const ScreenParams screen;
   const std::size_t k;
   arma::mat meat;
 
-  MeatGeneralWorker(const arma::mat& X, const arma::vec& e,
-                    const std::vector<std::size_t>& sorted_idx,
-                    const std::vector<std::size_t>& row_ptr,
-                    const std::vector<std::size_t>& col_idx,
-                    const std::vector<double>& weight)
-      : X(X), e(e), sorted_idx(sorted_idx), row_ptr(row_ptr),
-        col_idx(col_idx), weight(weight), k(X.n_cols), meat(k, k, arma::fill::zeros) {}
+  StreamMeatGeneralWorker(const arma::mat& X, const arma::vec& e,
+                          const std::vector<std::size_t>& sorted_idx,
+                          const std::vector<std::size_t>& row_end,
+                          const CoordCache& coord,
+                          double cutoff, int kernel_id, int dist_id,
+                          const ScreenParams& screen)
+      : X(X), e(e), sorted_idx(sorted_idx), row_end(row_end), coord(coord),
+        cutoff(cutoff), kernel_id(kernel_id), dist_id(dist_id), screen(screen),
+        k(X.n_cols), meat(k, k, arma::fill::zeros) {}
 
-  MeatGeneralWorker(const MeatGeneralWorker& other, Split)
-      : X(other.X), e(other.e), sorted_idx(other.sorted_idx), row_ptr(other.row_ptr),
-        col_idx(other.col_idx), weight(other.weight), k(other.k), meat(k, k, arma::fill::zeros) {}
+  StreamMeatGeneralWorker(const StreamMeatGeneralWorker& other, Split)
+      : X(other.X), e(other.e), sorted_idx(other.sorted_idx), row_end(other.row_end),
+        coord(other.coord), cutoff(other.cutoff), kernel_id(other.kernel_id),
+        dist_id(other.dist_id), screen(other.screen), k(other.k),
+        meat(k, k, arma::fill::zeros) {}
 
   void operator()(std::size_t begin, std::size_t end) {
     std::vector<double> c(k, 0.0);
     for (std::size_t pos = begin; pos < end; ++pos) {
       const std::size_t i = sorted_idx[pos];
       const double ei = e[i];
+      const double lat_i = coord.lat_rad[i];
 
       for (std::size_t kk = 0; kk < k; ++kk) {
         c[kk] = 0.5 * ei * X(i, kk);
       }
 
-      for (std::size_t ep = row_ptr[pos]; ep < row_ptr[pos + 1]; ++ep) {
-        const std::size_t j = col_idx[ep];
-        const double f = weight[ep] * e[j];
+      const std::size_t pos_end = row_end[pos];
+      for (std::size_t q = pos + 1; q < pos_end; ++q) {
+        const std::size_t j = sorted_idx[q];
+        const double dlat = coord.lat_rad[j] - lat_i;
+        if (dlat > screen.lat_cutoff_rad + 1e-15) break;
+
+        const double w = neighbor_weight(coord, i, j, cutoff, kernel_id, dist_id, screen);
+        if (w == 0.0) continue;
+
+        const double f = w * e[j];
         for (std::size_t kk = 0; kk < k; ++kk) {
           c[kk] += f * X(j, kk);
         }
@@ -433,7 +448,7 @@ struct MeatGeneralWorker : public Worker {
     }
   }
 
-  void join(const MeatGeneralWorker& rhs) {
+  void join(const StreamMeatGeneralWorker& rhs) {
     meat += rhs.meat;
   }
 };
@@ -500,16 +515,6 @@ struct MeatBalancedWorker : public Worker {
   }
 };
 
-arma::mat meat_from_csr_general(const arma::mat& X, const arma::vec& e,
-                                const std::vector<std::size_t>& sorted_idx,
-                                const CsrGraph& graph,
-                                int ncores) {
-  MeatGeneralWorker worker(X, e, sorted_idx, graph.row_ptr, graph.col_idx, graph.weight);
-  if (ncores > 1) parallelReduce(0, sorted_idx.size(), worker);
-  else worker(0, sorted_idx.size());
-  return worker.meat + worker.meat.t();
-}
-
 arma::mat meat_from_csr_balanced(const arma::mat& X, const arma::vec& e,
                                  const std::vector<std::size_t>& block_start,
                                  const std::vector<std::size_t>& sorted_rel,
@@ -549,8 +554,12 @@ arma::mat fast_spatial_general(const arma::vec& lat, const arma::vec& lon,
     row_end.resize(sorted_idx.size(), sorted_idx.size());
   }
 
-  CsrGraph graph = build_csr(sorted_idx, row_end, c, cutoff, kernel_id, dist_id, ncores);
-  return meat_from_csr_general(X, e, sorted_idx, graph, ncores);
+  const ScreenParams screen = make_screen_params(cutoff, dist_id);
+  StreamMeatGeneralWorker worker(X, e, sorted_idx, row_end, c,
+                                 cutoff, kernel_id, dist_id, screen);
+  if (ncores > 1) parallelReduce(0, sorted_idx.size(), worker);
+  else worker(0, sorted_idx.size());
+  return worker.meat + worker.meat.t();
 }
 
 arma::mat fast_spatial_balanced(const arma::vec& lat, const arma::vec& lon,
