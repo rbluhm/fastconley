@@ -1,0 +1,27 @@
+Package: fastconley
+Type: Package
+Title: Fast Conley Standard Errors for felm() Models
+Version: 0.3.0.9000
+Authors@R: person("Richard", "Bluhm", email = "richard.bluhm@gmail.com", role = c("aut", "cre"))
+Maintainer: Richard Bluhm <richard.bluhm@gmail.com>
+Description: Conley (1997) spatial HAC standard errors for linear fixed effects
+    panel models and cross-sectional models estimated using felm().
+    The spatial path uses score accumulation, latitude/longitude candidate
+    pruning, and CSR neighbor lists instead of dense distance matrices,
+    yielding large speedups over rbluhm/conley on big cross-sections and
+    high-dimensional regressions.
+License: MIT
+Encoding: UTF-8
+LazyData: true
+Imports:
+    data.table,
+    lfe,
+    Rcpp,
+    RcppArmadillo,
+    RcppParallel
+LinkingTo:
+    Rcpp,
+    RcppArmadillo,
+    RcppParallel
+SystemRequirements: GNU make
+RoxygenNote: 6.1.0.9000

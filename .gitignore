@@ -1,0 +1,37 @@
+.Rproj.user
+.Rhistory
+.Renviron
+.RData
+.Ruserdata
+.stswp
+.do.stswp
+.DS_Store
+.Rplots.pdf
+
+CLAUDE.md
+
+# exclude temporary files
+/tmp/
+
+# exclude the entire data folder from github, will be hosted externally
+/data/
+
+# exclude output as well (only temporarily)
+/output/
+
+# Python
+__pycache__/
+
+# Exclude .claude
+.claude/
+
+# Obsidian stuff to now share (user, rest is public)
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/cache
+.obsidian/plugins/*/.cache
+.trash/
+
+# Exclude legacy notes
+/notes/
+

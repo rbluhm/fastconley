@@ -1,0 +1,5 @@
+export(vcovSpHAC)
+useDynLib('fastconley', .registration = TRUE)
+importFrom('Rcpp', 'sourceCpp')
+importFrom(RcppParallel, RcppParallelLibs)
+import(data.table)
