@@ -10,12 +10,22 @@
 #' @param lat Name of the latitude variable.
 #' @param lon Name of the longitude variable.
 #' @param kernel Spatial kernel, either "bartlett" or "uniform".
-#' @param dist_fn Distance function, one of "haversine", "spherical", "chord", "flatearth".
+#' @param dist_fn Distance function, one of "haversine", "spherical", "chord".
 #' @param dist_cutoff Spatial cutoff in km.
 #' @param lag_cutoff Serial HAC lag cutoff.
 #' @param verbose Print progress messages.
 #' @param balanced_pnl Whether the panel is balanced and unit locations are time-invariant.
 #' @param ncores Number of cores for the C++/RcppParallel spatial and serial routines.
+#' @param pixel Score-pre-aggregation cell size, in kilometres. Default 0
+#'   (exact-coordinate dedupe only — observations that share the same
+#'   `(lat, lon)` within a time period are collapsed into a single
+#'   aggregated score before the pair loop runs). If `pixel > 0`, points are
+#'   snapped to a uniform `pixel`-km grid before the dedupe, so nearby points
+#'   are collapsed too — this is a speed/accuracy trade-off that approximates
+#'   the distance up to roughly `pixel / 2`. Pre-aggregation only changes
+#'   speed; with `pixel = 0` the answer is identical to the un-aggregated
+#'   computation up to floating-point order. With `pixel > 0` the answer is
+#'   approximate. Inspired by `fixest`'s `pixel` argument.
 #' @param maxobsmem Ignored by the fast spatial path. Kept for backward compatibility.
 #' @return A variance-covariance matrix.
 #' @export
@@ -25,12 +35,13 @@ vcovSpHAC <- function(reg,
                       lat,
                       lon,
                       kernel = c("bartlett", "uniform"),
-                      dist_fn = c("haversine", "spherical", "chord", "flatearth"),
+                      dist_fn = c("haversine", "spherical", "chord"),
                       dist_cutoff,
                       lag_cutoff = 0,
                       verbose = FALSE,
                       balanced_pnl = FALSE,
                       ncores = NA,
+                      pixel = 0,
                       maxobsmem = 50000L) {
 
   kernel <- match.arg(kernel)
@@ -41,6 +52,9 @@ vcovSpHAC <- function(reg,
   }
   if (length(lag_cutoff) != 1L || !is.finite(lag_cutoff) || lag_cutoff < 0) {
     stop("lag_cutoff must be a single non-negative finite number.")
+  }
+  if (length(pixel) != 1L || !is.finite(pixel) || pixel < 0) {
+    stop("pixel must be a single non-negative finite number.")
   }
 
   if (is.na(ncores)) {
@@ -114,13 +128,24 @@ vcovSpHAC <- function(reg,
   e <- dt[["e"]]
   invXX <- solve(crossprod(X)) * n
 
+  # Score pre-aggregation per time block: collapse rows that share a
+  # (possibly pixelated) location into a single row whose "score" is the sum
+  # of the constituents' scores. At pixel = 0 this only collapses exact
+  # duplicates; at pixel > 0 nearby points are snapped to a common grid
+  # representative. The balanced-panel path's CSR-reuse assumption (identical
+  # row count and order per period) is preserved by the dedupe key, which
+  # always includes time. Both kernels weigh distance 0 at exactly 1, so
+  # collapsing same-location rows is exact at pixel = 0.
+  agg <- aggregate_scores(dt, Xvars, pixel = pixel,
+                          balanced_pnl = balanced_pnl, verbose = verbose)
+
   if (verbose) message("Starting fast spatial HAC meat in C++")
   XeeX <- FastSpatialMeat(
-    lat = dt[["lat"]],
-    lon = dt[["lon"]],
-    time = dt[["time"]],
-    X = X,
-    e = e,
+    lat = agg$lat,
+    lon = agg$lon,
+    time = agg$time,
+    X = agg$X,
+    e = agg$e,
     cutoff = dist_cutoff,
     kernel = kernel,
     dist_fn = dist_fn,
@@ -149,6 +174,80 @@ vcovSpHAC <- function(reg,
   V_spatial_HAC <- (V_spatial_HAC + t(V_spatial_HAC)) / 2
   rownames(V_spatial_HAC) <- colnames(V_spatial_HAC) <- Xvars
   V_spatial_HAC
+}
+
+# Build per-time-block aggregated scores. Returns a list with element-wise
+# vectors/matrices ready to hand to FastSpatialMeat: lat, lon, time, X, e.
+#
+# At pixel = 0 we collapse rows whose (lat, lon) match exactly. At pixel > 0
+# we first snap (lat, lon) to a uniform grid whose latitude step is
+# pixel / 111 km and whose longitude step is pixel / (111 * cos(lat_rep)) km,
+# so cells stay roughly square at all latitudes. The representative coordinate
+# for a cell is the cell centre.
+aggregate_scores <- function(dt, Xvars, pixel, balanced_pnl, verbose) {
+  n <- nrow(dt)
+  X <- as.matrix(dt[, Xvars, with = FALSE])
+  e <- dt[["e"]]
+  scores <- X * e
+
+  if (pixel > 0) {
+    lat_step <- pixel / 111.0
+    lat_cell <- round(dt[["lat"]] / lat_step)
+    lat_rep  <- lat_cell * lat_step
+    cos_lat  <- cos(lat_rep * pi / 180)
+    cos_lat[abs(cos_lat) < 1e-6] <- 1e-6  # avoid blow-up near poles
+    lon_step <- pixel / (111.0 * cos_lat)
+    lon_cell <- round(dt[["lon"]] / lon_step)
+    lon_rep  <- lon_cell * lon_step
+    key_lat <- lat_rep
+    key_lon <- lon_rep
+  } else {
+    key_lat <- dt[["lat"]]
+    key_lon <- dt[["lon"]]
+  }
+
+  agg_dt <- data.table::data.table(
+    time = dt[["time"]],
+    lat  = key_lat,
+    lon  = key_lon,
+    scores
+  )
+  data.table::setnames(agg_dt, colnames(scores), Xvars)
+
+  agg <- agg_dt[, lapply(.SD, sum), by = c("time", "lat", "lon"), .SDcols = Xvars]
+  # Preserve the spatial path's expectations: balanced wants (time, <stable
+  # within-period order>) — we use (time, lat, lon); general just wants
+  # contiguous time blocks.
+  data.table::setorderv(agg, c("time", "lat", "lon"))
+
+  n_agg <- nrow(agg)
+  if (verbose && n_agg < n) {
+    message(sprintf("Score pre-aggregation: %d rows -> %d cases (pixel = %g km)",
+                    n, n_agg, pixel))
+  }
+
+  # Balanced path additionally requires identical row count per period and a
+  # stable within-period ordering. If the dedupe broke that invariant (some
+  # periods lost points the others kept), fall back to the general path by
+  # warning and returning unaggregated rows.
+  if (balanced_pnl) {
+    counts <- agg[, .N, by = "time"][["N"]]
+    if (length(unique(counts)) != 1L) {
+      warning("Pre-aggregation produced different case counts per period; ",
+              "skipping aggregation. Pass balanced_pnl = FALSE to silence.")
+      return(list(
+        lat = dt[["lat"]], lon = dt[["lon"]], time = dt[["time"]],
+        X = X, e = e
+      ))
+    }
+  }
+
+  X_agg <- as.matrix(agg[, Xvars, with = FALSE])
+  list(
+    lat = agg[["lat"]], lon = agg[["lon"]], time = agg[["time"]],
+    X = X_agg,
+    e = rep(1.0, n_agg)
+  )
 }
 
 expand.model.felm <- function(model, extras, envir = environment(formula(model)),

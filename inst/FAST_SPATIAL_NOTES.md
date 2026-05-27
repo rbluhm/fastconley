@@ -11,11 +11,3 @@ Implemented changes:
 The serial HAC component is intentionally kept close to the original implementation, although its internal C++ loop also avoids dense temporary matrices.
 
 Manual tests live in `tests/manual/test-fast-spatial.R`.
-
-## Known divergence from upstream: `dist_fn = "flatearth"`
-
-Upstream's `flatearth` distance is `sqrt((Δlat·111)² + (cos(lat₁)·Δlon·111)²)` — asymmetric in `(i,j)`. Upstream walks pairs in input-row order, so the cosine factor uses the lat of the lower-input-index point. The fast path sorts by latitude before iterating, so the cosine factor uses the lat of the lower-latitude point.
-
-For pair-distances near the cutoff this changes which neighbors are kept and what weight they get. On the validation panels (lat ∈ [35°, 55°], `dist_cutoff = 1800`), VCOV entries differ from upstream by `O(1e-4)` to `O(3e-3)` in absolute terms. Other distance functions (`haversine`, `spherical`, `chord`) match upstream to machine or near-machine precision because they are symmetric in `(i,j)`.
-
-This is an intentional consequence of the sort-and-screen design and was not fixed in this branch.
