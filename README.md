@@ -1,8 +1,8 @@
 # fastconley
 
-Fast Conley (1997) spatial HAC standard errors for `lfe::felm()` models in R.
+Fast Conley (1997) spatial HAC standard errors for `lfe::felm()` and `fixest::feols()` models in R.
 
-`fastconley` is a drop-in replacement for the spatial path of [`rbluhm/conley`](https://github.com/rbluhm/conley) that scales to large cross-sections and high-dimensional regressions. The public API (`vcovSpHAC()`) is unchanged; only the internals were rewritten.
+`fastconley` is a drop-in replacement for the spatial path of [`rbluhm/conley`](https://github.com/rbluhm/conley) that scales to large cross-sections and high-dimensional regressions. `vcovSpHAC()` still accepts `felm` fits with the same call signature it always did; numerical equivalence with upstream `conley` holds at machine precision for the three supported distance functions (the upstream-only `dist_fn = "flatearth"` option was dropped, and `pixel` was added as a new optional argument — see the [Compatibility](#compatibility-with-rbluhmconley) section for the full diff). `vcovSpHAC()` is also now an S3 generic with a `fixest` method.
 
 The original `conley` package was written by Richard Bluhm with contributions from [Darin Christensen](https://github.com/darinchristensen/conley-se). Some key speed up ideas (sorting on distances and pruning) are from [Laurent Berge](https://github.com/lrberge/fixest) and [Christian Düben](https://github.com/cdueben/conleyreg).
 
@@ -16,6 +16,10 @@ remotes::install_github("rbluhm/fastconley")
 `fastconley` installs alongside the original `conley` package (different `Package:` name), so you can keep both libraries loaded in different R sessions to compare results.
 
 ## Usage
+
+`vcovSpHAC()` is an S3 generic with methods for `lfe::felm` and `fixest::feols` fits.
+
+### With `lfe::felm`
 
 ```r
 library(lfe)
@@ -39,14 +43,42 @@ V <- vcovSpHAC(
 )
 ```
 
+`lfe::felm()` must be called with `keepCX = TRUE` so `cY` and `cX` are populated; without it, both `conley` and `fastconley` will fail to extract the centered design matrix.
+
+### With `fixest::feols`
+
+```r
+library(fixest)
+library(fastconley)
+
+est <- feols(y ~ x1 + x2 | unit + time, data = panel, demeaned = TRUE)
+
+V <- vcovSpHAC(
+  est,
+  unit         = "unit",
+  time         = "time",
+  lat          = "lat",
+  lon          = "lon",
+  kernel       = "bartlett",
+  dist_fn      = "haversine",
+  dist_cutoff  = 500,
+  lag_cutoff   = 0,
+  balanced_pnl = TRUE,
+  ncores       = NA,
+  pixel        = 0
+)
+```
+
+`fixest::feols()` must be called with `demeaned = TRUE` so the centered design matrix is stored on the fit object — analogous to `keepCX = TRUE` for `felm`. The fixest method returns exactly the same VCOV as the felm method on identical data; the dispatch only changes how the centered design and residuals are extracted. Weighted fits (`feols(..., weights = w)`) are not currently supported. If you fit the model in one frame and the data is no longer reachable from the call site, pass `data = ` explicitly.
+
+This wires `fastconley` in as a drop-in spatial HAC for the `fixest` workflow while still computing the textbook within-period spatial + within-unit serial-HAC object (see the panel-comparison section below); it is structurally different from `fixest::vcov_conley + vcov_NW − vcov_hetero`.
+
 ### The `pixel` argument
 
 `pixel` controls score pre-aggregation, inspired by the same argument in `fixest::vcov_conley`. Before the pair loop runs, observations that share a (possibly pixelated) location within a time period are collapsed into a single aggregated score, so the pair loop runs on `n_cases` rows instead of all `n`.
 
 - `pixel = 0` (default): exact-coordinate dedupe only. Two rows are collapsed iff their `(lat, lon)` match exactly. The answer is unchanged (machine precision); free win when units share coordinates (panels with time-invariant coords, point-aggregated data).
 - `pixel > 0`: snap `(lat, lon)` to a uniform `pixel`-km grid before the dedupe. Nearby points collapse to a common representative. The pair distance is approximate up to roughly `pixel / 2` km — this is a speed/accuracy trade-off; pick `pixel` an order of magnitude smaller than `dist_cutoff`.
-
-`lfe::felm()` must be called with `keepCX = TRUE` so `cY` and `cX` are populated; without it, both `conley` and `fastconley` will fail to extract the centered design matrix.
 
 ## What changed vs. `rbluhm/conley`
 

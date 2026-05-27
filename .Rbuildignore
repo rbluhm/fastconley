@@ -1,2 +1,7 @@
 ^.*\.Rproj$
 ^\.Rproj\.user$
+^\.claude$
+^\.git$
+^\.gitignore$
+^fastconley\.Rcheck$
+^fastconley_.*\.tar\.gz$

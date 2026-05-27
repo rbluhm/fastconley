@@ -67,6 +67,12 @@ fast_meat <- function(lat, lon, time, X, e, cutoff, kernel, dist_fn, balanced) {
   )
 }
 
+# Tolerance budget: brute-force naive is computed in double precision with a
+# different summation order than the templated workers, so machine-precision
+# disagreement at ~1e-12 is expected. A regression past this bound should fail.
+TOL <- 1e-10
+worst <- 0
+
 run <- function(label, lat, lon, time, X, e, cutoff, balanced) {
   cat(sprintf("\n== %s ==\n", label))
   for (df in c("haversine", "spherical", "chord")) {
@@ -79,6 +85,11 @@ run <- function(label, lat, lon, time, X, e, cutoff, balanced) {
       M_ref  <- naive_meat(lat_o, lon_o, time_o, X_o, e_o, cutoff, kn, df)
       diff <- max(abs(M_fast - M_ref))
       cat(sprintf("  %-10s %-9s  max|fast - naive| = %.3e\n", df, kn, diff))
+      if (diff > TOL) {
+        stop(sprintf("Equivalence regression: %s / %s / %s exceeded tol %.0e (got %.3e)",
+                     label, df, kn, TOL, diff))
+      }
+      worst <<- max(worst, diff)
     }
   }
 }
@@ -105,3 +116,6 @@ keep <- sort(sample.int(G * TT, size = round(0.8 * G * TT)))
 run("unbalanced panel ~80 rows, cutoff=400",
     lat2[keep], lon2[keep], tt[keep], X2[keep, , drop = FALSE], e2[keep],
     400, balanced = FALSE)
+
+cat(sprintf("\nAll 18 cells passed. Worst diff = %.3e (tolerance = %.0e).\n",
+            worst, TOL))
