@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <numeric>
 #include <vector>
@@ -133,8 +134,13 @@ inline double pair_weight<DIST_HAVERSINE, KERNEL_UNIFORM>(
   const double sin_half_dlon = std::sin(dlon / 2.0);
   const double s2_dlon = sin_half_dlon * sin_half_dlon;
 
+  // Multiply-form of the longitude screen: a >= denom * s2_dlon, so
+  // denom * s2_dlon > sin2cut implies rejection by the exact a-test below.
+  // The absolute 1e-15 margin keeps the screen conservative (denom <= 1, so
+  // this admits weakly more candidates than the old divide form); the a-test
+  // remains the arbiter, and a multiply is ~4x cheaper than a divide.
   if (screen.angular_cutoff_rad < PI && denom > EPS) {
-    if (s2_dlon > screen.sin2_half_angular_cutoff / denom + 1e-15) return 0.0;
+    if (s2_dlon * denom > screen.sin2_half_angular_cutoff + 1e-15) return 0.0;
   }
   const double dlat = c.lat_rad[j] - c.lat_rad[i];
   const double sin_half_dlat = std::sin(dlat / 2.0);
@@ -155,8 +161,13 @@ inline double pair_weight<DIST_HAVERSINE, KERNEL_BARTLETT>(
   const double sin_half_dlon = std::sin(dlon / 2.0);
   const double s2_dlon = sin_half_dlon * sin_half_dlon;
 
+  // Multiply-form of the longitude screen: a >= denom * s2_dlon, so
+  // denom * s2_dlon > sin2cut implies rejection by the exact a-test below.
+  // The absolute 1e-15 margin keeps the screen conservative (denom <= 1, so
+  // this admits weakly more candidates than the old divide form); the a-test
+  // remains the arbiter, and a multiply is ~4x cheaper than a divide.
   if (screen.angular_cutoff_rad < PI && denom > EPS) {
-    if (s2_dlon > screen.sin2_half_angular_cutoff / denom + 1e-15) return 0.0;
+    if (s2_dlon * denom > screen.sin2_half_angular_cutoff + 1e-15) return 0.0;
   }
   const double dlat = c.lat_rad[j] - c.lat_rad[i];
   const double sin_half_dlat = std::sin(dlat / 2.0);
@@ -367,9 +378,13 @@ void sort_block_indices(const std::vector<double>& lat_rad,
   });
 }
 
+// col_idx stores within-period sorted positions in [0, n_per); 32-bit halves
+// the per-pair index footprint (build_csr guards n_per < 2^32). weight is
+// only populated for KERNEL_BARTLETT — the uniform meat branch never reads
+// it, so leaving it empty saves 8 bytes per pair.
 struct CsrGraph {
   std::vector<std::size_t> row_ptr;
-  std::vector<std::size_t> col_idx;
+  std::vector<uint32_t> col_idx;
   std::vector<double> weight;
 };
 
@@ -416,7 +431,7 @@ struct CsrFillWorkerT : public Worker {
   const std::vector<std::size_t>& row_end;
   const CoordCache& c;
   const std::vector<std::size_t>& row_ptr;
-  std::vector<std::size_t>& col_idx;
+  std::vector<uint32_t>& col_idx;
   std::vector<double>& weight;
   const double cutoff;
   const ScreenParams screen;
@@ -425,7 +440,7 @@ struct CsrFillWorkerT : public Worker {
                  const std::vector<std::size_t>& row_end,
                  const CoordCache& c,
                  const std::vector<std::size_t>& row_ptr,
-                 std::vector<std::size_t>& col_idx,
+                 std::vector<uint32_t>& col_idx,
                  std::vector<double>& weight,
                  double cutoff, const ScreenParams& screen)
       : sorted_idx(sorted_idx), row_end(row_end), c(c),
@@ -446,8 +461,8 @@ struct CsrFillWorkerT : public Worker {
 
         const double w = pair_weight<D, K>(c, i, j, cutoff, screen);
         if (w != 0.0) {
-          col_idx[out] = j;
-          weight[out] = w;
+          col_idx[out] = static_cast<uint32_t>(j);
+          if (K != KERNEL_UNIFORM) weight[out] = w;
           ++out;
         }
       }
@@ -465,6 +480,9 @@ CsrGraph build_csr(const std::vector<std::size_t>& sorted_idx,
   g.row_ptr.assign(n + 1, 0);
 
   if (n == 0 || cutoff < 0.0) return g;
+  if (n > static_cast<std::size_t>(std::numeric_limits<uint32_t>::max())) {
+    Rcpp::stop("Balanced CSR path supports at most 2^32 - 1 units per period.");
+  }
 
   std::vector<std::size_t> counts(n, 0);
   const ScreenParams screen = make_screen_params(cutoff, D);
@@ -480,7 +498,7 @@ CsrGraph build_csr(const std::vector<std::size_t>& sorted_idx,
 
   const std::size_t nnz = g.row_ptr[n];
   g.col_idx.assign(nnz, 0);
-  g.weight.assign(nnz, 0.0);
+  if (K != KERNEL_UNIFORM) g.weight.assign(nnz, 0.0);
 
   CsrFillWorkerT<D, K> fill_worker(sorted_idx, row_end, c,
                                    g.row_ptr, g.col_idx, g.weight,
@@ -574,7 +592,7 @@ struct MeatBalancedWorkerT : public Worker {
   const RowMajorScores& S;
   const std::vector<std::size_t>& block_start;
   const std::vector<std::size_t>& row_ptr;
-  const std::vector<std::size_t>& col_idx;
+  const std::vector<uint32_t>& col_idx;
   const std::vector<double>& weight;
   const std::size_t n_per;
   const std::size_t k;
@@ -584,7 +602,7 @@ struct MeatBalancedWorkerT : public Worker {
                       const std::vector<std::size_t>& block_start,
                       std::size_t n_per,
                       const std::vector<std::size_t>& row_ptr,
-                      const std::vector<std::size_t>& col_idx,
+                      const std::vector<uint32_t>& col_idx,
                       const std::vector<double>& weight)
       : S(S), block_start(block_start),
         row_ptr(row_ptr), col_idx(col_idx), weight(weight),
@@ -756,55 +774,6 @@ arma::mat dispatch_spatial(int dist_id, int kernel_id,
   Rcpp::stop("Unsupported (dist_id, kernel_id) combination.");
 }
 
-struct SerialHacWorker : public Worker {
-  const arma::vec& times;
-  const RowMajorScores& S;
-  const double cutoff;
-  const std::size_t k;
-  arma::mat meat;
-
-  SerialHacWorker(const arma::vec& times, double cutoff,
-                  const RowMajorScores& S)
-      : times(times), S(S), cutoff(cutoff), k(S.k),
-        meat(k, k, arma::fill::zeros) {}
-
-  SerialHacWorker(const SerialHacWorker& other, Split)
-      : times(other.times), S(other.S), cutoff(other.cutoff),
-        k(other.k), meat(k, k, arma::fill::zeros) {}
-
-  void operator()(std::size_t begin, std::size_t end) {
-    std::vector<double> c(k, 0.0);
-    const std::size_t n = S.n;
-
-    for (std::size_t i = begin; i < end; ++i) {
-      std::fill(c.begin(), c.end(), 0.0);
-
-      for (std::size_t j = 0; j < n; ++j) {
-        const double dt = std::fabs(times[j] - times[i]);
-        if (dt <= cutoff && dt != 0.0) {
-          const double w = 1.0 - dt / (cutoff + 1.0);
-          const double* sj = S.row(j);
-          for (std::size_t kk = 0; kk < k; ++kk) {
-            c[kk] += w * sj[kk];
-          }
-        }
-      }
-
-      const double* si = S.row(i);
-      for (std::size_t k1 = 0; k1 < k; ++k1) {
-        const double s1 = si[k1];
-        for (std::size_t k2 = 0; k2 < k; ++k2) {
-          meat(k1, k2) += s1 * c[k2];
-        }
-      }
-    }
-  }
-
-  void join(const SerialHacWorker& rhs) {
-    meat += rhs.meat;
-  }
-};
-
 struct UnitBlocks {
   std::vector<std::size_t> start;
   std::vector<std::size_t> end;
@@ -908,23 +877,6 @@ arma::mat FastSpatialMeat(arma::vec lat, arma::vec lon, arma::vec time,
   }
 
   return dispatch_spatial(dist_id, kernel_id, lat, lon, time, S, cutoff, ncores, use_balanced);
-}
-
-// [[Rcpp::export]]
-arma::mat TimeDist(arma::vec times, double cutoff,
-                   arma::mat X, arma::vec e, int n1, int k, int ncores = 1) {
-  if (X.n_rows != e.n_elem || X.n_rows != times.n_elem) {
-    Rcpp::stop("times, X, and e have incompatible lengths.");
-  }
-  (void)n1;
-  (void)k;
-
-  ncores = std::max(1, ncores);
-  const RowMajorScores S(X, e);
-  SerialHacWorker worker(times, cutoff, S);
-  if (ncores > 1) parallelReduce(0, S.n, worker);
-  else worker(0, S.n);
-  return worker.meat;
 }
 
 // [[Rcpp::export]]

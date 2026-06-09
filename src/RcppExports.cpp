@@ -34,27 +34,6 @@ BEGIN_RCPP
 END_RCPP
 }
 
-// TimeDist
-arma::mat TimeDist(arma::vec times, double cutoff, arma::mat X, arma::vec e,
-                   int n1, int k, int ncores);
-RcppExport SEXP _fastconley_TimeDist(SEXP timesSEXP, SEXP cutoffSEXP, SEXP XSEXP,
-                                 SEXP eSEXP, SEXP n1SEXP, SEXP kSEXP,
-                                 SEXP ncoresSEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< arma::vec >::type times(timesSEXP);
-    Rcpp::traits::input_parameter< double >::type cutoff(cutoffSEXP);
-    Rcpp::traits::input_parameter< arma::mat >::type X(XSEXP);
-    Rcpp::traits::input_parameter< arma::vec >::type e(eSEXP);
-    Rcpp::traits::input_parameter< int >::type n1(n1SEXP);
-    Rcpp::traits::input_parameter< int >::type k(kSEXP);
-    Rcpp::traits::input_parameter< int >::type ncores(ncoresSEXP);
-    rcpp_result_gen = Rcpp::wrap(TimeDist(times, cutoff, X, e, n1, k, ncores));
-    return rcpp_result_gen;
-END_RCPP
-}
-
 // FastSerialHacPanel
 arma::mat FastSerialHacPanel(arma::vec unit, arma::vec time, double cutoff,
                              arma::mat X, arma::vec e, int ncores);
@@ -76,7 +55,6 @@ END_RCPP
 
 static const R_CallMethodDef CallEntries[] = {
     {"_fastconley_FastSpatialMeat", (DL_FUNC) &_fastconley_FastSpatialMeat, 10},
-    {"_fastconley_TimeDist", (DL_FUNC) &_fastconley_TimeDist, 7},
     {"_fastconley_FastSerialHacPanel", (DL_FUNC) &_fastconley_FastSerialHacPanel, 6},
     {NULL, NULL, 0}
 };

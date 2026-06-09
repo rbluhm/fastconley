@@ -285,18 +285,23 @@ vcovSpHAC_core <- function(dt, Xvars, n, invXX,
              "number of observations, but period sizes are: ",
              paste(unique(period_n), collapse = ", "), ".")
       }
-      dup_in_period <- dt[, .N, by = c("time", "unit")]
-      if (any(dup_in_period[["N"]] > 1L)) {
+      # dt is sorted by (time, unit), so each period's unit column is sorted:
+      # period 1 must be duplicate-free, and every later period must repeat
+      # period 1's unit sequence exactly. Together with the equal-size check
+      # above this implies the same unit set in every period with no repeats.
+      # O(n) with no per-period grouping or string materialization.
+      n_per <- period_n[1L]
+      u <- dt[["unit"]]
+      u1 <- u[seq_len(n_per)]
+      if (anyDuplicated(u1) > 0L) {
         stop("balanced_pnl = TRUE requires each unit to appear at most ",
              "once per period, but some (unit, time) combinations are ",
              "duplicated. Use balanced_pnl = FALSE.")
       }
-      unit_set_per_period <- dt[, list(units = paste(sort(unique(unit)),
-                                                     collapse = "")),
-                                by = "time"]
-      if (data.table::uniqueN(unit_set_per_period[["units"]]) > 1L) {
+      if (!isTRUE(all(u == rep(u1, times = length(period_n))))) {
         stop("balanced_pnl = TRUE requires every period to contain the ",
-             "same set of units, but unit membership varies across periods. ",
+             "same set of units, but unit membership varies across periods ",
+             "(or a unit is duplicated within a period). ",
              "Use balanced_pnl = FALSE.")
       }
       coord_var <- dt[, list(n_lat = data.table::uniqueN(lat),

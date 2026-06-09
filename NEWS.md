@@ -1,3 +1,29 @@
+# fastconley 0.4.1
+
+Phase 0 quick wins from `notes/OPTIMIZATION_PLAN.md` (Q1–Q6). Numerical
+results are unchanged (verified bitwise against v0.4.0 on the balanced /
+general / unbalanced × kernel × distance matrix at `ncores = 1`).
+
+## Memory
+
+- The balanced-path CSR no longer allocates its weight array for
+  `kernel = "uniform"` (it was filled but never read), and column indices
+  are now 32-bit. Per stored pair: 16 bytes -> 4 (uniform) / 12 (bartlett).
+  A guard errors if a single period exceeds 2^32 - 1 units.
+
+## Speed
+
+- The haversine longitude screen uses a multiply instead of a per-pair
+  divide (same accept set; the exact `a`-test is unchanged).
+- The `balanced_pnl = TRUE` unit-set validation is now O(n) vectorized
+  instead of two grouping passes plus per-period string materialization.
+
+## Cleanup
+
+- Removed the legacy `TimeDist` internal export (unused since the serial
+  HAC moved to `FastSerialHacPanel`).
+- README gains an optional `~/.R/Makevars` performance-build recipe.
+
 # fastconley 0.3.0.9000
 
 Development build for testing a faster spatial HAC path.

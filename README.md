@@ -15,6 +15,18 @@ remotes::install_github("rbluhm/fastconley")
 
 `fastconley` installs alongside the original `conley` package (different `Package:` name), so you can keep both libraries loaded in different R sessions to compare results.
 
+### Performance build (optional)
+
+The package ships with portable compiler flags (R's default `-O2`). The templated
+inner loops benefit measurably from wider vectorization; for a machine-local
+performance build, add to `~/.R/Makevars` before installing:
+
+```make
+CXXFLAGS += -O3 -march=native -funroll-loops
+```
+
+Results are numerically identical either way; this only affects speed.
+
 ## Usage
 
 `vcovSpHAC()` is an S3 generic with methods for `lfe::felm` and `fixest::feols` fits.

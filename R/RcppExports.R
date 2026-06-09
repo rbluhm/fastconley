@@ -9,11 +9,6 @@ FastSpatialMeat <- function(lat, lon, time, X, e, cutoff,
         kernel, dist_fn, balanced_pnl, ncores)
 }
 
-TimeDist <- function(times, cutoff, X, e, n1, k, ncores = 1L) {
-  RcppParallel::setThreadOptions(numThreads = as.integer(max(1L, ncores)))
-  .Call(`_fastconley_TimeDist`, times, cutoff, X, e, n1, k, ncores)
-}
-
 FastSerialHacPanel <- function(unit, time, cutoff, X, e, ncores = 1L) {
   RcppParallel::setThreadOptions(numThreads = as.integer(max(1L, ncores)))
   .Call(`_fastconley_FastSerialHacPanel`, unit, time, cutoff, X, e, ncores)
