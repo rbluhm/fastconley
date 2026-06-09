@@ -18,6 +18,7 @@
   balanced_pnl = FALSE,
   ncores = NA,
   pixel = 0,
+  neighbor = c("grid", "band"),
   data = NULL,
   ...
 )
@@ -50,6 +51,9 @@ share a single period — no serial HAC).}
 \item{ncores}{Number of cores for the C++/RcppParallel spatial and serial routines.}
 
 \item{pixel}{Score-pre-aggregation cell size, in kilometres.}
+
+\item{neighbor}{Neighbor-search strategy: "grid" (default) or "band".
+See \code{\link{vcovSpHAC.felm}}.}
 
 \item{data}{Optional. The model frame to draw \code{lat}/\code{lon}/
 \code{unit}/\code{time} from. If \code{NULL} (default), the data is

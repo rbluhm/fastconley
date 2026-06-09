@@ -78,6 +78,10 @@ struct ScreenParams {
   // (cutoff / R)^2, capped at 4. Used by CHORD specializations to compare
   // squared Euclidean distance between unit vectors against the threshold.
   double chord_cutoff_sq;
+  // Unit-sphere chord length equivalent to the cutoff: 2*sin(angular/2).
+  // All supported distances are monotone in the chord, so a pair is within
+  // the cutoff iff |u_i - u_j| <= chord_cell. Used as the cell-grid edge.
+  double chord_cell;
 };
 
 ScreenParams make_screen_params(double cutoff, int dist_id) {
@@ -88,6 +92,7 @@ ScreenParams make_screen_params(double cutoff, int dist_id) {
     p.sin2_half_angular_cutoff = 0.0;
     p.cos_cutoff = 1.0;
     p.chord_cutoff_sq = 0.0;
+    p.chord_cell = 0.0;
     return p;
   }
 
@@ -106,6 +111,7 @@ ScreenParams make_screen_params(double cutoff, int dist_id) {
   // so chord_km <= cutoff iff |u_i - u_j|^2 <= (cutoff/R)^2. Cap at 4 (the
   // maximum possible squared distance between unit vectors, antipodal case).
   p.chord_cutoff_sq = std::min(4.0, sq(cutoff / AVG_ERAD));
+  p.chord_cell = 2.0 * std::sin(0.5 * p.angular_cutoff_rad);
   return p;
 }
 
@@ -238,10 +244,11 @@ CoordCache make_coord_cache(const arma::vec& lat, const arma::vec& lon,
   c.lon_rad.resize(n);
   c.cos_lat.resize(n);
   c.sin_lat.resize(n);
-  // SPHERICAL and CHORD both consume 3D *unit* vectors. SPHERICAL uses
-  // dot(u_i, u_j) = cos(angular) for thresholding; CHORD uses
-  // |u_i - u_j| * AVG_ERAD as the actual chord distance in km.
-  const bool need_xyz = (dist_id == DIST_CHORD || dist_id == DIST_SPHERICAL);
+  // SPHERICAL and CHORD consume 3D *unit* vectors per pair (dot-product and
+  // squared-distance thresholds), and the cell-grid neighbor search bins
+  // every distance function by its unit vector — so xyz is always built.
+  (void)dist_id;
+  const bool need_xyz = true;
   if (need_xyz) {
     c.x3.resize(n);
     c.y3.resize(n);
@@ -509,6 +516,318 @@ CsrGraph build_csr(const std::vector<std::size_t>& sorted_idx,
   return g;
 }
 
+// ------------------------------------------------------------------
+// 3D cell-grid neighbor search (neighbor = "grid", the default).
+//
+// Points are bucketed by their 3D unit vectors into a cubic grid whose
+// edge is >= the unit-sphere chord equivalent of the cutoff. Every
+// supported distance is monotone in the chord, so an accepted pair is
+// never more than one cell apart per axis. Candidate enumeration is
+// therefore output-sensitive (~9/pi candidates per accepted pair,
+// independent of geographic extent) instead of the latitude band scan's
+// ~2*L_lon/(pi*r). pair_weight<D, K> remains the arbiter for every
+// candidate, so accept sets and weights are identical to the band path;
+// only summation order differs (FP-level differences in the meat).
+//
+// Half-pair iteration: rows are sorted by (cell id, original index).
+// For a row we scan (a) later rows in its own cell and (b) rows in the
+// 13 neighbor cells with lexicographically larger (cx, cy, cz). Those
+// 13 cells form five contiguous cell-id intervals (same cx', cy',
+// cz' in {cz-1, cz, cz+1}); consecutive occupied cells are contiguous
+// in row space, so each interval is a single [begin, end) row range,
+// precomputed per cell.
+// ------------------------------------------------------------------
+
+struct GridSpec {
+  double cell;     // cell edge, unit-sphere chord units
+  std::int64_t G;  // cells per axis
+};
+
+GridSpec make_grid_spec(const ScreenParams& screen) {
+  GridSpec spec;
+  // The grid only needs cell >= the true chord cutoff: a slightly larger
+  // cell admits a few extra candidates (rejected by pair_weight), never
+  // loses a pair. The margin covers FP error in the chord/dot/haversine
+  // accept tests relative to the binning coordinates.
+  spec.cell = screen.chord_cell * (1.0 + 1e-7) + 1e-13;
+  const double gf = 2.0 / spec.cell;
+  std::int64_t G = gf >= 1.0 ? static_cast<std::int64_t>(gf) : 1;
+  // Cap so cid = ((cx*G)+cy)*G+cz fits 64 bits (G^3 - 1 <= 2^63 - 1). Only
+  // binds for sub-metre cutoffs, where cells merely become larger than
+  // strictly needed -- still exact, just more candidates.
+  const std::int64_t G_MAX = 2097152;  // 2^21
+  if (G > G_MAX) G = G_MAX;
+  spec.G = G;
+  return spec;
+}
+
+// All row positions are in the grid-sorted order the caller permutes the
+// coord cache / scores into. Cells never span time blocks, and consecutive
+// blocks are contiguous, so cell_start[cell + 1] is always the end of
+// `cell`'s rows even at block boundaries.
+struct CellGrid {
+  std::vector<std::size_t> cell_start;   // n_cells + 1 (caller appends total n)
+  std::vector<std::uint32_t> row_cell;   // per sorted row: its cell index
+  std::vector<std::size_t> nbr;          // 10 * n_cells: five [begin, end) ranges
+};
+
+// Bucket one time block, append its rows (original indices, grid order) to
+// `sorted_idx` and its cells to `grid`. `grid.row_cell` must be pre-sized to
+// the total row count.
+void append_block_grid(const CoordCache& c, std::size_t bs, std::size_t be,
+                       const GridSpec& spec,
+                       std::vector<std::size_t>& sorted_idx, CellGrid& grid) {
+  const std::size_t nb = be - bs;
+  const double cell = spec.cell;
+  const std::int64_t G = spec.G;
+  const std::uint64_t uG = static_cast<std::uint64_t>(G);
+
+  std::vector<std::uint64_t> cid(nb);
+  for (std::size_t i = 0; i < nb; ++i) {
+    const std::size_t idx = bs + i;
+    std::int64_t cx = static_cast<std::int64_t>((c.x3[idx] + 1.0) / cell);
+    std::int64_t cy = static_cast<std::int64_t>((c.y3[idx] + 1.0) / cell);
+    std::int64_t cz = static_cast<std::int64_t>((c.z3[idx] + 1.0) / cell);
+    if (cx < 0) cx = 0; else if (cx >= G) cx = G - 1;
+    if (cy < 0) cy = 0; else if (cy >= G) cy = G - 1;
+    if (cz < 0) cz = 0; else if (cz >= G) cz = G - 1;
+    cid[i] = (static_cast<std::uint64_t>(cx) * uG +
+              static_cast<std::uint64_t>(cy)) * uG +
+             static_cast<std::uint64_t>(cz);
+  }
+
+  // (cell id, original index) order: deterministic, and rows of a cell are
+  // contiguous with consecutive cells contiguous in row space.
+  std::vector<std::size_t> ord(nb);
+  std::iota(ord.begin(), ord.end(), 0);
+  std::sort(ord.begin(), ord.end(), [&](std::size_t a, std::size_t b) {
+    if (cid[a] != cid[b]) return cid[a] < cid[b];
+    return a < b;
+  });
+
+  const std::size_t row0 = sorted_idx.size();
+  std::vector<std::uint64_t> ucid;
+  std::vector<std::size_t> ustart;  // block-local row offsets per cell
+  for (std::size_t j = 0; j < nb; ++j) {
+    if (j == 0 || cid[ord[j]] != cid[ord[j - 1]]) {
+      ucid.push_back(cid[ord[j]]);
+      ustart.push_back(j);
+    }
+    sorted_idx.push_back(bs + ord[j]);
+  }
+  ustart.push_back(nb);
+
+  const std::size_t ncb = ucid.size();
+  const std::size_t cell0 = grid.cell_start.size();
+  for (std::size_t cdx = 0; cdx < ncb; ++cdx) {
+    grid.cell_start.push_back(row0 + ustart[cdx]);
+    for (std::size_t j = ustart[cdx]; j < ustart[cdx + 1]; ++j) {
+      grid.row_cell[row0 + j] = static_cast<std::uint32_t>(cell0 + cdx);
+    }
+  }
+
+  // Five forward cell-id intervals per cell; each maps to one contiguous
+  // row range because consecutive occupied cells are contiguous rows.
+  grid.nbr.resize(grid.nbr.size() + 10 * ncb);
+  for (std::size_t cdx = 0; cdx < ncb; ++cdx) {
+    const std::uint64_t cu = ucid[cdx];
+    const std::int64_t cz = static_cast<std::int64_t>(cu % uG);
+    const std::int64_t cy = static_cast<std::int64_t>((cu / uG) % uG);
+    const std::int64_t cx = static_cast<std::int64_t>(cu / (uG * uG));
+    std::size_t* out = &grid.nbr[10 * (cell0 + cdx)];
+    int run = 0;
+    auto add_run = [&](std::int64_t nx, std::int64_t ny,
+                       std::int64_t zlo, std::int64_t zhi) {
+      if (zlo < 0) zlo = 0;
+      if (zhi > G - 1) zhi = G - 1;
+      if (nx < 0 || nx >= G || ny < 0 || ny >= G || zlo > zhi) {
+        out[2 * run] = out[2 * run + 1] = row0;
+        ++run;
+        return;
+      }
+      const std::uint64_t base = (static_cast<std::uint64_t>(nx) * uG +
+                                  static_cast<std::uint64_t>(ny)) * uG;
+      const std::uint64_t lo = base + static_cast<std::uint64_t>(zlo);
+      const std::uint64_t hi = base + static_cast<std::uint64_t>(zhi);
+      const std::size_t clo = std::lower_bound(ucid.begin(), ucid.end(), lo) -
+                              ucid.begin();
+      const std::size_t chi = std::upper_bound(ucid.begin() + clo, ucid.end(), hi) -
+                              ucid.begin();
+      out[2 * run] = row0 + ustart[clo];
+      out[2 * run + 1] = row0 + ustart[chi];
+      ++run;
+    };
+    add_run(cx,     cy,     cz + 1, cz + 1);
+    add_run(cx,     cy + 1, cz - 1, cz + 1);
+    add_run(cx + 1, cy - 1, cz - 1, cz + 1);
+    add_run(cx + 1, cy,     cz - 1, cz + 1);
+    add_run(cx + 1, cy + 1, cz - 1, cz + 1);
+  }
+}
+
+// Invoke fn(q) for every forward candidate row of `pos` (own-cell rows after
+// pos, then the five precomputed neighbor row ranges). Each unordered pair
+// is visited exactly once across all rows.
+template <typename F>
+inline void for_each_grid_candidate(const CellGrid& grid, std::size_t pos, F fn) {
+  const std::uint32_t cell = grid.row_cell[pos];
+  const std::size_t own_end = grid.cell_start[cell + 1];
+  for (std::size_t q = pos + 1; q < own_end; ++q) fn(q);
+  const std::size_t* r = &grid.nbr[10 * static_cast<std::size_t>(cell)];
+  for (int s = 0; s < 5; ++s) {
+    for (std::size_t q = r[2 * s]; q < r[2 * s + 1]; ++q) fn(q);
+  }
+}
+
+// Grid analogue of StreamMeatGeneralWorkerT: fused candidate scan + score
+// accumulation, O(n) memory, no CSR. Inputs are pre-permuted to grid order.
+template<int D, int K>
+struct StreamMeatGridWorkerT : public Worker {
+  const RowMajorScores& S;
+  const CoordCache& coord;
+  const CellGrid& grid;
+  const double cutoff;
+  const ScreenParams screen;
+  const std::size_t k;
+  arma::mat meat;
+
+  StreamMeatGridWorkerT(const RowMajorScores& S, const CoordCache& coord,
+                        const CellGrid& grid, double cutoff,
+                        const ScreenParams& screen)
+      : S(S), coord(coord), grid(grid), cutoff(cutoff), screen(screen),
+        k(S.k), meat(k, k, arma::fill::zeros) {}
+
+  StreamMeatGridWorkerT(const StreamMeatGridWorkerT& other, Split)
+      : S(other.S), coord(other.coord), grid(other.grid),
+        cutoff(other.cutoff), screen(other.screen), k(other.k),
+        meat(k, k, arma::fill::zeros) {}
+
+  void operator()(std::size_t begin, std::size_t end) {
+    std::vector<double> c(k, 0.0);
+    for (std::size_t pos = begin; pos < end; ++pos) {
+      const double* si = S.row(pos);
+      for (std::size_t kk = 0; kk < k; ++kk) {
+        c[kk] = 0.5 * si[kk];
+      }
+
+      for_each_grid_candidate(grid, pos, [&](std::size_t q) {
+        const double w = pair_weight<D, K>(coord, pos, q, cutoff, screen);
+        if (w == 0.0) return;
+        const double* sj = S.row(q);
+        if (K == KERNEL_UNIFORM) {
+          for (std::size_t kk = 0; kk < k; ++kk) c[kk] += sj[kk];
+        } else {
+          for (std::size_t kk = 0; kk < k; ++kk) c[kk] += w * sj[kk];
+        }
+      });
+
+      for (std::size_t k1 = 0; k1 < k; ++k1) {
+        const double s1 = si[k1];
+        for (std::size_t k2 = 0; k2 < k; ++k2) {
+          meat(k1, k2) += s1 * c[k2];
+        }
+      }
+    }
+  }
+
+  void join(const StreamMeatGridWorkerT& rhs) {
+    meat += rhs.meat;
+  }
+};
+
+// Grid analogues of the CSR count/fill workers (balanced path).
+template<int D, int K>
+struct GridCsrCountWorkerT : public Worker {
+  const CellGrid& grid;
+  const CoordCache& c;
+  std::vector<std::size_t>& counts;
+  const double cutoff;
+  const ScreenParams screen;
+
+  GridCsrCountWorkerT(const CellGrid& grid, const CoordCache& c,
+                      std::vector<std::size_t>& counts,
+                      double cutoff, const ScreenParams& screen)
+      : grid(grid), c(c), counts(counts), cutoff(cutoff), screen(screen) {}
+
+  void operator()(std::size_t begin, std::size_t end) {
+    for (std::size_t pos = begin; pos < end; ++pos) {
+      std::size_t n_found = 0;
+      for_each_grid_candidate(grid, pos, [&](std::size_t q) {
+        if (pair_weight<D, K>(c, pos, q, cutoff, screen) != 0.0) ++n_found;
+      });
+      counts[pos] = n_found;
+    }
+  }
+};
+
+template<int D, int K>
+struct GridCsrFillWorkerT : public Worker {
+  const CellGrid& grid;
+  const CoordCache& c;
+  const std::vector<std::size_t>& row_ptr;
+  std::vector<std::uint32_t>& col_idx;
+  std::vector<double>& weight;
+  const double cutoff;
+  const ScreenParams screen;
+
+  GridCsrFillWorkerT(const CellGrid& grid, const CoordCache& c,
+                     const std::vector<std::size_t>& row_ptr,
+                     std::vector<std::uint32_t>& col_idx,
+                     std::vector<double>& weight,
+                     double cutoff, const ScreenParams& screen)
+      : grid(grid), c(c), row_ptr(row_ptr), col_idx(col_idx), weight(weight),
+        cutoff(cutoff), screen(screen) {}
+
+  void operator()(std::size_t begin, std::size_t end) {
+    for (std::size_t pos = begin; pos < end; ++pos) {
+      std::size_t out = row_ptr[pos];
+      for_each_grid_candidate(grid, pos, [&](std::size_t q) {
+        const double w = pair_weight<D, K>(c, pos, q, cutoff, screen);
+        if (w != 0.0) {
+          col_idx[out] = static_cast<std::uint32_t>(q);
+          if (K != KERNEL_UNIFORM) weight[out] = w;
+          ++out;
+        }
+      });
+    }
+  }
+};
+
+// Build the balanced-path CSR by scanning grid candidates. `c` must be the
+// block-0 coord cache permuted into grid order; col_idx values are sorted
+// positions in [0, n_per), exactly like build_csr.
+template<int D, int K>
+CsrGraph build_csr_grid(const CellGrid& grid, const CoordCache& c,
+                        double cutoff, const ScreenParams& screen, int ncores) {
+  const std::size_t n = grid.row_cell.size();
+  CsrGraph g;
+  g.row_ptr.assign(n + 1, 0);
+  if (n == 0 || cutoff < 0.0) return g;
+  if (n > static_cast<std::size_t>(std::numeric_limits<uint32_t>::max())) {
+    Rcpp::stop("Balanced CSR path supports at most 2^32 - 1 units per period.");
+  }
+
+  std::vector<std::size_t> counts(n, 0);
+  GridCsrCountWorkerT<D, K> count_worker(grid, c, counts, cutoff, screen);
+  if (ncores > 1) parallelFor(0, n, count_worker);
+  else count_worker(0, n);
+
+  for (std::size_t i = 0; i < n; ++i) {
+    g.row_ptr[i + 1] = g.row_ptr[i] + counts[i];
+  }
+
+  const std::size_t nnz = g.row_ptr[n];
+  g.col_idx.assign(nnz, 0);
+  if (K != KERNEL_UNIFORM) g.weight.assign(nnz, 0.0);
+
+  GridCsrFillWorkerT<D, K> fill_worker(grid, c, g.row_ptr, g.col_idx,
+                                       g.weight, cutoff, screen);
+  if (ncores > 1) parallelFor(0, n, fill_worker);
+  else fill_worker(0, n);
+
+  return g;
+}
+
 // Inputs `S` and `coord` are pre-permuted into lat-sorted order by the caller,
 // so the worker indexes them by sorted position `pos` directly. This makes
 // every read of `S.row(...)` and `coord.lat_rad[...]` sequential across the
@@ -741,35 +1060,113 @@ arma::mat fast_spatial_balanced(const arma::vec& lat, const arma::vec& lon,
   return meat_from_csr_balanced<K>(S_sorted, blocks.start, n_per, graph, ncores);
 }
 
+// Grid version of the general path: per-block cell grids, fused scan +
+// accumulate, O(n) memory.
+template<int D, int K>
+arma::mat fast_spatial_general_grid(const arma::vec& lat, const arma::vec& lon,
+                                    const arma::vec& time, const RowMajorScores& S,
+                                    double cutoff, int ncores) {
+  const std::size_t n = S.n;
+  if (n > static_cast<std::size_t>(std::numeric_limits<uint32_t>::max())) {
+    Rcpp::stop("The grid neighbor path supports at most 2^32 - 1 rows; "
+               "use neighbor = \"band\".");
+  }
+  const CoordCache c = make_coord_cache(lat, lon, D);
+  const ScreenParams screen = make_screen_params(cutoff, D);
+  const GridSpec spec = make_grid_spec(screen);
+
+  const TimeBlocks blocks = make_time_blocks(time);
+  std::vector<std::size_t> sorted_idx;
+  sorted_idx.reserve(n);
+  CellGrid grid;
+  grid.row_cell.resize(n);
+  for (std::size_t b = 0; b < blocks.start.size(); ++b) {
+    append_block_grid(c, blocks.start[b], blocks.end[b], spec, sorted_idx, grid);
+  }
+  grid.cell_start.push_back(n);
+
+  const CoordCache c_sorted = permute_coord_cache(c, sorted_idx);
+  const RowMajorScores S_sorted(S, sorted_idx);
+
+  StreamMeatGridWorkerT<D, K> worker(S_sorted, c_sorted, grid, cutoff, screen);
+  if (ncores > 1) parallelReduce(0, n, worker);
+  else worker(0, n);
+  return worker.meat + worker.meat.t();
+}
+
+// Grid version of the balanced path: cell grid + CSR from block 0, reused
+// across periods; the meat worker is shared with the band version.
+template<int D, int K>
+arma::mat fast_spatial_balanced_grid(const arma::vec& lat, const arma::vec& lon,
+                                     const arma::vec& time, const RowMajorScores& S,
+                                     double cutoff, int ncores) {
+  const TimeBlocks blocks = make_time_blocks(time);
+  const std::size_t n_per = blocks.end[0] - blocks.start[0];
+  const CoordCache c = make_coord_cache(lat, lon, D);
+  const ScreenParams screen = make_screen_params(cutoff, D);
+  const GridSpec spec = make_grid_spec(screen);
+
+  std::vector<std::size_t> sorted_abs;
+  sorted_abs.reserve(n_per);
+  CellGrid g0;
+  g0.row_cell.resize(n_per);
+  append_block_grid(c, blocks.start[0], blocks.end[0], spec, sorted_abs, g0);
+  g0.cell_start.push_back(n_per);
+
+  const CoordCache c0_sorted = permute_coord_cache(c, sorted_abs);
+  CsrGraph graph = build_csr_grid<D, K>(g0, c0_sorted, cutoff, screen, ncores);
+
+  std::vector<std::size_t> sorted_rel(n_per);
+  for (std::size_t i = 0; i < n_per; ++i) {
+    sorted_rel[i] = sorted_abs[i] - blocks.start[0];
+  }
+  std::vector<std::size_t> global_perm(S.n);
+  for (std::size_t b = 0; b < blocks.start.size(); ++b) {
+    const std::size_t base = blocks.start[b];
+    for (std::size_t pos = 0; pos < n_per; ++pos) {
+      global_perm[base + pos] = base + sorted_rel[pos];
+    }
+  }
+  const RowMajorScores S_sorted(S, global_perm);
+
+  return meat_from_csr_balanced<K>(S_sorted, blocks.start, n_per, graph, ncores);
+}
+
 // 8-way dispatch on (dist_id, kernel_id) -> template instantiation. Called
 // once per FastSpatialMeat invocation; after this point everything is
 // compile-time specialized.
 template<int D, int K>
 inline arma::mat fast_spatial_dispatch(const arma::vec& lat, const arma::vec& lon,
                                        const arma::vec& time, const RowMajorScores& S,
-                                       double cutoff, int ncores, bool balanced) {
-  if (balanced) return fast_spatial_balanced<D, K>(lat, lon, time, S, cutoff, ncores);
+                                       double cutoff, int ncores, bool balanced,
+                                       bool use_grid) {
+  if (balanced) {
+    if (use_grid) return fast_spatial_balanced_grid<D, K>(lat, lon, time, S, cutoff, ncores);
+    return fast_spatial_balanced<D, K>(lat, lon, time, S, cutoff, ncores);
+  }
+  if (use_grid) return fast_spatial_general_grid<D, K>(lat, lon, time, S, cutoff, ncores);
   return fast_spatial_general<D, K>(lat, lon, time, S, cutoff, ncores);
 }
 
 arma::mat dispatch_spatial(int dist_id, int kernel_id,
                            const arma::vec& lat, const arma::vec& lon,
                            const arma::vec& time, const RowMajorScores& S,
-                           double cutoff, int ncores, bool balanced) {
+                           double cutoff, int ncores, bool balanced,
+                           bool use_grid) {
   const int tag = (dist_id << 4) | kernel_id;
   switch (tag) {
     case (DIST_HAVERSINE << 4) | KERNEL_UNIFORM:
-      return fast_spatial_dispatch<DIST_HAVERSINE, KERNEL_UNIFORM>(lat, lon, time, S, cutoff, ncores, balanced);
+      return fast_spatial_dispatch<DIST_HAVERSINE, KERNEL_UNIFORM>(lat, lon, time, S, cutoff, ncores, balanced, use_grid);
     case (DIST_HAVERSINE << 4) | KERNEL_BARTLETT:
-      return fast_spatial_dispatch<DIST_HAVERSINE, KERNEL_BARTLETT>(lat, lon, time, S, cutoff, ncores, balanced);
+      return fast_spatial_dispatch<DIST_HAVERSINE, KERNEL_BARTLETT>(lat, lon, time, S, cutoff, ncores, balanced, use_grid);
     case (DIST_SPHERICAL << 4) | KERNEL_UNIFORM:
-      return fast_spatial_dispatch<DIST_SPHERICAL, KERNEL_UNIFORM>(lat, lon, time, S, cutoff, ncores, balanced);
+      return fast_spatial_dispatch<DIST_SPHERICAL, KERNEL_UNIFORM>(lat, lon, time, S, cutoff, ncores, balanced, use_grid);
     case (DIST_SPHERICAL << 4) | KERNEL_BARTLETT:
-      return fast_spatial_dispatch<DIST_SPHERICAL, KERNEL_BARTLETT>(lat, lon, time, S, cutoff, ncores, balanced);
+      return fast_spatial_dispatch<DIST_SPHERICAL, KERNEL_BARTLETT>(lat, lon, time, S, cutoff, ncores, balanced, use_grid);
     case (DIST_CHORD << 4) | KERNEL_UNIFORM:
-      return fast_spatial_dispatch<DIST_CHORD, KERNEL_UNIFORM>(lat, lon, time, S, cutoff, ncores, balanced);
+      return fast_spatial_dispatch<DIST_CHORD, KERNEL_UNIFORM>(lat, lon, time, S, cutoff, ncores, balanced, use_grid);
     case (DIST_CHORD << 4) | KERNEL_BARTLETT:
-      return fast_spatial_dispatch<DIST_CHORD, KERNEL_BARTLETT>(lat, lon, time, S, cutoff, ncores, balanced);
+      return fast_spatial_dispatch<DIST_CHORD, KERNEL_BARTLETT>(lat, lon, time, S, cutoff, ncores, balanced, use_grid);
   }
   Rcpp::stop("Unsupported (dist_id, kernel_id) combination.");
 }
@@ -854,7 +1251,8 @@ arma::mat FastSpatialMeat(arma::vec lat, arma::vec lon, arma::vec time,
                           std::string kernel = "bartlett",
                           std::string dist_fn = "haversine",
                           bool balanced_pnl = false,
-                          int ncores = 1) {
+                          int ncores = 1,
+                          std::string neighbor = "grid") {
   if (X.n_rows != e.n_elem || X.n_rows != lat.n_elem || X.n_rows != lon.n_elem ||
       X.n_rows != time.n_elem) {
     Rcpp::stop("lat, lon, time, X, and e have incompatible lengths.");
@@ -864,6 +1262,14 @@ arma::mat FastSpatialMeat(arma::vec lat, arma::vec lon, arma::vec time,
   const int kernel_id = parse_kernel_id(kernel);
   const int dist_id = parse_dist_id(dist_fn);
   const TimeBlocks blocks = make_time_blocks(time);
+
+  bool use_grid;
+  if (neighbor == "grid") use_grid = true;
+  else if (neighbor == "band") use_grid = false;
+  else Rcpp::stop("Unknown neighbor: %s (use \"grid\" or \"band\")", neighbor.c_str());
+  // cutoff < 0 is the no-pairs sentinel; the band path's break logic handles
+  // it (only the 0.5*S_i diagonal survives), so route it there.
+  if (cutoff < 0.0) use_grid = false;
 
   if (X.n_rows == 0) {
     return arma::mat(X.n_cols, X.n_cols, arma::fill::zeros);
@@ -876,7 +1282,8 @@ arma::mat FastSpatialMeat(arma::vec lat, arma::vec lon, arma::vec time,
     Rcpp::warning("balanced_pnl = TRUE but time blocks have unequal sizes; using general CSR path.");
   }
 
-  return dispatch_spatial(dist_id, kernel_id, lat, lon, time, S, cutoff, ncores, use_balanced);
+  return dispatch_spatial(dist_id, kernel_id, lat, lon, time, S, cutoff, ncores,
+                          use_balanced, use_grid);
 }
 
 // [[Rcpp::export]]

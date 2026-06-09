@@ -35,6 +35,11 @@ vcovSpHAC.default <- function(reg, ...) {
 #'   (exact-coordinate dedupe only). If `pixel > 0`, points are snapped to a
 #'   uniform `pixel`-km grid before the dedupe — a speed/accuracy trade-off
 #'   that approximates the distance up to roughly `pixel / 2`.
+#' @param neighbor Neighbor-search strategy for the spatial meat: "grid"
+#'   (default; 3D cell grid, output-sensitive candidate enumeration) or
+#'   "band" (latitude band scan, the pre-0.5.0 behavior). Both are exact and
+#'   use identical per-pair accept tests; results agree to floating-point
+#'   summation order.
 #' @param maxobsmem Ignored by the fast spatial path. Kept for backward compatibility.
 #' @param ... Currently unused.
 #' @return A variance-covariance matrix.
@@ -52,10 +57,12 @@ vcovSpHAC.felm <- function(reg,
                            balanced_pnl = FALSE,
                            ncores = NA,
                            pixel = 0,
+                           neighbor = c("grid", "band"),
                            maxobsmem = 50000L,
                            ...) {
 
-  args <- validate_args(kernel, dist_fn, dist_cutoff, lag_cutoff, pixel, ncores)
+  args <- validate_args(kernel, dist_fn, dist_cutoff, lag_cutoff, pixel, ncores,
+                        neighbor)
 
   noFEs <- length(unit) == 0L
   if (noFEs) {
@@ -106,7 +113,7 @@ vcovSpHAC.felm <- function(reg,
                  kernel = args$kernel, dist_fn = args$dist_fn,
                  dist_cutoff = dist_cutoff, lag_cutoff = lag_cutoff,
                  balanced_pnl = balanced_pnl, ncores = args$ncores,
-                 pixel = pixel, verbose = verbose)
+                 pixel = pixel, neighbor = args$neighbor, verbose = verbose)
 }
 
 #' Spatial HAC variance-covariance matrix for fixest::feols models
@@ -130,6 +137,8 @@ vcovSpHAC.felm <- function(reg,
 #' @param balanced_pnl Whether the panel is balanced and unit locations are time-invariant.
 #' @param ncores Number of cores for the C++/RcppParallel spatial and serial routines.
 #' @param pixel Score-pre-aggregation cell size, in kilometres.
+#' @param neighbor Neighbor-search strategy: "grid" (default) or "band".
+#'   See \code{\link{vcovSpHAC.felm}}.
 #' @param data Optional. The model frame to draw \code{lat}/\code{lon}/
 #'   \code{unit}/\code{time} from. If \code{NULL} (default), the data is
 #'   recovered from the fit's call. Pass it explicitly if the original data
@@ -150,10 +159,12 @@ vcovSpHAC.fixest <- function(reg,
                              balanced_pnl = FALSE,
                              ncores = NA,
                              pixel = 0,
+                             neighbor = c("grid", "band"),
                              data = NULL,
                              ...) {
 
-  args <- validate_args(kernel, dist_fn, dist_cutoff, lag_cutoff, pixel, ncores)
+  args <- validate_args(kernel, dist_fn, dist_cutoff, lag_cutoff, pixel, ncores,
+                        neighbor)
 
   if (is.null(reg$X_demeaned)) {
     stop("vcovSpHAC.fixest requires the fit to have been called with ",
@@ -251,13 +262,13 @@ vcovSpHAC.fixest <- function(reg,
                  kernel = args$kernel, dist_fn = args$dist_fn,
                  dist_cutoff = dist_cutoff, lag_cutoff = lag_cutoff,
                  balanced_pnl = balanced_pnl, ncores = args$ncores,
-                 pixel = pixel, verbose = verbose)
+                 pixel = pixel, neighbor = args$neighbor, verbose = verbose)
 }
 
 # Shared post-extraction core. `dt` must carry Xvars, unit, time, lat, lon, e.
 vcovSpHAC_core <- function(dt, Xvars, n, invXX,
                            kernel, dist_fn, dist_cutoff, lag_cutoff,
-                           balanced_pnl, ncores, pixel, verbose) {
+                           balanced_pnl, ncores, pixel, neighbor, verbose) {
 
   # The FastSpatialMeat / FastSerialHacPanel C++ entry points require numeric
   # vectors for time and unit (arma::vec). Equality is the only thing they use
@@ -330,7 +341,8 @@ vcovSpHAC_core <- function(dt, Xvars, n, invXX,
     kernel = kernel,
     dist_fn = dist_fn,
     balanced_pnl = balanced_pnl,
-    ncores = ncores
+    ncores = ncores,
+    neighbor = neighbor
   )
 
   if (lag_cutoff > 0 && length(unique(dt[["time"]])) > 1L) {
@@ -357,9 +369,11 @@ vcovSpHAC_core <- function(dt, Xvars, n, invXX,
 }
 
 # Argument validation shared by both methods.
-validate_args <- function(kernel, dist_fn, dist_cutoff, lag_cutoff, pixel, ncores) {
-  kernel  <- match.arg(kernel,  c("bartlett", "uniform"))
-  dist_fn <- match.arg(dist_fn, c("haversine", "spherical", "chord"))
+validate_args <- function(kernel, dist_fn, dist_cutoff, lag_cutoff, pixel, ncores,
+                          neighbor = c("grid", "band")) {
+  kernel   <- match.arg(kernel,  c("bartlett", "uniform"))
+  dist_fn  <- match.arg(dist_fn, c("haversine", "spherical", "chord"))
+  neighbor <- match.arg(neighbor, c("grid", "band"))
   if (is.null(dist_cutoff) || length(dist_cutoff) != 1L ||
       !is.finite(dist_cutoff) || dist_cutoff <= 0) {
     stop("dist_cutoff must be a single positive finite number.")
@@ -374,7 +388,7 @@ validate_args <- function(kernel, dist_fn, dist_cutoff, lag_cutoff, pixel, ncore
     ncores <- max(1L, parallel::detectCores(logical = TRUE))
   }
   ncores <- as.integer(max(1L, ncores))
-  list(kernel = kernel, dist_fn = dist_fn, ncores = ncores)
+  list(kernel = kernel, dist_fn = dist_fn, ncores = ncores, neighbor = neighbor)
 }
 
 # Map any unit/time vector to integer group codes. The FastSpatialMeat /

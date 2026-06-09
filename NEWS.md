@@ -1,3 +1,34 @@
+# fastconley 0.5.0
+
+Phase 1 of `notes/OPTIMIZATION_PLAN.md`: 3D cell-grid neighbor search.
+
+## New: `neighbor = c("grid", "band")`
+
+The spatial meat's candidate enumeration now defaults to a 3D cell grid.
+Points are bucketed by their unit vectors into a cubic grid whose edge is
+the unit-sphere chord equivalent of the cutoff; every supported distance is
+monotone in the chord, so accepted pairs are never more than one cell apart
+per axis — no pole or dateline special cases. Each row scans its own cell
+plus five contiguous row ranges covering the 13 forward neighbor cells:
+~3–4 candidates per accepted pair, independent of geographic extent, versus
+the latitude band scan's `2*L_lon/(pi*r)`.
+
+Both strategies call the identical per-pair accept test, so pair sets and
+weights are exactly the same; results differ only by floating-point
+summation order (observed <= 6e-15 relative across the validation matrix;
+`neighbor = "band"` remains bitwise identical to v0.4.1). The band path is
+kept for one release and will be removed in v0.6.0.
+
+Measured single-threaded speedups (FastSpatialMeat, k = 10):
+
+- global extent, n = 1M, 100 km: 8.6x (uniform/spherical) to 25.3x
+  (bartlett/haversine)
+- CONUS, n = 100k, 100 km: 4.5x; 500 km: 2.1-2.3x (that config is
+  dominated by true-pair accumulation, not candidate search)
+- balanced CSR build, 200k units x 4 periods, 100 km: 3.6x
+- 16-thread scaling on CONUS 100k/500 km improves from ~5.3x to ~7.9x
+  (less memory-bandwidth pressure from candidate streaming)
+
 # fastconley 0.4.1
 
 Phase 0 quick wins from `notes/OPTIMIZATION_PLAN.md` (Q1–Q6). Numerical

@@ -3,10 +3,11 @@
 
 FastSpatialMeat <- function(lat, lon, time, X, e, cutoff,
                             kernel = "bartlett", dist_fn = "haversine",
-                            balanced_pnl = FALSE, ncores = 1L) {
+                            balanced_pnl = FALSE, ncores = 1L,
+                            neighbor = "grid") {
   RcppParallel::setThreadOptions(numThreads = as.integer(max(1L, ncores)))
   .Call(`_fastconley_FastSpatialMeat`, lat, lon, time, X, e, cutoff,
-        kernel, dist_fn, balanced_pnl, ncores)
+        kernel, dist_fn, balanced_pnl, ncores, neighbor)
 }
 
 FastSerialHacPanel <- function(unit, time, cutoff, X, e, ncores = 1L) {

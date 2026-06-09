@@ -18,6 +18,7 @@
   balanced_pnl = FALSE,
   ncores = NA,
   pixel = 0,
+  neighbor = c("grid", "band"),
   maxobsmem = 50000L,
   ...
 )
@@ -51,6 +52,12 @@
 (exact-coordinate dedupe only). If `pixel > 0`, points are snapped to a
 uniform `pixel`-km grid before the dedupe — a speed/accuracy trade-off
 that approximates the distance up to roughly `pixel / 2`.}
+
+\item{neighbor}{Neighbor-search strategy for the spatial meat: "grid"
+(default; 3D cell grid, output-sensitive candidate enumeration) or
+"band" (latitude band scan, the pre-0.5.0 behavior). Both are exact and
+use identical per-pair accept tests; results agree to floating-point
+summation order.}
 
 \item{maxobsmem}{Ignored by the fast spatial path. Kept for backward compatibility.}
 

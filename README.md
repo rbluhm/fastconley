@@ -110,6 +110,10 @@ A `CoordCache` precomputes `cos(lat)`, `sin(lat)`, and (for `dist_fn ∈ {chord,
 
 Numerical results match upstream `rbluhm/conley` to machine precision on `dist_fn ∈ {haversine, spherical, chord}` × both kernels × cross-section / balanced / unbalanced regimes; against upstream `conley` the spatial path is roughly two orders of magnitude faster (the original CSR refactor was already 150-170× on n_obs = 8,000–32,000 panels, and the recent templating + dot-product + score-permutation work adds another ~5×). The live benchmark below is against `fixest`.
 
+### v0.5.0: cell-grid neighbor search
+
+Since v0.5.0 candidate enumeration uses a 3D cell grid by default (`neighbor = "grid"`); the tables below were measured with the v0.4 latitude-band scan and remain its reference. On top of those numbers the grid gives (single-threaded, `FastSpatialMeat`, k = 10): **8.6–25×** on a global-extent 1M-point cross-section at 100 km, **4.5×** on CONUS 100k at 100 km, **2.1–2.3×** on CONUS 100k at 500 km (true-pair accumulation dominates there), **3.6×** on a 200k-unit balanced CSR build, and 16-thread scaling improves from ~5.3× to ~7.9×. The gain grows with geographic extent and shrinking cutoff because grid candidate work is proportional to *accepted* pairs (~3–4 candidates per accept) rather than to the latitude band (`~2·L_lon/(π·r)` per accept). Pair sets and weights are identical to the band scan; results differ only by floating-point summation order.
+
 ### vs `fixest::vcov_conley`
 
 Post-estimation only, `kernel = "uniform"`, great-circle distance, 500 km cutoff, k=10. Both sides fit the model once outside the timer; only the VCOV call is wallclock-measured (`proc.time()[["elapsed"]]`, min of 3 reps). `fixest` flags disabled for a clean core comparison: `ssc(adj = FALSE, cluster.adj = FALSE)`, `vcov_fix = FALSE`.
