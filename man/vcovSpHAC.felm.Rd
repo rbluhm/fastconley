@@ -21,6 +21,7 @@
   neighbor = c("grid", "band"),
   csr_weight = c("double", "float"),
   maxobsmem = 50000L,
+  data = NULL,
   ...
 )
 }
@@ -66,6 +67,13 @@ weight memory; introduces at most ~6e-8 relative error per weight).
 Ignored for \code{kernel = "uniform"}, which stores no weights.}
 
 \item{maxobsmem}{Ignored by the fast spatial path. Kept for backward compatibility.}
+
+\item{data}{Optional. The data frame to draw \code{lat}/\code{lon} from.
+If \code{NULL} (default), the data is recovered from the fit's call and
+aligned via a model-frame re-evaluation. Pass it explicitly if the
+original data has gone out of scope — and when no rows were dropped at
+fit time (no NAs, no \code{subset}), the coordinates are then taken by
+direct column access with no model-frame rebuild at all.}
 
 \item{...}{Currently unused.}
 }

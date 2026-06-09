@@ -118,56 +118,66 @@ Since v0.5.0 candidate enumeration uses a 3D cell grid by default (`neighbor = "
 
 Since v0.6.0 results are **bit-identical across `ncores` values** (deterministic chunked reduction), the C++ entry points alias R memory with zero input copies (peak RSS −27 to −33% on large runs), haversine gains an exact dot-product pre-screen (bartlett/haversine ~1.4× single-threaded), and `csr_weight = "float"` optionally halves balanced-path bartlett weight storage.
 
-### vs `fixest::vcov_conley`
+### vs `fixest::vcov_conley` (v0.6.1, large data)
 
-Post-estimation only, `kernel = "uniform"`, great-circle distance, 500 km cutoff, k=10. Both sides fit the model once outside the timer; only the VCOV call is wallclock-measured (`proc.time()[["elapsed"]]`, min of 3 reps). `fixest` flags disabled for a clean core comparison: `ssc(adj = FALSE, cluster.adj = FALSE)`, `vcov_fix = FALSE`.
+Post-estimation only, `kernel = "uniform"`, great-circle distance, k = 10,
+`pixel = 0`. Both sides fit the model once outside the timer; only the VCOV
+call is wallclock-measured (min over reps). `fixest` 0.14.1 with
+`distance = "spherical"`, `ssc(adj = FALSE, cluster.adj = FALSE)`,
+`vcov_fix = FALSE`. Machine: i7-1360P (16 threads), 32 GB. Earlier
+(v0.4-era, n ≤ 100k) tables live in the git history; at those sizes the gap
+was 3–4×.
 
-**Cross-section, single-threaded** (CONUS-sized box, uniform random coordinates). `fastconley` and `fixest` compute identical VCOVs at `pixel = 0` (parity to machine precision on a brute-force reference):
+**Accuracy note.** `fastconley` matches a brute-force great-circle uniform
+meat to ~1e-15. `fixest` 0.14.1's `distance = "spherical"` deviates from the
+brute-force reference by ~2e-2 in the VCOV on these configs (its distance
+formula flips pairs near the cutoff boundary), so the two tools' results
+agree only to ~1e-2–1e-3. The workload is the same; `fastconley` is the
+numerically exact one.
 
-| n | fc `pixel=0` | fc `pixel=25` | fixest `pixel=0` | fixest `pixel=25` |
-|---:|---:|---:|---:|---:|
-| 5,000   | 0.024 s | 0.015 s | 0.071 s | 0.050 s |
-| 20,000  | 0.281 s | 0.083 s | 1.077 s | 0.650 s |
-| 50,000  | 1.68 s  | 0.180 s | 6.68 s  | 3.91 s  |
-| 100,000 | 6.92 s  | 0.250 s | 27.8 s  | 15.6 s  |
+**Cross-section** (CONUS-sized box, uniform random coordinates):
 
-At `pixel = 0`, `fastconley` is 3-4× faster than `fixest`. At `pixel = 25`, the gap is 27-62× because per-period dedupe + the dot-product threshold + the sequential score layout compound.
+| n | cutoff | threads | fastconley | fixest | speedup | fc / fx peak RSS |
+|---:|---:|---:|---:|---:|---:|---:|
+| 100,000   | 500 km | 1  | 2.53 s  | 27.2 s  | **10.7×** | 205 / 140 MB |
+| 100,000   | 500 km | 16 | 0.40 s  | 4.30 s  | **10.8×** | |
+| 250,000   | 500 km | 1  | 15.8 s  | 170.8 s | **10.8×** | 388 / 223 MB |
+| 250,000   | 500 km | 16 | 2.34 s  | 45.8 s  | **19.6×** | |
+| 500,000   | 100 km | 1  | 3.14 s  | 77.4 s  | **24.7×** | 629 / 393 MB |
+| 500,000   | 100 km | 16 | 0.66 s  | 24.8 s  | **37.8×** | |
+| 1,000,000 | 100 km | 1  | 12.1 s  | 300.7 s | **24.9×** | 1.20 / 0.64 GB |
+| 1,000,000 | 100 km | 16 | 2.16 s  | 98.8 s  | **45.8×** | |
 
-**Cross-section, 4 threads** (`RcppParallel::setThreadOptions(numThreads = 4)`, `setFixest_nthreads(4)`):
-
-| n | fc `pixel=0` | fc `pixel=25` | fixest `pixel=0` | fixest `pixel=25` |
-|---:|---:|---:|---:|---:|
-| 5,000   | 0.012 s | 0.010 s | 0.026 s | 0.018 s |
-| 20,000  | 0.093 s | 0.039 s | 0.345 s | 0.207 s |
-| 50,000  | 0.562 s | 0.124 s | 3.12 s  | 1.84 s  |
-| 100,000 | 3.23 s  | 0.169 s | 12.3 s  | 7.25 s  |
-
-**Multicore scaling**, n = 50,000, `pixel = 0`, uniform/spherical:
-
-| ncores | fc (s) | fx (s) | fc speedup vs 1-thread | fx speedup vs 1-thread |
-|---:|---:|---:|---:|---:|
-| 1  | 1.75 | 6.78 | 1.00× | 1.00× |
-| 2  | 0.88 | 3.73 | 1.98× | 1.82× |
-| 4  | 0.72 | 3.07 | 2.44× | 2.21× |
-| 8  | 0.46 | 2.37 | 3.83× | 2.86× |
-| 16 | 0.33 | 1.79 | 5.27× | 3.79× |
-
-`fastconley` scales **better than `fixest`** past two threads — the per-pair work is heavy enough that RcppParallel/TBB scheduling pays off. The fastconley/fixest ratio widens from 3.9× at 1 thread to 5.4× at 16 threads.
+The gap widens with n, with shrinking cutoff, and with threads: grid
+candidate enumeration is proportional to *accepted* pairs (~3–4 candidates
+per accept regardless of extent), and since v0.6.1 the prep path (sort,
+coordinate cache, gathers) is parallel too. `fixest` holds a smaller peak
+RSS (fastconley carries the score matrix plus one sorted copy); both stay
+far below dense-matrix approaches.
 
 ### Panel comparison
 
 This is a structural comparison, not a numerical one. `fastconley` computes the textbook panel Spatial HAC = within-period spatial Conley + within-unit Newey-West serial (Hsiang 2010; Christensen & Fetzer 2015; the contract upstream `rbluhm/conley` always honored). `fixest::vcov_conley` is a cross-section object; its author's recommended panel SHAC composition is `vcov_conley + vcov_NW − vcov_hetero`, which sums over cross-period spatial pairs that fastconley excludes. The two VCOVs differ by `O(s_i·s_jᵀ)` on every same-unit cross-time pair, so the numerical answers disagree by design. The fair comparison is wallclock for "the panel SHAC each tool delivers":
 
-`ncores = 1`, balanced panel, time-invariant coordinates, `n_time = 4`, `lag = 1`, `kernel = "uniform"`, `dist_fn = "spherical"`, `pixel = 0`:
+Balanced panel, time-invariant coordinates, 500 km cutoff, `lag = 1`,
+`kernel = "uniform"`, `dist_fn = "spherical"`, `pixel = 0` (fixest timed as
+the full sum-of-3):
 
-| n_unit | n_obs | fc (s) | fixest sum-of-3 (s) | fc vs fx |
-|---:|---:|---:|---:|---:|
-| 500    | 2,000   | 0.014 | 0.007 | 0.5× (fx faster) |
-| 2,000  | 8,000   | 0.047 | 0.021 | 0.45× |
-| 8,000  | 32,000  | 0.322 | 0.199 | 0.62× |
-| 20,000 | 80,000  | 1.03  | 1.13  | 1.1× (fc faster) |
+| n_unit | T | n_obs | threads | fastconley | fixest sum-of-3 | fc vs fx |
+|---:|---:|---:|---:|---:|---:|---:|
+| 50,000  | 4  | 200,000   | 1  | 2.35 s | 6.82 s | **2.9×** |
+| 50,000  | 4  | 200,000   | 16 | 1.13 s | 1.05 s | 0.9× (fx faster) |
+| 150,000 | 10 | 1,500,000 | 1  | 30.9 s | 60.9 s | **2.0×** |
+| 150,000 | 10 | 1,500,000 | 16 | 10.9 s | 15.7 s | **1.4×** |
 
-`fixest` wins on small-to-medium panels because `pixel = 0` exact-coordinate dedupe collapses each unit's `n_time` rows into a single case (coordinates are time-invariant), so `fixest` runs a `n_unit × n_unit` spatial sum once; `fastconley` honors the within-period rule and runs a `n_unit × n_unit` spatial sum `n_time` times plus a serial term. The lines cross around n_obs ≈ 80,000. See [`inst/FIXEST_COMPARISON.md`](inst/FIXEST_COMPARISON.md) for the full structural comparison and the literature pointers.
+`fastconley` honors the within-period rule, so it runs the `n_unit × n_unit`
+spatial sum once *per period* plus a serial term, while `fixest`'s
+exact-coordinate dedupe collapses the panel into a single spatial pass —
+fastconley does ~T× more spatial work by construction and still wins on
+single-threaded wallclock at scale (the v0.4-era crossover at n_obs ≈ 80k is
+long gone). The 150k × 10 run holds the balanced CSR in RAM (~3.9 GB at
+500 km / 6.4×10⁸ pairs); use `csr_weight = "float"` (bartlett) or a tighter
+cutoff if memory-bound. See [`inst/FIXEST_COMPARISON.md`](inst/FIXEST_COMPARISON.md) for the full structural comparison and the literature pointers.
 
 ## Compatibility with `rbluhm/conley`
 

@@ -1,3 +1,28 @@
+# fastconley 0.6.1
+
+Minor-backlog items M1-M4 from `notes/OPTIMIZATION_PLAN.md`.
+
+- **Serial HAC is now O(T * k) per unit** instead of O(T^2 * k): the
+  Bartlett-in-time weight decomposes over a sliding two-pointer window
+  (with a per-block time shift for conditioning). A 100k-row panel with
+  T = 2000 and lag = 50 computes in ~6 ms. Rows must be time-sorted within
+  unit blocks (the R layer always sorts; direct callers get a clear error).
+- **`vcovSpHAC.felm` gains `data =`**: when the passed frame has the same
+  row count as the fit (no NAs dropped, no subset), coordinates are taken
+  by direct column access with no model-frame re-evaluation; otherwise the
+  frame overrides the call-recovered data in the aligned model-frame path.
+- **Prep path parallelized** (grid sort via TBB parallel_sort, coordinate
+  cache trig, permutation gathers) — all order-preserving, so results stay
+  bit-identical across `ncores`. 1M-row global cross-section at 16 threads:
+  0.46 -> 0.21 s (scaling 2.2x -> 4.8x).
+- Spatial results are bitwise identical to v0.6.0; the serial meat differs
+  by ~1e-15 relative from the new summation algebra.
+- README benchmarks refreshed against fixest 0.14.1 at scale: 10.7-45.8x on
+  cross-sections up to n = 1M, 1.4-2.9x on panel SHAC up to 1.5M obs (where
+  fastconley computes ~T x more spatial work by construction). A brute-force
+  arbitration shows fastconley matches the exact great-circle uniform meat
+  to ~1e-15 while fixest 0.14.1's "spherical" distance deviates ~2e-2.
+
 # fastconley 0.6.0
 
 Phase 2 of `notes/OPTIMIZATION_PLAN.md`: memory diet, deterministic

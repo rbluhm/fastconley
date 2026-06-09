@@ -1,7 +1,7 @@
 Package: fastconley
 Type: Package
 Title: Fast Conley Standard Errors for felm() and feols() Models
-Version: 0.6.0
+Version: 0.6.1
 Authors@R: person("Richard", "Bluhm", email = "richard.bluhm@gmail.com", role = c("aut", "cre"))
 Maintainer: Richard Bluhm <richard.bluhm@gmail.com>
 Description: Conley (1999) spatial HAC standard errors for linear fixed effects

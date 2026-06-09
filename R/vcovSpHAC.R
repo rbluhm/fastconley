@@ -45,6 +45,12 @@ vcovSpHAC.default <- function(reg, ...) {
 #'   weight memory; introduces at most ~6e-8 relative error per weight).
 #'   Ignored for \code{kernel = "uniform"}, which stores no weights.
 #' @param maxobsmem Ignored by the fast spatial path. Kept for backward compatibility.
+#' @param data Optional. The data frame to draw \code{lat}/\code{lon} from.
+#'   If \code{NULL} (default), the data is recovered from the fit's call and
+#'   aligned via a model-frame re-evaluation. Pass it explicitly if the
+#'   original data has gone out of scope — and when no rows were dropped at
+#'   fit time (no NAs, no \code{subset}), the coordinates are then taken by
+#'   direct column access with no model-frame rebuild at all.
 #' @param ... Currently unused.
 #' @return A variance-covariance matrix.
 #' @export
@@ -64,6 +70,7 @@ vcovSpHAC.felm <- function(reg,
                            neighbor = c("grid", "band"),
                            csr_weight = c("double", "float"),
                            maxobsmem = 50000L,
+                           data = NULL,
                            ...) {
 
   args <- validate_args(kernel, dist_fn, dist_cutoff, lag_cutoff, pixel, ncores,
@@ -93,13 +100,30 @@ vcovSpHAC.felm <- function(reg,
     fe1_vec <- as.integer(reg$fe[[1L]])
     fe2_vec <- as.integer(reg$fe[[2L]])
   }
+  # Coordinate recovery. With an explicitly passed `data` whose row count
+  # matches the fit (nothing dropped: no NAs, no subset), take the columns
+  # directly -- no model-frame re-evaluation, no second copy of the data.
+  # Otherwise rebuild the model frame (aligned by rownames) as before.
+  if (!is.null(data) && nrow(data) == N && is.null(reg$call$subset)) {
+    for (nm in c(lat, lon)) {
+      if (!nm %in% names(data)) {
+        stop("Column '", nm, "' not found in `data`.")
+      }
+    }
+    coords <- data.frame(data[[lat]], data[[lon]])
+    names(coords) <- c(lat, lon)
+  } else {
+    coords <- expand.model.felm(model = reg, extras = c(lat, lon),
+                                na.expand = TRUE, data = data)
+  }
+
   # reg$cY is deliberately not carried along -- only the centered design
   # columns, FEs, coordinates, and residuals are used downstream.
   dt <- data.table::data.table(
     reg$cX,
     fe1 = fe1_vec,
     fe2 = fe2_vec,
-    expand.model.felm(model = reg, extras = c(lat, lon), na.expand = TRUE)
+    coords
   )
 
   data.table::setnames(dt, c("fe1", "fe2"),
@@ -489,12 +513,12 @@ aggregate_scores <- function(dt, Xvars, pixel, balanced_pnl, verbose) {
 }
 
 expand.model.felm <- function(model, extras, envir = environment(formula(model)),
-                              na.expand = FALSE) {
+                              na.expand = FALSE, data = NULL) {
 
   topaste <- c(names(model$fe), names(model$clustervar), extras)
   fescluext <- parse(text = paste("~", paste(topaste, collapse = "+")))[[1L]]
 
-  data <- eval(model$call$data, envir)
+  if (is.null(data)) data <- eval(model$call$data, envir)
   ff <- foo ~ bar + baz
 
   ff[[2L]] <- parse(text = paste("~", model$lhs))[[1L]][[2L]]

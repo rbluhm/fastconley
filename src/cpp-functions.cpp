@@ -5,6 +5,9 @@
 // [[Rcpp::depends(RcppArmadillo)]]
 #include <RcppParallel.h>
 // [[Rcpp::depends(RcppParallel)]]
+#if defined(RCPP_PARALLEL_USE_TBB) && RCPP_PARALLEL_USE_TBB
+#include <tbb/parallel_sort.h>
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -41,6 +44,41 @@ inline double sq(double x) {
 inline double lon_abs_wrapped(double x, double y) {
   double diff = std::fabs(x - y);
   return diff < PI ? diff : TWO_PI - diff;
+}
+
+// Deterministic parallel-for over [0, n): body(lo, hi) must write only
+// disjoint per-index outputs (pure gather/scatter), so the result is
+// independent of the work partition. Small inputs stay serial.
+template <typename Body>
+struct RangeWorker : public Worker {
+  const Body& body;
+  explicit RangeWorker(const Body& body) : body(body) {}
+  void operator()(std::size_t b, std::size_t e) { body(b, e); }
+};
+
+template <typename Body>
+void parallel_range(std::size_t n, int ncores, const Body& body) {
+  if (ncores > 1 && n > 8192) {
+    RangeWorker<Body> w(body);
+    parallelFor(0, n, w);
+  } else {
+    body(0, n);
+  }
+}
+
+// Sort that uses TBB's parallel_sort when available and worthwhile. The
+// comparator must define a strict total order (callers tiebreak on index),
+// so the sorted output is unique and identical to std::sort's.
+template <typename It, typename Cmp>
+void sort_maybe_parallel(It first, It last, Cmp cmp, int ncores) {
+#if defined(RCPP_PARALLEL_USE_TBB) && RCPP_PARALLEL_USE_TBB
+  if (ncores > 1 && static_cast<std::size_t>(last - first) > 8192) {
+    tbb::parallel_sort(first, last, cmp);
+    return;
+  }
+#endif
+  (void)ncores;
+  std::sort(first, last, cmp);
 }
 
 struct CoordCache {
@@ -251,39 +289,40 @@ inline double pair_weight<DIST_CHORD, KERNEL_BARTLETT>(
 }
 
 CoordCache make_coord_cache(const arma::vec& lat, const arma::vec& lon,
-                            int dist_id) {
+                            int dist_id, int ncores) {
   const std::size_t n = lat.n_elem;
+  // Validate serially first: Rcpp::stop must not be called from worker
+  // threads.
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!std::isfinite(lat[i]) || !std::isfinite(lon[i])) {
+      Rcpp::stop("lat/lon contain non-finite values.");
+    }
+  }
+
   CoordCache c;
   c.lat_rad.resize(n);
   c.lon_rad.resize(n);
   c.cos_lat.resize(n);
   c.sin_lat.resize(n);
-  // SPHERICAL and CHORD consume 3D *unit* vectors per pair (dot-product and
-  // squared-distance thresholds), and the cell-grid neighbor search bins
-  // every distance function by its unit vector — so xyz is always built.
+  // The cell-grid neighbor search bins every distance function by its 3D
+  // unit vector, and all pair_weight screens read it — always built.
   (void)dist_id;
-  const bool need_xyz = true;
-  if (need_xyz) {
-    c.x3.resize(n);
-    c.y3.resize(n);
-    c.z3.resize(n);
-  }
-  for (std::size_t i = 0; i < n; ++i) {
-    if (!std::isfinite(lat[i]) || !std::isfinite(lon[i])) {
-      Rcpp::stop("lat/lon contain non-finite values.");
-    }
-    const double la = lat[i] * DE2RA;
-    const double lo = lon[i] * DE2RA;
-    c.lat_rad[i] = la;
-    c.lon_rad[i] = lo;
-    c.cos_lat[i] = std::cos(la);
-    c.sin_lat[i] = std::sin(la);
-    if (need_xyz) {
+  c.x3.resize(n);
+  c.y3.resize(n);
+  c.z3.resize(n);
+  parallel_range(n, ncores, [&](std::size_t lo_i, std::size_t hi_i) {
+    for (std::size_t i = lo_i; i < hi_i; ++i) {
+      const double la = lat[i] * DE2RA;
+      const double lo = lon[i] * DE2RA;
+      c.lat_rad[i] = la;
+      c.lon_rad[i] = lo;
+      c.cos_lat[i] = std::cos(la);
+      c.sin_lat[i] = std::sin(la);
       c.x3[i] = c.cos_lat[i] * std::cos(lo);
       c.y3[i] = c.cos_lat[i] * std::sin(lo);
       c.z3[i] = c.sin_lat[i];
     }
-  }
+  });
   return c;
 }
 
@@ -297,28 +336,35 @@ struct RowMajorScores {
   std::size_t k;
   std::vector<double> s;
 
-  RowMajorScores(const arma::mat& Scol, const std::vector<std::size_t>& perm)
+  RowMajorScores(const arma::mat& Scol, const std::vector<std::size_t>& perm,
+                 int ncores)
       : n(perm.size()), k(Scol.n_cols),
         s(perm.size() * static_cast<std::size_t>(Scol.n_cols)) {
     const double* base = Scol.memptr();
     const std::size_t ldn = Scol.n_rows;
-    for (std::size_t pos = 0; pos < n; ++pos) {
-      const std::size_t src = perm[pos];
-      double* dst = s.data() + pos * k;
-      for (std::size_t kk = 0; kk < k; ++kk) dst[kk] = base[kk * ldn + src];
-    }
+    const std::size_t kk_n = k;
+    parallel_range(n, ncores, [&](std::size_t lo, std::size_t hi) {
+      for (std::size_t pos = lo; pos < hi; ++pos) {
+        const std::size_t src = perm[pos];
+        double* dst = s.data() + pos * kk_n;
+        for (std::size_t kk = 0; kk < kk_n; ++kk) dst[kk] = base[kk * ldn + src];
+      }
+    });
   }
 
   // Identity order: the caller's rows are already in the right order.
-  explicit RowMajorScores(const arma::mat& Scol)
+  RowMajorScores(const arma::mat& Scol, int ncores)
       : n(Scol.n_rows), k(Scol.n_cols),
         s(static_cast<std::size_t>(Scol.n_rows) * Scol.n_cols) {
     const double* base = Scol.memptr();
     const std::size_t ldn = Scol.n_rows;
-    for (std::size_t pos = 0; pos < n; ++pos) {
-      double* dst = s.data() + pos * k;
-      for (std::size_t kk = 0; kk < k; ++kk) dst[kk] = base[kk * ldn + pos];
-    }
+    const std::size_t kk_n = k;
+    parallel_range(n, ncores, [&](std::size_t lo, std::size_t hi) {
+      for (std::size_t pos = lo; pos < hi; ++pos) {
+        double* dst = s.data() + pos * kk_n;
+        for (std::size_t kk = 0; kk < kk_n; ++kk) dst[kk] = base[kk * ldn + pos];
+      }
+    });
   }
 
   inline const double* row(std::size_t i) const {
@@ -380,7 +426,8 @@ constexpr std::size_t BLOCK_CHUNK = 128;
 // vectors in `src` (i.e., dist_id not in {SPHERICAL, CHORD}) are preserved as
 // empty in the output.
 CoordCache permute_coord_cache(const CoordCache& src,
-                               const std::vector<std::size_t>& perm) {
+                               const std::vector<std::size_t>& perm,
+                               int ncores) {
   const std::size_t n = perm.size();
   CoordCache out;
   out.lat_rad.resize(n);
@@ -393,18 +440,20 @@ CoordCache permute_coord_cache(const CoordCache& src,
     out.y3.resize(n);
     out.z3.resize(n);
   }
-  for (std::size_t pos = 0; pos < n; ++pos) {
-    const std::size_t i = perm[pos];
-    out.lat_rad[pos] = src.lat_rad[i];
-    out.lon_rad[pos] = src.lon_rad[i];
-    out.cos_lat[pos] = src.cos_lat[i];
-    out.sin_lat[pos] = src.sin_lat[i];
-    if (has_xyz) {
-      out.x3[pos] = src.x3[i];
-      out.y3[pos] = src.y3[i];
-      out.z3[pos] = src.z3[i];
+  parallel_range(n, ncores, [&](std::size_t lo, std::size_t hi) {
+    for (std::size_t pos = lo; pos < hi; ++pos) {
+      const std::size_t i = perm[pos];
+      out.lat_rad[pos] = src.lat_rad[i];
+      out.lon_rad[pos] = src.lon_rad[i];
+      out.cos_lat[pos] = src.cos_lat[i];
+      out.sin_lat[pos] = src.sin_lat[i];
+      if (has_xyz) {
+        out.x3[pos] = src.x3[i];
+        out.y3[pos] = src.y3[i];
+        out.z3[pos] = src.z3[i];
+      }
     }
-  }
+  });
   return out;
 }
 
@@ -655,34 +704,40 @@ struct CellGrid {
 // the total row count.
 void append_block_grid(const CoordCache& c, std::size_t bs, std::size_t be,
                        const GridSpec& spec,
-                       std::vector<std::size_t>& sorted_idx, CellGrid& grid) {
+                       std::vector<std::size_t>& sorted_idx, CellGrid& grid,
+                       int ncores) {
   const std::size_t nb = be - bs;
   const double cell = spec.cell;
   const std::int64_t G = spec.G;
   const std::uint64_t uG = static_cast<std::uint64_t>(G);
 
   std::vector<std::uint64_t> cid(nb);
-  for (std::size_t i = 0; i < nb; ++i) {
-    const std::size_t idx = bs + i;
-    std::int64_t cx = static_cast<std::int64_t>((c.x3[idx] + 1.0) / cell);
-    std::int64_t cy = static_cast<std::int64_t>((c.y3[idx] + 1.0) / cell);
-    std::int64_t cz = static_cast<std::int64_t>((c.z3[idx] + 1.0) / cell);
-    if (cx < 0) cx = 0; else if (cx >= G) cx = G - 1;
-    if (cy < 0) cy = 0; else if (cy >= G) cy = G - 1;
-    if (cz < 0) cz = 0; else if (cz >= G) cz = G - 1;
-    cid[i] = (static_cast<std::uint64_t>(cx) * uG +
-              static_cast<std::uint64_t>(cy)) * uG +
-             static_cast<std::uint64_t>(cz);
-  }
+  parallel_range(nb, ncores, [&](std::size_t lo, std::size_t hi) {
+    for (std::size_t i = lo; i < hi; ++i) {
+      const std::size_t idx = bs + i;
+      std::int64_t cx = static_cast<std::int64_t>((c.x3[idx] + 1.0) / cell);
+      std::int64_t cy = static_cast<std::int64_t>((c.y3[idx] + 1.0) / cell);
+      std::int64_t cz = static_cast<std::int64_t>((c.z3[idx] + 1.0) / cell);
+      if (cx < 0) cx = 0; else if (cx >= G) cx = G - 1;
+      if (cy < 0) cy = 0; else if (cy >= G) cy = G - 1;
+      if (cz < 0) cz = 0; else if (cz >= G) cz = G - 1;
+      cid[i] = (static_cast<std::uint64_t>(cx) * uG +
+                static_cast<std::uint64_t>(cy)) * uG +
+               static_cast<std::uint64_t>(cz);
+    }
+  });
 
-  // (cell id, original index) order: deterministic, and rows of a cell are
-  // contiguous with consecutive cells contiguous in row space.
+  // (cell id, original index) order: a strict total order, so the sorted
+  // output is unique and deterministic (parallel or not), and rows of a
+  // cell are contiguous with consecutive cells contiguous in row space.
   std::vector<std::size_t> ord(nb);
   std::iota(ord.begin(), ord.end(), 0);
-  std::sort(ord.begin(), ord.end(), [&](std::size_t a, std::size_t b) {
-    if (cid[a] != cid[b]) return cid[a] < cid[b];
-    return a < b;
-  });
+  sort_maybe_parallel(ord.begin(), ord.end(),
+                      [&](std::size_t a, std::size_t b) {
+                        if (cid[a] != cid[b]) return cid[a] < cid[b];
+                        return a < b;
+                      },
+                      ncores);
 
   const std::size_t row0 = sorted_idx.size();
   std::vector<std::uint64_t> ucid;
@@ -707,8 +762,10 @@ void append_block_grid(const CoordCache& c, std::size_t bs, std::size_t be,
 
   // Five forward cell-id intervals per cell; each maps to one contiguous
   // row range because consecutive occupied cells are contiguous rows.
+  // Pure per-cell output: safe and deterministic to parallelize.
   grid.nbr.resize(grid.nbr.size() + 10 * ncb);
-  for (std::size_t cdx = 0; cdx < ncb; ++cdx) {
+  parallel_range(ncb, ncores, [&](std::size_t cdx_lo, std::size_t cdx_hi) {
+  for (std::size_t cdx = cdx_lo; cdx < cdx_hi; ++cdx) {
     const std::uint64_t cu = ucid[cdx];
     const std::int64_t cz = static_cast<std::int64_t>(cu % uG);
     const std::int64_t cy = static_cast<std::int64_t>((cu / uG) % uG);
@@ -742,6 +799,7 @@ void append_block_grid(const CoordCache& c, std::size_t bs, std::size_t be,
     add_run(cx + 1, cy,     cz - 1, cz + 1);
     add_run(cx + 1, cy + 1, cz - 1, cz + 1);
   }
+  });
 }
 
 // Invoke fn(q) for every forward candidate row of `pos` (own-cell rows after
@@ -1024,7 +1082,7 @@ arma::mat fast_spatial_general(const arma::vec& lat, const arma::vec& lon,
                                const arma::vec& time, const arma::mat& S_col,
                                double cutoff, int ncores) {
   const std::size_t n = S_col.n_rows;
-  const CoordCache c = make_coord_cache(lat, lon, D);
+  const CoordCache c = make_coord_cache(lat, lon, D, ncores);
 
   const TimeBlocks blocks = make_time_blocks(time);
   std::vector<std::size_t> sorted_idx;
@@ -1042,8 +1100,8 @@ arma::mat fast_spatial_general(const arma::vec& lat, const arma::vec& lon,
   // Reorder coord cache and scores into lat-sorted order. The meat loop then
   // indexes both buffers by sorted position directly, so every read is
   // sequential -- independent of how the caller laid out the input.
-  const CoordCache c_sorted = permute_coord_cache(c, sorted_idx);
-  const RowMajorScores S_sorted(S_col, sorted_idx);
+  const CoordCache c_sorted = permute_coord_cache(c, sorted_idx, ncores);
+  const RowMajorScores S_sorted(S_col, sorted_idx, ncores);
 
   const ScreenParams screen = make_screen_params(cutoff, D);
   return meat_stream_band<D, K>(S_sorted, row_end, c_sorted, cutoff, screen, ncores);
@@ -1056,7 +1114,7 @@ arma::mat fast_spatial_balanced(const arma::vec& lat, const arma::vec& lon,
   const TimeBlocks blocks = make_time_blocks(time);
   const std::size_t n_per = blocks.end[0] - blocks.start[0];
   const std::size_t T = blocks.start.size();
-  const CoordCache c = make_coord_cache(lat, lon, D);
+  const CoordCache c = make_coord_cache(lat, lon, D, ncores);
 
   // Sort block 0 once. Because coordinates are time-invariant in the balanced
   // path, this same permutation applies to every block.
@@ -1069,7 +1127,7 @@ arma::mat fast_spatial_balanced(const arma::vec& lat, const arma::vec& lon,
 
   // Permute block 0's coord cache into sorted order so build_csr can run on
   // identity indices and store col_idx values in sorted-position space.
-  const CoordCache c_block0_sorted = permute_coord_cache(c, sorted_abs);
+  const CoordCache c_block0_sorted = permute_coord_cache(c, sorted_abs, ncores);
   std::vector<std::size_t> identity_perm(n_per);
   std::iota(identity_perm.begin(), identity_perm.end(), 0);
   std::vector<std::size_t> row_end(n_per, n_per);
@@ -1083,7 +1141,7 @@ arma::mat fast_spatial_balanced(const arma::vec& lat, const arma::vec& lon,
       global_perm[base + pos] = base + sorted_rel[pos];
     }
   }
-  const RowMajorScores S_sorted(S_col, global_perm);
+  const RowMajorScores S_sorted(S_col, global_perm, ncores);
   return meat_from_csr_dispatch<K>(S_sorted, blocks.start, n_per, graph,
                                    wfloat, ncores);
 }
@@ -1099,7 +1157,7 @@ arma::mat fast_spatial_general_grid(const arma::vec& lat, const arma::vec& lon,
     Rcpp::stop("The grid neighbor path supports at most 2^32 - 1 rows; "
                "use neighbor = \"band\".");
   }
-  const CoordCache c = make_coord_cache(lat, lon, D);
+  const CoordCache c = make_coord_cache(lat, lon, D, ncores);
   const ScreenParams screen = make_screen_params(cutoff, D);
   const GridSpec spec = make_grid_spec(screen);
 
@@ -1109,12 +1167,12 @@ arma::mat fast_spatial_general_grid(const arma::vec& lat, const arma::vec& lon,
   CellGrid grid;
   grid.row_cell.resize(n);
   for (std::size_t b = 0; b < blocks.start.size(); ++b) {
-    append_block_grid(c, blocks.start[b], blocks.end[b], spec, sorted_idx, grid);
+    append_block_grid(c, blocks.start[b], blocks.end[b], spec, sorted_idx, grid, ncores);
   }
   grid.cell_start.push_back(n);
 
-  const CoordCache c_sorted = permute_coord_cache(c, sorted_idx);
-  const RowMajorScores S_sorted(S_col, sorted_idx);
+  const CoordCache c_sorted = permute_coord_cache(c, sorted_idx, ncores);
+  const RowMajorScores S_sorted(S_col, sorted_idx, ncores);
 
   return meat_stream_grid<D, K>(S_sorted, c_sorted, grid, cutoff, screen, ncores);
 }
@@ -1128,7 +1186,7 @@ arma::mat fast_spatial_balanced_grid(const arma::vec& lat, const arma::vec& lon,
   const TimeBlocks blocks = make_time_blocks(time);
   const std::size_t n_per = blocks.end[0] - blocks.start[0];
   const std::size_t T = blocks.start.size();
-  const CoordCache c = make_coord_cache(lat, lon, D);
+  const CoordCache c = make_coord_cache(lat, lon, D, ncores);
   const ScreenParams screen = make_screen_params(cutoff, D);
   const GridSpec spec = make_grid_spec(screen);
 
@@ -1136,10 +1194,10 @@ arma::mat fast_spatial_balanced_grid(const arma::vec& lat, const arma::vec& lon,
   sorted_abs.reserve(n_per);
   CellGrid g0;
   g0.row_cell.resize(n_per);
-  append_block_grid(c, blocks.start[0], blocks.end[0], spec, sorted_abs, g0);
+  append_block_grid(c, blocks.start[0], blocks.end[0], spec, sorted_abs, g0, ncores);
   g0.cell_start.push_back(n_per);
 
-  const CoordCache c0_sorted = permute_coord_cache(c, sorted_abs);
+  const CoordCache c0_sorted = permute_coord_cache(c, sorted_abs, ncores);
   CsrGraph graph = build_csr_grid<D, K>(g0, c0_sorted, cutoff, screen,
                                         wfloat, ncores);
 
@@ -1154,7 +1212,7 @@ arma::mat fast_spatial_balanced_grid(const arma::vec& lat, const arma::vec& lon,
       global_perm[base + pos] = base + sorted_rel[pos];
     }
   }
-  const RowMajorScores S_sorted(S_col, global_perm);
+  const RowMajorScores S_sorted(S_col, global_perm, ncores);
   return meat_from_csr_dispatch<K>(S_sorted, blocks.start, n_per, graph,
                                    wfloat, ncores);
 }
@@ -1218,29 +1276,66 @@ UnitBlocks make_unit_blocks(const arma::vec& unit) {
   return b;
 }
 
-// Serial (Newey-West in time) meat over contiguous unit blocks. The input
-// is pre-sorted by (unit, time) on the R side. Deterministic reduction over
-// fixed unit-block chunks.
+// Serial (Newey-West in time) meat over contiguous unit blocks. Rows must
+// be sorted by time within each unit block (the R layer sorts by
+// (unit, time)); a guard below enforces it. O(T_u * k) per unit instead of
+// O(T_u^2 * k): the Bartlett weight decomposes as
+//   1 - (t_j - t_i)/(L+1) = (1 + t_i'/(L+1)) - t_j'/(L+1)
+// (t' = t - block base, an exact shift that keeps the running sums well
+// conditioned), so the forward-window contribution is
+//   c_i = (1 + t_i'/(L+1)) * A - B/(L+1),  A = sum s_j,  B = sum t_j' s_j
+// over the sliding window {j : t_i < t_j <= t_i + L}, maintained with two
+// pointers as i advances. Pairs with dt = 0 (including ties) are excluded,
+// matching the old per-pair loop; meat = M + M' covers both directions.
 arma::mat serial_hac_panel(const arma::vec& times, double cutoff,
                            const RowMajorScores& S, const UnitBlocks& blocks,
                            int ncores) {
   const std::size_t k = S.k;
+  if (cutoff < 0.0) return arma::mat(k, k, arma::fill::zeros);
+
+  for (std::size_t bi = 0; bi < blocks.start.size(); ++bi) {
+    for (std::size_t i = blocks.start[bi] + 1; i < blocks.end[bi]; ++i) {
+      if (times[i] < times[i - 1]) {
+        Rcpp::stop("FastSerialHacPanel requires rows sorted by time within "
+                   "each unit block.");
+      }
+    }
+  }
+
+  const double Lp1 = cutoff + 1.0;
+  const double inv = 1.0 / Lp1;
   auto body = [&](std::size_t blo, std::size_t bhi, arma::mat& meat) {
-    std::vector<double> c(k, 0.0);
+    std::vector<double> A(k, 0.0), B(k, 0.0), c(k, 0.0);
     for (std::size_t bi = blo; bi < bhi; ++bi) {
       const std::size_t bs = blocks.start[bi];
       const std::size_t be = blocks.end[bi];
+      const double tb = times[bs];
+      std::fill(A.begin(), A.end(), 0.0);
+      std::fill(B.begin(), B.end(), 0.0);
+      std::size_t lo = bs, hi = bs;
       for (std::size_t i = bs; i < be; ++i) {
-        std::fill(c.begin(), c.end(), 0.0);
-        for (std::size_t j = bs; j < be; ++j) {
-          const double dt = std::fabs(times[j] - times[i]);
-          if (dt <= cutoff && dt != 0.0) {
-            const double w = 1.0 - dt / (cutoff + 1.0);
-            const double* sj = S.row(j);
-            for (std::size_t kk = 0; kk < k; ++kk) {
-              c[kk] += w * sj[kk];
-            }
+        const double ti = times[i] - tb;
+        while (hi < be && times[hi] - tb <= ti + cutoff) {
+          const double tj = times[hi] - tb;
+          const double* sj = S.row(hi);
+          for (std::size_t kk = 0; kk < k; ++kk) {
+            A[kk] += sj[kk];
+            B[kk] += tj * sj[kk];
           }
+          ++hi;
+        }
+        while (lo < be && times[lo] - tb <= ti) {
+          const double tj = times[lo] - tb;
+          const double* sj = S.row(lo);
+          for (std::size_t kk = 0; kk < k; ++kk) {
+            A[kk] -= sj[kk];
+            B[kk] -= tj * sj[kk];
+          }
+          ++lo;
+        }
+        const double coef = 1.0 + ti * inv;
+        for (std::size_t kk = 0; kk < k; ++kk) {
+          c[kk] = coef * A[kk] - inv * B[kk];
         }
         const double* si = S.row(i);
         for (std::size_t k1 = 0; k1 < k; ++k1) {
@@ -1252,7 +1347,9 @@ arma::mat serial_hac_panel(const arma::vec& times, double cutoff,
       }
     }
   };
-  return reduce_deterministic(blocks.start.size(), k, BLOCK_CHUNK, ncores, body);
+  arma::mat meat = reduce_deterministic(blocks.start.size(), k, BLOCK_CHUNK,
+                                        ncores, body);
+  return meat + meat.t();
 }
 
 } // anonymous namespace
@@ -1338,6 +1435,6 @@ arma::mat FastSerialHacPanel(Rcpp::NumericVector unit, Rcpp::NumericVector time,
   const arma::mat S_col(scores.begin(), n, k, false, true);
 
   const UnitBlocks blocks = make_unit_blocks(unit_v);
-  const RowMajorScores S(S_col);
+  const RowMajorScores S(S_col, ncores);
   return serial_hac_panel(time_v, cutoff, S, blocks, ncores);
 }
