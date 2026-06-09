@@ -7,58 +7,58 @@
 using namespace Rcpp;
 
 // FastSpatialMeat
-arma::mat FastSpatialMeat(arma::vec lat, arma::vec lon, arma::vec time,
-                          arma::mat X, arma::vec e, double cutoff,
-                          std::string kernel, std::string dist_fn,
-                          bool balanced_pnl, int ncores, std::string neighbor);
+arma::mat FastSpatialMeat(Rcpp::NumericVector lat, Rcpp::NumericVector lon,
+                          Rcpp::NumericVector time, Rcpp::NumericMatrix scores,
+                          double cutoff, std::string kernel, std::string dist_fn,
+                          bool balanced_pnl, int ncores, std::string neighbor,
+                          std::string csr_weight);
 RcppExport SEXP _fastconley_FastSpatialMeat(SEXP latSEXP, SEXP lonSEXP, SEXP timeSEXP,
-                                        SEXP XSEXP, SEXP eSEXP, SEXP cutoffSEXP,
+                                        SEXP scoresSEXP, SEXP cutoffSEXP,
                                         SEXP kernelSEXP, SEXP dist_fnSEXP,
                                         SEXP balanced_pnlSEXP, SEXP ncoresSEXP,
-                                        SEXP neighborSEXP) {
+                                        SEXP neighborSEXP, SEXP csr_weightSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< arma::vec >::type lat(latSEXP);
-    Rcpp::traits::input_parameter< arma::vec >::type lon(lonSEXP);
-    Rcpp::traits::input_parameter< arma::vec >::type time(timeSEXP);
-    Rcpp::traits::input_parameter< arma::mat >::type X(XSEXP);
-    Rcpp::traits::input_parameter< arma::vec >::type e(eSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type lat(latSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type lon(lonSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type time(timeSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericMatrix >::type scores(scoresSEXP);
     Rcpp::traits::input_parameter< double >::type cutoff(cutoffSEXP);
     Rcpp::traits::input_parameter< std::string >::type kernel(kernelSEXP);
     Rcpp::traits::input_parameter< std::string >::type dist_fn(dist_fnSEXP);
     Rcpp::traits::input_parameter< bool >::type balanced_pnl(balanced_pnlSEXP);
     Rcpp::traits::input_parameter< int >::type ncores(ncoresSEXP);
     Rcpp::traits::input_parameter< std::string >::type neighbor(neighborSEXP);
-    rcpp_result_gen = Rcpp::wrap(FastSpatialMeat(lat, lon, time, X, e, cutoff,
-                                                 kernel, dist_fn, balanced_pnl, ncores,
-                                                 neighbor));
+    Rcpp::traits::input_parameter< std::string >::type csr_weight(csr_weightSEXP);
+    rcpp_result_gen = Rcpp::wrap(FastSpatialMeat(lat, lon, time, scores, cutoff,
+                                                 kernel, dist_fn, balanced_pnl,
+                                                 ncores, neighbor, csr_weight));
     return rcpp_result_gen;
 END_RCPP
 }
 
 // FastSerialHacPanel
-arma::mat FastSerialHacPanel(arma::vec unit, arma::vec time, double cutoff,
-                             arma::mat X, arma::vec e, int ncores);
+arma::mat FastSerialHacPanel(Rcpp::NumericVector unit, Rcpp::NumericVector time,
+                             double cutoff, Rcpp::NumericMatrix scores, int ncores);
 RcppExport SEXP _fastconley_FastSerialHacPanel(SEXP unitSEXP, SEXP timeSEXP, SEXP cutoffSEXP,
-                                               SEXP XSEXP, SEXP eSEXP, SEXP ncoresSEXP) {
+                                               SEXP scoresSEXP, SEXP ncoresSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< arma::vec >::type unit(unitSEXP);
-    Rcpp::traits::input_parameter< arma::vec >::type time(timeSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type unit(unitSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type time(timeSEXP);
     Rcpp::traits::input_parameter< double >::type cutoff(cutoffSEXP);
-    Rcpp::traits::input_parameter< arma::mat >::type X(XSEXP);
-    Rcpp::traits::input_parameter< arma::vec >::type e(eSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericMatrix >::type scores(scoresSEXP);
     Rcpp::traits::input_parameter< int >::type ncores(ncoresSEXP);
-    rcpp_result_gen = Rcpp::wrap(FastSerialHacPanel(unit, time, cutoff, X, e, ncores));
+    rcpp_result_gen = Rcpp::wrap(FastSerialHacPanel(unit, time, cutoff, scores, ncores));
     return rcpp_result_gen;
 END_RCPP
 }
 
 static const R_CallMethodDef CallEntries[] = {
     {"_fastconley_FastSpatialMeat", (DL_FUNC) &_fastconley_FastSpatialMeat, 11},
-    {"_fastconley_FastSerialHacPanel", (DL_FUNC) &_fastconley_FastSerialHacPanel, 6},
+    {"_fastconley_FastSerialHacPanel", (DL_FUNC) &_fastconley_FastSerialHacPanel, 5},
     {NULL, NULL, 0}
 };
 

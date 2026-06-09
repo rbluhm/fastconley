@@ -1,3 +1,49 @@
+# fastconley 0.6.0
+
+Phase 2 of `notes/OPTIMIZATION_PLAN.md`: memory diet, deterministic
+reduction, and screen work. Results remain exact (same pairs, same
+weights); summation order changed, so values differ from v0.5.0 by
+<= ~5e-15 relative.
+
+## Results are now invariant to `ncores`
+
+All meat accumulations use a deterministic chunked reduction (fixed-size
+row/block chunks, partials summed in chunk order). `ncores = 1` and
+`ncores = 16` produce bit-identical matrices — the old multicore
+tolerance caveat is gone.
+
+## Memory
+
+- The C++ entry points take a pre-computed score matrix and alias R
+  memory directly (no Rcpp input copies, no intermediate unsorted score
+  buffer; one gather pass builds the sorted layout). `vcovSpHAC` passes
+  the aggregated scores straight through; `X`/`e` arguments remain on the
+  internal wrappers for convenience. Measured peak RSS: 4M-row
+  cross-section 2321 -> 1558 MB (-33%); 40k x 40 balanced panel
+  1028 -> 748 MB (-27%). Same speed, identical checksums.
+- New `csr_weight = c("double", "float")`: opt-in float storage for the
+  balanced-path bartlett weights (8 -> 4 bytes per pair, <= ~6e-8
+  relative error per weight). Default stays exact double.
+
+## Speed
+
+- Haversine gains a conservative 3D dot-product pre-screen (exact
+  identity `a = (1 - dot)/2`); the exact a-test remains the arbiter, so
+  results are bit-identical. CONUS 100k / 500 km bartlett/haversine:
+  15.1 -> 10.5 s single-threaded (1.4x).
+- Balanced 16-thread uniform meat: 2.30 -> 1.56 s on a 40k x 40 panel
+  (better task granularity from the chunked reduction).
+
+## Tried and reverted (documented for the record)
+
+A unit-major T*k stacked score layout that streams the balanced CSR once
+instead of once per period was implemented and benchmarked. It lost to
+the period-major layout: spatial sorting makes neighbor gathers a
+sliding window of k-wide rows that stays L2-resident per period; any
+wider stacking pushes the window past L2 and thrashes the shared L3 at
+high thread counts (2.6 s vs 2.0 s at 16 cores). The period-major
+traversal stays, now deterministic and float-capable.
+
 # fastconley 0.5.0
 
 Phase 1 of `notes/OPTIMIZATION_PLAN.md`: 3D cell-grid neighbor search.

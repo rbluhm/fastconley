@@ -40,6 +40,10 @@ vcovSpHAC.default <- function(reg, ...) {
 #'   "band" (latitude band scan, the pre-0.5.0 behavior). Both are exact and
 #'   use identical per-pair accept tests; results agree to floating-point
 #'   summation order.
+#' @param csr_weight Storage precision for the balanced-path bartlett kernel
+#'   weights: "double" (default, exact) or "float" (halves the per-pair
+#'   weight memory; introduces at most ~6e-8 relative error per weight).
+#'   Ignored for \code{kernel = "uniform"}, which stores no weights.
 #' @param maxobsmem Ignored by the fast spatial path. Kept for backward compatibility.
 #' @param ... Currently unused.
 #' @return A variance-covariance matrix.
@@ -58,11 +62,12 @@ vcovSpHAC.felm <- function(reg,
                            ncores = NA,
                            pixel = 0,
                            neighbor = c("grid", "band"),
+                           csr_weight = c("double", "float"),
                            maxobsmem = 50000L,
                            ...) {
 
   args <- validate_args(kernel, dist_fn, dist_cutoff, lag_cutoff, pixel, ncores,
-                        neighbor)
+                        neighbor, csr_weight)
 
   noFEs <- length(unit) == 0L
   if (noFEs) {
@@ -88,8 +93,9 @@ vcovSpHAC.felm <- function(reg,
     fe1_vec <- as.integer(reg$fe[[1L]])
     fe2_vec <- as.integer(reg$fe[[2L]])
   }
+  # reg$cY is deliberately not carried along -- only the centered design
+  # columns, FEs, coordinates, and residuals are used downstream.
   dt <- data.table::data.table(
-    reg$cY,
     reg$cX,
     fe1 = fe1_vec,
     fe2 = fe2_vec,
@@ -108,12 +114,14 @@ vcovSpHAC.felm <- function(reg,
   X <- as.matrix(dt[, Xvars, with = FALSE])
   n <- nrow(dt)
   invXX <- solve(crossprod(X)) * n
+  rm(X)
 
   vcovSpHAC_core(dt = dt, Xvars = Xvars, n = n, invXX = invXX,
                  kernel = args$kernel, dist_fn = args$dist_fn,
                  dist_cutoff = dist_cutoff, lag_cutoff = lag_cutoff,
                  balanced_pnl = balanced_pnl, ncores = args$ncores,
-                 pixel = pixel, neighbor = args$neighbor, verbose = verbose)
+                 pixel = pixel, neighbor = args$neighbor,
+                 csr_weight = args$csr_weight, verbose = verbose)
 }
 
 #' Spatial HAC variance-covariance matrix for fixest::feols models
@@ -139,6 +147,8 @@ vcovSpHAC.felm <- function(reg,
 #' @param pixel Score-pre-aggregation cell size, in kilometres.
 #' @param neighbor Neighbor-search strategy: "grid" (default) or "band".
 #'   See \code{\link{vcovSpHAC.felm}}.
+#' @param csr_weight Balanced-path bartlett weight storage: "double"
+#'   (default) or "float". See \code{\link{vcovSpHAC.felm}}.
 #' @param data Optional. The model frame to draw \code{lat}/\code{lon}/
 #'   \code{unit}/\code{time} from. If \code{NULL} (default), the data is
 #'   recovered from the fit's call. Pass it explicitly if the original data
@@ -160,11 +170,12 @@ vcovSpHAC.fixest <- function(reg,
                              ncores = NA,
                              pixel = 0,
                              neighbor = c("grid", "band"),
+                             csr_weight = c("double", "float"),
                              data = NULL,
                              ...) {
 
   args <- validate_args(kernel, dist_fn, dist_cutoff, lag_cutoff, pixel, ncores,
-                        neighbor)
+                        neighbor, csr_weight)
 
   if (is.null(reg$X_demeaned)) {
     stop("vcovSpHAC.fixest requires the fit to have been called with ",
@@ -262,13 +273,15 @@ vcovSpHAC.fixest <- function(reg,
                  kernel = args$kernel, dist_fn = args$dist_fn,
                  dist_cutoff = dist_cutoff, lag_cutoff = lag_cutoff,
                  balanced_pnl = balanced_pnl, ncores = args$ncores,
-                 pixel = pixel, neighbor = args$neighbor, verbose = verbose)
+                 pixel = pixel, neighbor = args$neighbor,
+                 csr_weight = args$csr_weight, verbose = verbose)
 }
 
 # Shared post-extraction core. `dt` must carry Xvars, unit, time, lat, lon, e.
 vcovSpHAC_core <- function(dt, Xvars, n, invXX,
                            kernel, dist_fn, dist_cutoff, lag_cutoff,
-                           balanced_pnl, ncores, pixel, neighbor, verbose) {
+                           balanced_pnl, ncores, pixel, neighbor, csr_weight,
+                           verbose) {
 
   # The FastSpatialMeat / FastSerialHacPanel C++ entry points require numeric
   # vectors for time and unit (arma::vec). Equality is the only thing they use
@@ -335,27 +348,26 @@ vcovSpHAC_core <- function(dt, Xvars, n, invXX,
     lat = agg$lat,
     lon = agg$lon,
     time = agg$time,
-    X = agg$X,
-    e = agg$e,
+    scores = agg$scores,
     cutoff = dist_cutoff,
     kernel = kernel,
     dist_fn = dist_fn,
     balanced_pnl = balanced_pnl,
     ncores = ncores,
-    neighbor = neighbor
+    neighbor = neighbor,
+    csr_weight = csr_weight
   )
 
   if (lag_cutoff > 0 && length(unique(dt[["time"]])) > 1L) {
     data.table::setorderv(dt, c("unit", "time"))
 
     if (verbose) message("Starting serial HAC meat")
-    X_serial <- as.matrix(dt[, Xvars, with = FALSE])
+    scores_serial <- as.matrix(dt[, Xvars, with = FALSE]) * dt[["e"]]
     XeeX_serial <- FastSerialHacPanel(
       unit = dt[["unit"]],
       time = dt[["time"]],
       cutoff = lag_cutoff,
-      X = X_serial,
-      e = dt[["e"]],
+      scores = scores_serial,
       ncores = ncores
     )
 
@@ -370,10 +382,12 @@ vcovSpHAC_core <- function(dt, Xvars, n, invXX,
 
 # Argument validation shared by both methods.
 validate_args <- function(kernel, dist_fn, dist_cutoff, lag_cutoff, pixel, ncores,
-                          neighbor = c("grid", "band")) {
-  kernel   <- match.arg(kernel,  c("bartlett", "uniform"))
-  dist_fn  <- match.arg(dist_fn, c("haversine", "spherical", "chord"))
-  neighbor <- match.arg(neighbor, c("grid", "band"))
+                          neighbor = c("grid", "band"),
+                          csr_weight = c("double", "float")) {
+  kernel     <- match.arg(kernel,  c("bartlett", "uniform"))
+  dist_fn    <- match.arg(dist_fn, c("haversine", "spherical", "chord"))
+  neighbor   <- match.arg(neighbor, c("grid", "band"))
+  csr_weight <- match.arg(csr_weight, c("double", "float"))
   if (is.null(dist_cutoff) || length(dist_cutoff) != 1L ||
       !is.finite(dist_cutoff) || dist_cutoff <= 0) {
     stop("dist_cutoff must be a single positive finite number.")
@@ -388,7 +402,8 @@ validate_args <- function(kernel, dist_fn, dist_cutoff, lag_cutoff, pixel, ncore
     ncores <- max(1L, parallel::detectCores(logical = TRUE))
   }
   ncores <- as.integer(max(1L, ncores))
-  list(kernel = kernel, dist_fn = dist_fn, ncores = ncores, neighbor = neighbor)
+  list(kernel = kernel, dist_fn = dist_fn, ncores = ncores, neighbor = neighbor,
+       csr_weight = csr_weight)
 }
 
 # Map any unit/time vector to integer group codes. The FastSpatialMeat /
@@ -403,7 +418,8 @@ to_group_id <- function(x) {
 }
 
 # Build per-time-block aggregated scores. Returns a list with element-wise
-# vectors/matrices ready to hand to FastSpatialMeat: lat, lon, time, X, e.
+# vectors plus the score matrix ready to hand to FastSpatialMeat: lat, lon,
+# time, scores.
 #
 # At pixel = 0 we collapse rows whose (lat, lon) match exactly. At pixel > 0
 # we first snap (lat, lon) to a uniform grid whose latitude step is
@@ -412,9 +428,7 @@ to_group_id <- function(x) {
 # for a cell is the cell centre.
 aggregate_scores <- function(dt, Xvars, pixel, balanced_pnl, verbose) {
   n <- nrow(dt)
-  X <- as.matrix(dt[, Xvars, with = FALSE])
-  e <- dt[["e"]]
-  scores <- X * e
+  scores <- as.matrix(dt[, Xvars, with = FALSE]) * dt[["e"]]
 
   if (pixel > 0) {
     lat_step <- pixel / 111.0
@@ -463,16 +477,14 @@ aggregate_scores <- function(dt, Xvars, pixel, balanced_pnl, verbose) {
               "skipping aggregation. Pass balanced_pnl = FALSE to silence.")
       return(list(
         lat = dt[["lat"]], lon = dt[["lon"]], time = dt[["time"]],
-        X = X, e = e
+        scores = scores
       ))
     }
   }
 
-  X_agg <- as.matrix(agg[, Xvars, with = FALSE])
   list(
     lat = agg[["lat"]], lon = agg[["lon"]], time = agg[["time"]],
-    X = X_agg,
-    e = rep(1.0, n_agg)
+    scores = as.matrix(agg[, Xvars, with = FALSE])
   )
 }
 

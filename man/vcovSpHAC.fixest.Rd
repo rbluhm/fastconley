@@ -19,6 +19,7 @@
   ncores = NA,
   pixel = 0,
   neighbor = c("grid", "band"),
+  csr_weight = c("double", "float"),
   data = NULL,
   ...
 )
@@ -54,6 +55,9 @@ share a single period — no serial HAC).}
 
 \item{neighbor}{Neighbor-search strategy: "grid" (default) or "band".
 See \code{\link{vcovSpHAC.felm}}.}
+
+\item{csr_weight}{Balanced-path bartlett weight storage: "double"
+(default) or "float". See \code{\link{vcovSpHAC.felm}}.}
 
 \item{data}{Optional. The model frame to draw \code{lat}/\code{lon}/
 \code{unit}/\code{time} from. If \code{NULL} (default), the data is

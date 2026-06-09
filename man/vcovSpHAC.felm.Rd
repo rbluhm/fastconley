@@ -19,6 +19,7 @@
   ncores = NA,
   pixel = 0,
   neighbor = c("grid", "band"),
+  csr_weight = c("double", "float"),
   maxobsmem = 50000L,
   ...
 )
@@ -58,6 +59,11 @@ that approximates the distance up to roughly `pixel / 2`.}
 "band" (latitude band scan, the pre-0.5.0 behavior). Both are exact and
 use identical per-pair accept tests; results agree to floating-point
 summation order.}
+
+\item{csr_weight}{Storage precision for the balanced-path bartlett kernel
+weights: "double" (default, exact) or "float" (halves the per-pair
+weight memory; introduces at most ~6e-8 relative error per weight).
+Ignored for \code{kernel = "uniform"}, which stores no weights.}
 
 \item{maxobsmem}{Ignored by the fast spatial path. Kept for backward compatibility.}
 
