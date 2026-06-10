@@ -60,12 +60,15 @@ END_RCPP
 arma::mat FastGridMeat(Rcpp::IntegerVector ring, Rcpp::IntegerVector col,
                        Rcpp::NumericVector time, Rcpp::NumericMatrix scores,
                        double lat0, double dlat, double dlon,
-                       int n_ring, int n_col,
-                       double cutoff, std::string dist_fn, int ncores);
+                       int n_ring, int n_col, int n_col_full,
+                       double cutoff, std::string dist_fn, std::string kernel,
+                       int ncores);
 RcppExport SEXP _fastconley_FastGridMeat(SEXP ringSEXP, SEXP colSEXP, SEXP timeSEXP,
                                          SEXP scoresSEXP, SEXP lat0SEXP, SEXP dlatSEXP,
                                          SEXP dlonSEXP, SEXP n_ringSEXP, SEXP n_colSEXP,
-                                         SEXP cutoffSEXP, SEXP dist_fnSEXP, SEXP ncoresSEXP) {
+                                         SEXP n_col_fullSEXP, SEXP cutoffSEXP,
+                                         SEXP dist_fnSEXP, SEXP kernelSEXP,
+                                         SEXP ncoresSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -78,12 +81,14 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< double >::type dlon(dlonSEXP);
     Rcpp::traits::input_parameter< int >::type n_ring(n_ringSEXP);
     Rcpp::traits::input_parameter< int >::type n_col(n_colSEXP);
+    Rcpp::traits::input_parameter< int >::type n_col_full(n_col_fullSEXP);
     Rcpp::traits::input_parameter< double >::type cutoff(cutoffSEXP);
     Rcpp::traits::input_parameter< std::string >::type dist_fn(dist_fnSEXP);
+    Rcpp::traits::input_parameter< std::string >::type kernel(kernelSEXP);
     Rcpp::traits::input_parameter< int >::type ncores(ncoresSEXP);
     rcpp_result_gen = Rcpp::wrap(FastGridMeat(ring, col, time, scores, lat0, dlat,
-                                              dlon, n_ring, n_col, cutoff, dist_fn,
-                                              ncores));
+                                              dlon, n_ring, n_col, n_col_full,
+                                              cutoff, dist_fn, kernel, ncores));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -91,7 +96,7 @@ END_RCPP
 static const R_CallMethodDef CallEntries[] = {
     {"_fastconley_FastSpatialMeat", (DL_FUNC) &_fastconley_FastSpatialMeat, 11},
     {"_fastconley_FastSerialHacPanel", (DL_FUNC) &_fastconley_FastSerialHacPanel, 5},
-    {"_fastconley_FastGridMeat", (DL_FUNC) &_fastconley_FastGridMeat, 12},
+    {"_fastconley_FastGridMeat", (DL_FUNC) &_fastconley_FastGridMeat, 14},
     {NULL, NULL, 0}
 };
 

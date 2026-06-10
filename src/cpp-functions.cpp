@@ -66,6 +66,18 @@ void parallel_range(std::size_t n, int ncores, const Body& body) {
   }
 }
 
+// Like parallel_range, but for coarse-grained items (e.g. one FFT batch
+// per index) where even a handful of items is worth parallelising.
+template <typename Body>
+void parallel_range_coarse(std::size_t n, int ncores, const Body& body) {
+  if (ncores > 1 && n > 1) {
+    RangeWorker<Body> w(body);
+    parallelFor(0, n, w);
+  } else {
+    body(0, n);
+  }
+}
+
 // Sort that uses TBB's parallel_sort when available and worthwhile. The
 // comparator must define a strict total order (callers tiebreak on index),
 // so the sorted output is unique and identical to std::sort's.
@@ -1356,51 +1368,142 @@ arma::mat serial_hac_panel(const arma::vec& times, double cutoff,
 // Grid-native exact meat (workstream C2; see notes/OPTIMIZATION_PLAN.md
 // and the C1 prototype tests/manual/proto-conv-c1.R).
 //
-// For the UNIFORM kernel on a regular lat/lon lattice the accept set
-// between two latitude rings is a longitude-index interval, so the inner
-// sum over a ring pair is a sliding-window sum over per-ring prefix sums:
-// O(n_ring * window * n_col * k) total, independent of the pair count.
-// Exact: the dot-product accept threshold is the same constant the
-// pairwise engine uses, so the answer agrees to FP summation order.
+// On a regular lat/lon lattice the accept set between two latitude rings
+// is a longitude-index interval. For the UNIFORM kernel the inner sum
+// over a ring pair is therefore a sliding-window sum over per-ring prefix
+// sums: O(n_ring * window * n_col * k) total, independent of the pair
+// count. For the BARTLETT kernel the weight varies with the lon offset,
+// so the inner sum is a true 1D convolution per ring pair, computed via
+// FFT (arma::fft) with per-ring score spectra cached in a sliding
+// latitude band. Both are exact: the dot-product accept threshold is the
+// same constant the pairwise engine uses, and the bartlett weights use
+// the same per-distance arithmetic as pair_weight, so answers agree to
+// FP summation order (plus the inherent acos conditioning for
+// spherical x bartlett).
 //
-// Layout: one dense prefix tensor per time block, ring-major:
+// If the lattice wraps the full longitude circle (n_col_full > 0 and the
+// accept window reaches across the dateline gap), windows become
+// circular: modular prefix-sum arcs for the uniform kernel, and circular
+// convolution with period n_col_full for bartlett.
+//
+// Uniform layout: one dense prefix tensor per time block, ring-major:
 // P[r * (C+1) * k + c * k + kk] = sum of scores over columns < c of ring
 // r (k-wide rows). Raw cell scores are recovered as adjacent differences,
 // so no separate dense score copy is held. Memory: (C+1) * R * k doubles.
+// Bartlett layout: dense raw scores DS (R * C * k doubles) plus the
+// banded spectrum cache (~(band + 2*rho) * npad * k complex doubles).
 // ------------------------------------------------------------------
 
 struct GridGeom {
   std::size_t n_ring;
   std::size_t n_col;
   double dlam_rad;
+  double dlat_rad;           // |lat step| (bartlett haversine weights)
   std::vector<double> sphi;  // sin(lat) per ring
   std::vector<double> cphi;  // cos(lat) per ring
+  // Per-offset trig tables, delta = 0..cap (shared by every ring pair):
+  std::vector<double> cos_dl;  // cos(delta * dlam)
+  std::vector<double> s2h_dl;  // sin^2(delta * dlam / 2)
 };
 
-// Largest lon-index offset accepted between rings r1 and r2 (-1 = none),
+// Accept window between rings r1 and r2 against the dot threshold,
 // matching the pairwise accept "dot >= coscut" with a boundary fix-up in
-// the same arithmetic.
-inline long grid_delta_star(const GridGeom& gg, std::size_t r1, std::size_t r2,
-                            double coscut) {
+// the same arithmetic. ds: largest accepted lon-index offset, capped at
+// `cap` (-1 = none). full: every lon offset on the circle is accepted
+// (polar / antipodal-in-lon cases; the window is the whole ring).
+// dstar_rad: the acos accept boundary in lon radians for interval pairs
+// (0 when full/none) -- drives the dateline-wrap feasibility check.
+struct RingPairWin {
+  long ds;
+  bool full;
+  double dstar_rad;
+};
+
+inline RingPairWin grid_ring_window(const GridGeom& gg, std::size_t r1,
+                                    std::size_t r2, double coscut, long cap) {
   const double base = gg.sphi[r1] * gg.sphi[r2];
   const double cc12 = gg.cphi[r1] * gg.cphi[r2];
-  const long dmaxc = static_cast<long>(gg.n_col) - 1;
+  RingPairWin out;
+  out.dstar_rad = 0.0;
   if (cc12 < 1e-300) {
-    return (base >= coscut) ? dmaxc : -1;
+    out.full = base >= coscut;
+    out.ds = out.full ? cap : -1;
+    return out;
   }
   const double rhs = (coscut - base) / cc12;
-  if (rhs > 1.0) return -1;
-  long ds;
-  if (rhs <= -1.0) {
-    ds = dmaxc;
-  } else {
-    ds = static_cast<long>(std::acos(rhs) / gg.dlam_rad) + 1;
-    if (ds > dmaxc) ds = dmaxc;
+  if (rhs > 1.0) {
+    out.full = false;
+    out.ds = -1;
+    return out;
   }
+  if (rhs <= -1.0) {
+    out.full = true;
+    out.ds = cap;
+    return out;
+  }
+  out.full = false;
+  out.dstar_rad = std::acos(rhs);
+  long ds = static_cast<long>(out.dstar_rad / gg.dlam_rad) + 1;
+  if (ds > cap) ds = cap;
   while (ds >= 0 && base + cc12 * std::cos(ds * gg.dlam_rad) < coscut) --ds;
-  while (ds + 1 <= dmaxc &&
+  while (ds + 1 <= cap &&
          base + cc12 * std::cos((ds + 1) * gg.dlam_rad) >= coscut) ++ds;
-  return ds;
+  out.ds = ds;
+  return out;
+}
+
+// Bartlett weights between rings r1 and r2 at lon-index offsets 0..ds,
+// using the same per-distance arithmetic as the pair_weight
+// specializations. Clamped at 0 so FP overshoot at the window boundary
+// cannot produce a negative weight (the pairwise engine would have
+// rejected such a pair).
+inline void grid_bartlett_weights(const GridGeom& gg, std::size_t r1,
+                                  std::size_t r2, int dist_id, double cutoff,
+                                  long ds, double* w) {
+  const double base = gg.sphi[r1] * gg.sphi[r2];
+  const double cc12 = gg.cphi[r1] * gg.cphi[r2];
+  // The same-cell distance is exactly 0, but acos/sqrt of the FP dot
+  // (sin^2 + cos^2 = 1 +/- eps) would inflate it to ~R*sqrt(2*eps). The
+  // pairwise engine weights self-pairs exactly 1 (its 0.5*S_i diagonal),
+  // so fix the d = 0 weight after the loop below.
+  const bool self_ring = (r1 == r2);
+  if (dist_id == DIST_HAVERSINE) {
+    const double dphi =
+        (static_cast<double>(r2) - static_cast<double>(r1)) * gg.dlat_rad;
+    const double s2_dphi = sq(std::sin(dphi / 2.0));
+    for (long d = 0; d <= ds; ++d) {
+      double a = s2_dphi + cc12 * gg.s2h_dl[d];
+      if (a < 0.0) a = 0.0;
+      if (a > 1.0) a = 1.0;
+      const double dist =
+          AVG_ERAD * 2.0 * std::atan2(std::sqrt(a), std::sqrt(1.0 - a));
+      const double wt = 1.0 - dist / cutoff;
+      w[d] = wt > 0.0 ? wt : 0.0;
+    }
+  } else if (dist_id == DIST_SPHERICAL) {
+    for (long d = 0; d <= ds; ++d) {
+      const double dot = base + cc12 * gg.cos_dl[d];
+      const double dist = AVG_ERAD * safe_acos(dot);
+      const double wt = 1.0 - dist / cutoff;
+      w[d] = wt > 0.0 ? wt : 0.0;
+    }
+  } else {  // DIST_CHORD: chord^2 = 2 - 2*dot in exact arithmetic.
+    for (long d = 0; d <= ds; ++d) {
+      const double dot = base + cc12 * gg.cos_dl[d];
+      double c2 = 2.0 - 2.0 * dot;
+      if (c2 < 0.0) c2 = 0.0;
+      const double dist = AVG_ERAD * std::sqrt(c2);
+      const double wt = 1.0 - dist / cutoff;
+      w[d] = wt > 0.0 ? wt : 0.0;
+    }
+  }
+  if (self_ring) w[0] = 1.0;
+}
+
+inline std::size_t next_pow2(std::size_t n) {
+  std::size_t p = 1;
+  while (p < n) p <<= 1;
+  return p;
 }
 
 } // anonymous namespace
@@ -1495,8 +1598,9 @@ arma::mat FastSerialHacPanel(Rcpp::NumericVector unit, Rcpp::NumericVector time,
 arma::mat FastGridMeat(Rcpp::IntegerVector ring, Rcpp::IntegerVector col,
                        Rcpp::NumericVector time, Rcpp::NumericMatrix scores,
                        double lat0, double dlat, double dlon,
-                       int n_ring, int n_col,
+                       int n_ring, int n_col, int n_col_full,
                        double cutoff, std::string dist_fn = "spherical",
+                       std::string kernel = "uniform",
                        int ncores = 1) {
   const std::size_t n = static_cast<std::size_t>(scores.nrow());
   const std::size_t k = static_cast<std::size_t>(scores.ncol());
@@ -1507,17 +1611,24 @@ arma::mat FastGridMeat(Rcpp::IntegerVector ring, Rcpp::IntegerVector col,
   }
   if (cutoff < 0.0) Rcpp::stop("FastGridMeat requires a non-negative cutoff.");
   if (n_ring < 1 || n_col < 1) Rcpp::stop("n_ring and n_col must be >= 1.");
+  if (n_col_full < 0 || (n_col_full > 0 && n_col_full < n_col)) {
+    Rcpp::stop("n_col_full must be 0 (no wrap) or >= n_col.");
+  }
   ncores = std::max(1, ncores);
+
+  const int kernel_id = parse_kernel_id(kernel);
+  if (kernel_id == KERNEL_BARTLETT && cutoff <= 0.0) {
+    Rcpp::stop("FastGridMeat requires cutoff > 0 for kernel = 'bartlett'.");
+  }
 
   arma::mat meat_total(k, k, arma::fill::zeros);
   if (n == 0) return meat_total;
 
   const int dist_id = parse_dist_id(dist_fn);
   const ScreenParams screen = make_screen_params(cutoff, dist_id);
-  // Uniform-kernel accept threshold on the unit-vector dot product. All
-  // three distances are monotone in the chord, so each maps to a dot
-  // threshold: haversine/spherical use cos(angular); chord uses
-  // 1 - chord_sq/2.
+  // Accept threshold on the unit-vector dot product. All three distances
+  // are monotone in the chord, so each maps to a dot threshold:
+  // haversine/spherical use cos(angular); chord uses 1 - chord_sq/2.
   const double coscut = (dist_id == DIST_CHORD)
       ? 1.0 - screen.chord_cutoff_sq / 2.0
       : screen.cos_cutoff;
@@ -1528,6 +1639,7 @@ arma::mat FastGridMeat(Rcpp::IntegerVector ring, Rcpp::IntegerVector col,
   gg.n_ring = R;
   gg.n_col = C;
   gg.dlam_rad = dlon * DE2RA;
+  gg.dlat_rad = std::fabs(dlat) * DE2RA;
   gg.sphi.resize(R);
   gg.cphi.resize(R);
   for (std::size_t r = 0; r < R; ++r) {
@@ -1535,10 +1647,9 @@ arma::mat FastGridMeat(Rcpp::IntegerVector ring, Rcpp::IntegerVector col,
     gg.sphi[r] = std::sin(la);
     gg.cphi[r] = std::cos(la);
   }
-  const double dlat_rad = std::fabs(dlat) * DE2RA;
   const std::size_t rho =
       std::min(R, static_cast<std::size_t>(screen.angular_cutoff_rad /
-                                           std::max(dlat_rad, 1e-300)) + 2);
+                                           std::max(gg.dlat_rad, 1e-300)) + 2);
 
   for (std::size_t i = 0; i < n; ++i) {
     if (ring[i] < 0 || ring[i] >= n_ring || col[i] < 0 || col[i] >= n_col) {
@@ -1546,81 +1657,305 @@ arma::mat FastGridMeat(Rcpp::IntegerVector ring, Rcpp::IntegerVector col,
     }
   }
 
-  const arma::vec time_v(time.begin(), n, false, true);
-  const TimeBlocks blocks = make_time_blocks(time_v);
-  const std::size_t rowlen = (C + 1) * k;
-  std::vector<double> P(R * rowlen);
-  std::vector<std::size_t> ring_count(R);
-
-  for (std::size_t b = 0; b < blocks.start.size(); ++b) {
-    std::fill(P.begin(), P.end(), 0.0);
-    std::fill(ring_count.begin(), ring_count.end(), 0);
-
-    // Scatter block scores into the (c+1) slots, then prefix-sum per ring.
-    for (std::size_t i = blocks.start[b]; i < blocks.end[b]; ++i) {
-      const std::size_t r = static_cast<std::size_t>(ring[i]);
-      const std::size_t c = static_cast<std::size_t>(col[i]);
-      double* dst = P.data() + r * rowlen + (c + 1) * k;
-      for (std::size_t kk = 0; kk < k; ++kk) dst[kk] += scores(i, kk);
-      ++ring_count[r];
-    }
+  // ---- Dateline-wrap feasibility (geometry only, block-independent). ----
+  // A pair of columns can be physically within the cutoff "the short way
+  // around" yet farther apart than the linear window iff the lattice span
+  // plus the widest interval accept window reaches the full circle. Full
+  // (whole-ring) windows never miss anything. dstar_max / ds_max are
+  // order-independent maxima, so the parallel pre-pass is deterministic.
+  const long cap_lin = static_cast<long>(C) - 1;
+  double dstar_max = 0.0;
+  long ds_max = 0;
+  {
+    std::vector<double> permax(R, 0.0);
+    std::vector<long> perds(R, 0);
     parallel_range(R, ncores, [&](std::size_t lo, std::size_t hi) {
-      for (std::size_t r = lo; r < hi; ++r) {
-        if (ring_count[r] == 0) continue;
-        double* Pr = P.data() + r * rowlen;
-        for (std::size_t c = 0; c < C; ++c) {
-          const double* prev = Pr + c * k;
-          double* cur = Pr + (c + 1) * k;
-          for (std::size_t kk = 0; kk < k; ++kk) cur[kk] += prev[kk];
+      for (std::size_t r1 = lo; r1 < hi; ++r1) {
+        const std::size_t r2_hi = std::min(R - 1, r1 + rho);
+        for (std::size_t r2 = r1; r2 <= r2_hi; ++r2) {
+          const RingPairWin win = grid_ring_window(gg, r1, r2, coscut, cap_lin);
+          if (win.ds < 0) continue;
+          if (win.ds > perds[r1]) perds[r1] = win.ds;
+          if (!win.full && win.dstar_rad > permax[r1]) {
+            permax[r1] = win.dstar_rad;
+          }
         }
       }
     });
+    for (std::size_t r = 0; r < R; ++r) {
+      if (permax[r] > dstar_max) dstar_max = permax[r];
+      if (perds[r] > ds_max) ds_max = perds[r];
+    }
+  }
+  const double span_rad = static_cast<double>(C - 1) * gg.dlam_rad;
+  const bool wrap_needed = span_rad + dstar_max >= TWO_PI - 1e-9;
+  if (wrap_needed && n_col_full == 0) {
+    Rcpp::stop("FastGridMeat: the accept window crosses the dateline wrap "
+               "but the lattice does not tile the full longitude circle "
+               "(360 is not an integer multiple of dlon). "
+               "Use method = 'pairwise'.");
+  }
+  const std::size_t Cf = static_cast<std::size_t>(n_col_full);
+  const bool wrap = wrap_needed && n_col_full > 0;
+  // Wrap implies span >= pi, so cap <= cap_lin and offsets never exceed
+  // the half circle (each unordered column pair is counted exactly once).
+  const long cap = wrap ? static_cast<long>(Cf / 2) : cap_lin;
 
-    // Deterministic reduce over target rings.
-    auto body = [&](std::size_t lo, std::size_t hi, arma::mat& meat) {
-      std::vector<double> cf(C * k);
-      for (std::size_t r1 = lo; r1 < hi; ++r1) {
-        if (ring_count[r1] == 0) continue;
-        std::fill(cf.begin(), cf.end(), 0.0);
-        bool any = false;
-        const std::size_t r2_lo = r1 >= rho ? r1 - rho : 0;
-        const std::size_t r2_hi = std::min(R - 1, r1 + rho);
-        for (std::size_t r2 = r2_lo; r2 <= r2_hi; ++r2) {
-          if (ring_count[r2] == 0) continue;
-          const long ds = grid_delta_star(gg, r1, r2, coscut);
-          if (ds < 0) continue;
-          any = true;
-          const double* Pr2 = P.data() + r2 * rowlen;
+  gg.cos_dl.resize(static_cast<std::size_t>(cap) + 1);
+  gg.s2h_dl.resize(static_cast<std::size_t>(cap) + 1);
+  for (long d = 0; d <= cap; ++d) {
+    gg.cos_dl[d] = std::cos(static_cast<double>(d) * gg.dlam_rad);
+    gg.s2h_dl[d] = sq(std::sin(static_cast<double>(d) * gg.dlam_rad / 2.0));
+  }
+
+  const arma::vec time_v(time.begin(), n, false, true);
+  const TimeBlocks blocks = make_time_blocks(time_v);
+  std::vector<std::size_t> ring_count(R);
+
+  if (kernel_id == KERNEL_UNIFORM) {
+    // ---- Uniform kernel: sliding-window prefix sums (boxcar). ----
+    const std::size_t rowlen = (C + 1) * k;
+    std::vector<double> P(R * rowlen);
+
+    for (std::size_t b = 0; b < blocks.start.size(); ++b) {
+      std::fill(P.begin(), P.end(), 0.0);
+      std::fill(ring_count.begin(), ring_count.end(), 0);
+
+      // Scatter block scores into the (c+1) slots, then prefix-sum per ring.
+      for (std::size_t i = blocks.start[b]; i < blocks.end[b]; ++i) {
+        const std::size_t r = static_cast<std::size_t>(ring[i]);
+        const std::size_t c = static_cast<std::size_t>(col[i]);
+        double* dst = P.data() + r * rowlen + (c + 1) * k;
+        for (std::size_t kk = 0; kk < k; ++kk) dst[kk] += scores(i, kk);
+        ++ring_count[r];
+      }
+      parallel_range(R, ncores, [&](std::size_t lo, std::size_t hi) {
+        for (std::size_t r = lo; r < hi; ++r) {
+          if (ring_count[r] == 0) continue;
+          double* Pr = P.data() + r * rowlen;
           for (std::size_t c = 0; c < C; ++c) {
-            const std::size_t hi_i =
-                std::min(C - 1, c + static_cast<std::size_t>(ds)) + 1;
-            const std::size_t lo_i =
-                c >= static_cast<std::size_t>(ds)
-                    ? c - static_cast<std::size_t>(ds) : 0;
-            const double* ph = Pr2 + hi_i * k;
-            const double* pl = Pr2 + lo_i * k;
-            double* cfc = cf.data() + c * k;
-            for (std::size_t kk = 0; kk < k; ++kk) cfc[kk] += ph[kk] - pl[kk];
+            const double* prev = Pr + c * k;
+            double* cur = Pr + (c + 1) * k;
+            for (std::size_t kk = 0; kk < k; ++kk) cur[kk] += prev[kk];
           }
         }
-        if (!any) continue;
-        const double* Pr1 = P.data() + r1 * rowlen;
-        for (std::size_t c = 0; c < C; ++c) {
-          const double* pc = Pr1 + c * k;
-          const double* pn = Pr1 + (c + 1) * k;
-          const double* cfc = cf.data() + c * k;
-          for (std::size_t k1 = 0; k1 < k; ++k1) {
-            const double s1 = pn[k1] - pc[k1];
-            if (s1 == 0.0) continue;
-            for (std::size_t k2 = 0; k2 < k; ++k2) {
-              meat(k1, k2) += s1 * cfc[k2];
+      });
+
+      // Deterministic reduce over target rings.
+      auto body = [&](std::size_t lo, std::size_t hi, arma::mat& meat) {
+        std::vector<double> cf(C * k);
+        for (std::size_t r1 = lo; r1 < hi; ++r1) {
+          if (ring_count[r1] == 0) continue;
+          std::fill(cf.begin(), cf.end(), 0.0);
+          bool any = false;
+          const std::size_t r2_lo = r1 >= rho ? r1 - rho : 0;
+          const std::size_t r2_hi = std::min(R - 1, r1 + rho);
+          for (std::size_t r2 = r2_lo; r2 <= r2_hi; ++r2) {
+            if (ring_count[r2] == 0) continue;
+            const long ds = grid_ring_window(gg, r1, r2, coscut, cap).ds;
+            if (ds < 0) continue;
+            any = true;
+            const double* Pr2 = P.data() + r2 * rowlen;
+            if (!wrap) {
+              for (std::size_t c = 0; c < C; ++c) {
+                const std::size_t hi_i =
+                    std::min(C - 1, c + static_cast<std::size_t>(ds)) + 1;
+                const std::size_t lo_i =
+                    c >= static_cast<std::size_t>(ds)
+                        ? c - static_cast<std::size_t>(ds) : 0;
+                const double* ph = Pr2 + hi_i * k;
+                const double* pl = Pr2 + lo_i * k;
+                double* cfc = cf.data() + c * k;
+                for (std::size_t kk = 0; kk < k; ++kk) {
+                  cfc[kk] += ph[kk] - pl[kk];
+                }
+              }
+            } else {
+              // Circular window [c - ds, c + ds] on the Cf-circle,
+              // intersected with the occupied columns [0, C). Up to two
+              // linear arcs; arcs cannot overlap because 2*ds + 1 < Cf
+              // whenever this branch splits.
+              const long dsl = ds;
+              const long Cl = static_cast<long>(C);
+              const long Cfl = static_cast<long>(Cf);
+              const bool whole = 2 * dsl + 1 >= Cfl;
+              for (std::size_t c = 0; c < C; ++c) {
+                double* cfc = cf.data() + c * k;
+                const auto add_arc = [&](long a, long barc) {
+                  if (a > barc || a >= Cl) return;
+                  if (barc >= Cl) barc = Cl - 1;
+                  const double* ph = Pr2 + static_cast<std::size_t>(barc + 1) * k;
+                  const double* pl = Pr2 + static_cast<std::size_t>(a) * k;
+                  for (std::size_t kk = 0; kk < k; ++kk) {
+                    cfc[kk] += ph[kk] - pl[kk];
+                  }
+                };
+                if (whole) {
+                  add_arc(0, Cl - 1);
+                  continue;
+                }
+                const long a = static_cast<long>(c) - dsl;
+                const long bb = static_cast<long>(c) + dsl;
+                if (a < 0) {
+                  add_arc(0, bb);
+                  add_arc(a + Cfl, Cfl - 1);
+                } else if (bb >= Cfl) {
+                  add_arc(a, Cfl - 1);
+                  add_arc(0, bb - Cfl);
+                } else {
+                  add_arc(a, bb);
+                }
+              }
+            }
+          }
+          if (!any) continue;
+          const double* Pr1 = P.data() + r1 * rowlen;
+          for (std::size_t c = 0; c < C; ++c) {
+            const double* pc = Pr1 + c * k;
+            const double* pn = Pr1 + (c + 1) * k;
+            const double* cfc = cf.data() + c * k;
+            for (std::size_t k1 = 0; k1 < k; ++k1) {
+              const double s1 = pn[k1] - pc[k1];
+              if (s1 == 0.0) continue;
+              for (std::size_t k2 = 0; k2 < k; ++k2) {
+                meat(k1, k2) += s1 * cfc[k2];
+              }
             }
           }
         }
-      }
-    };
-    meat_total += reduce_deterministic(R, k, 4, ncores, body);
+      };
+      meat_total += reduce_deterministic(R, k, 4, ncores, body);
+    }
+    return meat_total;
   }
 
-  return meat_total;
+  // ---- Bartlett kernel: per-ring-pair 1D convolutions via FFT. ----
+  // Linear mode zero-pads to the next power of two past C + ds_max so the
+  // circular convolution cannot wrap; wrap mode uses period n_col_full so
+  // it wraps *correctly*. Score spectra are cached for a sliding latitude
+  // band of target rings plus a rho-halo; BAND_H is a fixed constant and
+  // the reduction is chunked, so results are bit-identical across ncores.
+  //
+  // The kernel is even in the lon offset, so T(r2,r1) = T(r1,r2)': only
+  // the upper triangle r2 >= r1 is computed, with self-ring weights halved
+  // (the pairwise engine's 0.5*S_i trick), and the half-meat is
+  // symmetrized at the end. This halves the FFT work and the cache only
+  // needs a forward halo.
+  const std::size_t npad =
+      wrap ? Cf : next_pow2(C + static_cast<std::size_t>(std::max(ds_max, 0L)));
+  const std::size_t BAND_H = 128;
+
+  std::vector<double> DS(R * C * k);  // raw dense scores, ring-major
+  std::vector<arma::cx_mat> shat(R);  // per-ring score spectra (banded cache)
+
+  for (std::size_t b = 0; b < blocks.start.size(); ++b) {
+    std::fill(DS.begin(), DS.end(), 0.0);
+    std::fill(ring_count.begin(), ring_count.end(), 0);
+    for (std::size_t r = 0; r < R; ++r) shat[r].reset();
+
+    for (std::size_t i = blocks.start[b]; i < blocks.end[b]; ++i) {
+      const std::size_t r = static_cast<std::size_t>(ring[i]);
+      const std::size_t c = static_cast<std::size_t>(col[i]);
+      double* dst = DS.data() + (r * C + c) * k;
+      for (std::size_t kk = 0; kk < k; ++kk) dst[kk] += scores(i, kk);
+      ++ring_count[r];
+    }
+
+    for (std::size_t band_lo = 0; band_lo < R; band_lo += BAND_H) {
+      const std::size_t band_hi = std::min(R, band_lo + BAND_H);
+      const std::size_t need_lo = band_lo;
+      const std::size_t need_hi = std::min(R, band_hi + rho);
+
+      // Fill missing spectra for the band + halo (one FFT batch per ring;
+      // disjoint writes, so the parallel fill is deterministic).
+      std::vector<std::size_t> todo;
+      for (std::size_t r = need_lo; r < need_hi; ++r) {
+        if (ring_count[r] > 0 && shat[r].n_elem == 0) todo.push_back(r);
+      }
+      parallel_range_coarse(todo.size(), ncores,
+                            [&](std::size_t lo, std::size_t hi) {
+        for (std::size_t ti = lo; ti < hi; ++ti) {
+          const std::size_t r = todo[ti];
+          arma::mat A(npad, k, arma::fill::zeros);
+          const double* src = DS.data() + r * C * k;
+          for (std::size_t c = 0; c < C; ++c) {
+            for (std::size_t kk = 0; kk < k; ++kk) A(c, kk) = src[c * k + kk];
+          }
+          shat[r] = arma::fft(A);
+        }
+      });
+
+      // Deterministic reduce over the band's target rings (chunk = 1: each
+      // ring is a heavy item -- ~2*rho weight FFTs).
+      auto body = [&](std::size_t lo, std::size_t hi, arma::mat& meat) {
+        std::vector<double> wbuf(static_cast<std::size_t>(cap) + 1);
+        arma::vec wpad(npad);
+        std::vector<double> rew(npad);
+        arma::cx_mat acc(npad, k);
+        std::vector<double> cfr(C * k);
+        for (std::size_t ii = lo; ii < hi; ++ii) {
+          const std::size_t r1 = band_lo + ii;
+          if (ring_count[r1] == 0) continue;
+          acc.zeros();
+          bool any = false;
+          const std::size_t r2_hi = std::min(R - 1, r1 + rho);
+          for (std::size_t r2 = r1; r2 <= r2_hi; ++r2) {
+            if (ring_count[r2] == 0) continue;
+            const RingPairWin win = grid_ring_window(gg, r1, r2, coscut, cap);
+            if (win.ds < 0) continue;
+            const long ds = win.ds;
+            grid_bartlett_weights(gg, r1, r2, dist_id, cutoff, ds,
+                                  wbuf.data());
+            if (r2 == r1) {
+              for (long d = 0; d <= ds; ++d) wbuf[d] *= 0.5;
+            }
+            wpad.zeros();
+            wpad[0] = wbuf[0];
+            for (long d = 1; d <= ds; ++d) {
+              wpad[static_cast<std::size_t>(d)] = wbuf[d];
+              wpad[npad - static_cast<std::size_t>(d)] = wbuf[d];
+            }
+            // w is even in the offset, so its DFT is real in exact
+            // arithmetic; dropping the FP-noise imaginary part halves the
+            // accumulate cost.
+            const arma::cx_vec what = arma::fft(wpad);
+            for (std::size_t m = 0; m < npad; ++m) rew[m] = what[m].real();
+            const arma::cx_mat& S2 = shat[r2];
+            for (std::size_t kk = 0; kk < k; ++kk) {
+              std::complex<double>* a = acc.colptr(kk);
+              const std::complex<double>* s = S2.colptr(kk);
+              for (std::size_t m = 0; m < npad; ++m) a[m] += rew[m] * s[m];
+            }
+            any = true;
+          }
+          if (!any) continue;
+          const arma::cx_mat cfm = arma::ifft(acc);
+          for (std::size_t kk = 0; kk < k; ++kk) {
+            const std::complex<double>* colp = cfm.colptr(kk);
+            for (std::size_t c = 0; c < C; ++c) {
+              cfr[c * k + kk] = colp[c].real();
+            }
+          }
+          const double* s1base = DS.data() + r1 * C * k;
+          for (std::size_t c = 0; c < C; ++c) {
+            const double* s1 = s1base + c * k;
+            const double* cfc = cfr.data() + c * k;
+            for (std::size_t k1 = 0; k1 < k; ++k1) {
+              if (s1[k1] == 0.0) continue;
+              for (std::size_t k2 = 0; k2 < k; ++k2) {
+                meat(k1, k2) += s1[k1] * cfc[k2];
+              }
+            }
+          }
+        }
+      };
+      meat_total += reduce_deterministic(band_hi - band_lo, k, 1, ncores, body);
+
+      // Evict spectra that have left the sliding window (later bands only
+      // look forward from their own start).
+      for (std::size_t r = need_lo; r < band_hi; ++r) shat[r].reset();
+    }
+  }
+
+  return meat_total + meat_total.t();
 }

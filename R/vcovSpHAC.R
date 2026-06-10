@@ -46,13 +46,16 @@ vcovSpHAC.default <- function(reg, ...) {
 #'   Ignored for \code{kernel = "uniform"}, which stores no weights.
 #' @param method Spatial meat engine. "pairwise" enumerates neighbor pairs
 #'   (the default engine; works for any data). "grid" uses the exact
-#'   grid-native sliding-window meat — requires \code{kernel = "uniform"}
-#'   and observations on a regular lat/lon lattice (e.g. raster data);
-#'   cost is independent of the pair count, so it is dramatically faster
-#'   on dense grids with large cutoffs. "auto" (default) picks "grid" when
-#'   it detects a lattice, the kernel is uniform, and the estimated pair
-#'   count makes it worthwhile; both engines are exact, so the choice only
-#'   affects speed (results agree to FP summation order).
+#'   grid-native meat — requires observations on a regular lat/lon lattice
+#'   (e.g. raster data); cost is independent of the pair count, so it is
+#'   dramatically faster on dense grids with large cutoffs. The uniform
+#'   kernel uses sliding-window prefix sums; the bartlett kernel uses
+#'   per-ring-pair FFT convolutions. Lattices spanning the full longitude
+#'   circle wrap correctly across the dateline. "auto" (default) picks
+#'   "grid" when it detects a lattice and a flop-balance estimate says it
+#'   wins; both engines are exact, so the choice only affects speed
+#'   (results agree to FP summation order, plus ~1e-12 acos conditioning
+#'   for the bartlett spherical/chord weights).
 #' @param maxobsmem Ignored by the fast spatial path. Kept for backward compatibility.
 #' @param data Optional. The data frame to draw \code{lat}/\code{lon} from.
 #'   If \code{NULL} (default), the data is recovered from the fit's call and
@@ -387,14 +390,7 @@ vcovSpHAC_core <- function(dt, Xvars, n, invXX,
     message("Starting fast spatial HAC meat in C++ (",
             if (is.null(gi)) "pairwise" else "grid", " engine)")
   }
-  XeeX <- if (!is.null(gi)) {
-    FastGridMeat(
-      ring = gi$ring, col = gi$col, time = agg$time, scores = agg$scores,
-      lat0 = gi$lat0, dlat = gi$dlat, dlon = gi$dlon,
-      n_ring = gi$n_ring, n_col = gi$n_col,
-      cutoff = dist_cutoff, dist_fn = dist_fn, ncores = ncores
-    )
-  } else {
+  run_pairwise <- function() {
     FastSpatialMeat(
       lat = agg$lat,
       lon = agg$lon,
@@ -408,6 +404,33 @@ vcovSpHAC_core <- function(dt, Xvars, n, invXX,
       neighbor = neighbor,
       csr_weight = csr_weight
     )
+  }
+  XeeX <- if (!is.null(gi)) {
+    run_grid <- function() {
+      FastGridMeat(
+        ring = gi$ring, col = gi$col, time = agg$time, scores = agg$scores,
+        lat0 = gi$lat0, dlat = gi$dlat, dlon = gi$dlon,
+        n_ring = gi$n_ring, n_col = gi$n_col, n_col_full = gi$n_col_full,
+        cutoff = dist_cutoff, dist_fn = dist_fn, kernel = kernel,
+        ncores = ncores
+      )
+    }
+    if (method == "auto") {
+      # The C++ wrap-feasibility check refuses lattices whose accept window
+      # crosses the dateline gap when dlon does not tile 360 evenly. Under
+      # "auto" that is a speed choice, not an error -- fall back.
+      tryCatch(run_grid(), error = function(e) {
+        if (grepl("dateline", conditionMessage(e), fixed = TRUE)) {
+          run_pairwise()
+        } else {
+          stop(e)
+        }
+      })
+    } else {
+      run_grid()
+    }
+  } else {
+    run_pairwise()
   }
 
   if (lag_cutoff > 0 && length(unique(dt[["time"]])) > 1L) {
@@ -477,9 +500,17 @@ detect_lonlat_grid <- function(lat, lon, tol = 1e-6) {
   col  <- as.integer(round((lon - uo[1L]) / step_o))
   if (max(abs(lat - (ul[1L] + ring * step_l))) > tol * step_l) return(NULL)
   if (max(abs(lon - (uo[1L] + col * step_o))) > tol * step_o) return(NULL)
+  n_col <- max(col) + 1L
+  # Full-circle column count when the lon step tiles 360 degrees evenly
+  # (0 otherwise). FastGridMeat uses it to wrap windows across the
+  # dateline when the lattice spans the whole circle.
+  cf <- 360 / step_o
+  n_col_full <- if (abs(cf - round(cf)) < 1e-6 && round(cf) >= n_col) {
+    as.integer(round(cf))
+  } else 0L
   list(lat0 = ul[1L], dlat = step_l, lon0 = uo[1L], dlon = step_o,
        ring = ring, col = col,
-       n_ring = max(ring) + 1L, n_col = max(col) + 1L)
+       n_ring = max(ring) + 1L, n_col = n_col, n_col_full = n_col_full)
 }
 
 # Decide whether the grid-native meat applies. Returns the lattice info
@@ -487,13 +518,6 @@ detect_lonlat_grid <- function(lat, lon, tol = 1e-6) {
 # engines are exact, so a "wrong" auto choice only costs speed.
 choose_grid_method <- function(method, kernel, agg, dist_cutoff) {
   if (method == "pairwise") return(NULL)
-  if (kernel != "uniform") {
-    if (method == "grid") {
-      stop("method = 'grid' currently supports kernel = 'uniform' only ",
-           "(the bartlett ring-FFT variant is planned; see NEWS).")
-    }
-    return(NULL)
-  }
   gi <- detect_lonlat_grid(agg$lat, agg$lon)
   if (is.null(gi)) {
     if (method == "grid") {
@@ -515,8 +539,9 @@ choose_grid_method <- function(method, kernel, agg, dist_cutoff) {
     return(NULL)
   }
   if (method == "grid") return(gi)
-  # auto: flop-balance rule. Grid work ~ n_blocks * R * window * C; pairwise
-  # work ~ expected within-cutoff pairs. Prefer grid only when pairs clearly
+  # auto: flop-balance rule. Pairwise work ~ expected within-cutoff pairs;
+  # grid work per ring pair is the window-sum width (uniform boxcar) or the
+  # FFT cost in per-k units (bartlett). Prefer grid only when pairs clearly
   # dominate.
   ang <- dist_cutoff / 6371
   rho_r <- max(1, ang / (gi$dlat * pi / 180))
@@ -524,8 +549,14 @@ choose_grid_method <- function(method, kernel, agg, dist_cutoff) {
   dbar <- max(1, ang / (gi$dlon * pi / 180) / cosbar)
   nb <- as.numeric(table(agg$time))
   pairs_est <- sum(nb^2) * pi * rho_r * dbar / cells / 2
-  grid_work <- length(nb) * as.numeric(gi$n_ring) * (2 * rho_r + 1) *
+  per_pair <- if (kernel == "uniform") {
     as.numeric(gi$n_col)
+  } else {
+    k <- ncol(agg$scores)
+    npad_est <- 2^ceiling(log2(as.numeric(gi$n_col) + min(dbar, gi$n_col)))
+    npad_est * (5 * log2(npad_est) + 2 * k) / k
+  }
+  grid_work <- length(nb) * as.numeric(gi$n_ring) * (2 * rho_r + 1) * per_pair
   if (pairs_est > 2 * grid_work) gi else NULL
 }
 

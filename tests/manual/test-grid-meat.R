@@ -20,7 +20,8 @@ for (df in c("spherical", "haversine", "chord")) for (cut in c(30, 120, 400, 500
                                      cutoff = cut, kernel = "uniform",
                                      dist_fn = df, ncores = 4)
   gm <- fastconley:::FastGridMeat(ring, col, rep(1, n), S, lats[1], step, step,
-                                  length(lats), length(lons), cut, df, 4)
+                                  length(lats), length(lons), cut, df,
+                                  ncores = 4)
   worst <- max(worst, rel_diff(gm, pw))
 }
 stopifnot(worst < 1e-12)
@@ -36,17 +37,18 @@ pw <- fastconley:::FastSpatialMeat(gp$lat[keep], gp$lon[keep], t2, scores = S2,
                                    dist_fn = "spherical", ncores = 4)
 gm1 <- fastconley:::FastGridMeat(ring[keep], col[keep], t2, S2, lats[1], step,
                                  step, length(lats), length(lons), 150,
-                                 "spherical", 1)
+                                 "spherical", ncores = 1)
 gm16 <- fastconley:::FastGridMeat(ring[keep], col[keep], t2, S2, lats[1], step,
                                   step, length(lats), length(lons), 150,
-                                  "spherical", 16)
+                                  "spherical", ncores = 16)
 stopifnot(rel_diff(gm1, pw) < 1e-12, identical(gm1, gm16))
 cat("2. sparse + in-cell duplicates + 3 blocks + ncores-determinism: OK\n")
 
 # ---- 3. Degenerate shapes ----------------------------------------------------
 one <- matrix(rnorm(5), 5, 1)
 gm <- fastconley:::FastGridMeat(rep(0L, 5), 0:4, rep(1, 5), one,
-                                10, 0.5, 0.5, 1, 5, 100, "spherical", 2)
+                                10, 0.5, 0.5, 1, 5, 100, "spherical",
+                                ncores = 2)
 pw <- fastconley:::FastSpatialMeat(rep(10.0, 5), 0.5 * (0:4), rep(1, 5),
                                    scores = one, cutoff = 100,
                                    kernel = "uniform", dist_fn = "spherical")
@@ -80,11 +82,6 @@ stopifnot(rel_diff(v_gr, v_pw) < 1e-12, rel_diff(v_au, v_pw) < 1e-12)
 cat("5. vcovSpHAC grid == pairwise == auto: OK\n")
 
 # ---- 6. Guard rails -----------------------------------------------------------
-err1 <- tryCatch({
-  vcovSpHAC(fit, lat = "lat", lon = "lon", kernel = "bartlett",
-            dist_fn = "spherical", dist_cutoff = 200, method = "grid", data = d)
-  FALSE
-}, error = function(e) grepl("uniform", conditionMessage(e)))
 d2 <- d; d2$lat <- d2$lat + runif(n, 0, 1e-3)   # break the lattice
 fit2 <- felm(y ~ x1 + x2, data = d2, keepCX = TRUE)
 err2 <- tryCatch({
@@ -95,7 +92,87 @@ err2 <- tryCatch({
 v2 <- vcovSpHAC(fit2, lat = "lat", lon = "lon", kernel = "uniform",
                 dist_fn = "spherical", dist_cutoff = 200, method = "auto",
                 data = d2)   # auto falls back to pairwise silently
-stopifnot(err1, err2, is.matrix(v2))
-cat("6. guard rails (bartlett error, no-lattice error, auto fallback): OK\n")
+stopifnot(err2, is.matrix(v2))
+cat("6. guard rails (no-lattice error, auto fallback): OK\n")
+
+# ---- 7. Bartlett ring-FFT vs pairwise ----------------------------------------
+# spherical/chord tolerances allow the inherent acos/sqrt conditioning of
+# near-zero distances (adjacent cells); haversine's atan2 form is exact.
+worst_b <- c(spherical = 0, haversine = 0, chord = 0)
+for (df in c("spherical", "haversine", "chord")) for (cut in c(30, 120, 400, 5000)) {
+  pw <- fastconley:::FastSpatialMeat(gp$lat, gp$lon, rep(1, n), scores = S,
+                                     cutoff = cut, kernel = "bartlett",
+                                     dist_fn = df, ncores = 4)
+  gm <- fastconley:::FastGridMeat(ring, col, rep(1, n), S, lats[1], step, step,
+                                  length(lats), length(lons), cut, df,
+                                  kernel = "bartlett", ncores = 4)
+  worst_b[df] <- max(worst_b[df], rel_diff(gm, pw))
+}
+stopifnot(worst_b["haversine"] < 1e-12, worst_b["spherical"] < 1e-9,
+          worst_b["chord"] < 1e-9)
+cat(sprintf(paste0("7. bartlett FFT x 3 distances x 4 cutoffs: worst rel diff ",
+                   "sph %.1e / hav %.1e / chd %.1e\n"),
+            worst_b["spherical"], worst_b["haversine"], worst_b["chord"]))
+
+# bartlett: sparse + duplicates + multi-block + ncores-determinism
+pwb <- fastconley:::FastSpatialMeat(gp$lat[keep], gp$lon[keep], t2, scores = S2,
+                                    cutoff = 150, kernel = "bartlett",
+                                    dist_fn = "haversine", ncores = 4)
+gb1 <- fastconley:::FastGridMeat(ring[keep], col[keep], t2, S2, lats[1], step,
+                                 step, length(lats), length(lons), 150,
+                                 "haversine", kernel = "bartlett", ncores = 1)
+gb16 <- fastconley:::FastGridMeat(ring[keep], col[keep], t2, S2, lats[1], step,
+                                  step, length(lats), length(lons), 150,
+                                  "haversine", kernel = "bartlett", ncores = 16)
+stopifnot(rel_diff(gb1, pwb) < 1e-12, identical(gb1, gb16))
+cat("8. bartlett sparse + duplicates + 3 blocks + ncores-determinism: OK\n")
+
+# ---- 9. Dateline wrap ---------------------------------------------------------
+# Full-circle lattice: windows must wrap, both kernels, vs pairwise.
+set.seed(8)
+wlon <- seq(0, 358, by = 2); wlat <- seq(-30, 30, by = 2)
+wg <- expand.grid(lon = wlon, lat = wlat)
+wn <- nrow(wg)
+WS <- matrix(rnorm(wn * k), wn, k)
+wgi <- fastconley:::detect_lonlat_grid(wg$lat, wg$lon)
+stopifnot(wgi$n_col_full == 180L)
+for (kern in c("uniform", "bartlett")) for (df in c("spherical", "haversine")) {
+  pw <- fastconley:::FastSpatialMeat(wg$lat, wg$lon, rep(1, wn), scores = WS,
+                                     cutoff = 600, kernel = kern,
+                                     dist_fn = df, ncores = 4)
+  gm <- fastconley:::FastGridMeat(wgi$ring, wgi$col, rep(1, wn), WS,
+                                  wgi$lat0, wgi$dlat, wgi$dlon,
+                                  wgi$n_ring, wgi$n_col,
+                                  n_col_full = wgi$n_col_full,
+                                  cutoff = 600, dist_fn = df, kernel = kern,
+                                  ncores = 4)
+  stopifnot(rel_diff(gm, pw) < if (df == "spherical" && kern == "bartlett")
+    1e-9 else 1e-12)
+}
+# Wrap needed but dlon does not tile 360 (n_col_full = 0): informative stop,
+# and method = "auto" falls back to the pairwise engine.
+err3 <- tryCatch({
+  fastconley:::FastGridMeat(wgi$ring, wgi$col, rep(1, wn), WS,
+                            wgi$lat0, wgi$dlat, wgi$dlon,
+                            wgi$n_ring, wgi$n_col, n_col_full = 0L,
+                            cutoff = 600, dist_fn = "spherical",
+                            kernel = "uniform", ncores = 4)
+  FALSE
+}, error = function(e) grepl("dateline", conditionMessage(e)))
+stopifnot(err3)
+# End-to-end on the full-circle raster (auto must pick a correct engine).
+dw <- data.frame(lat = wg$lat, lon = wg$lon, x1 = rnorm(wn), x2 = rnorm(wn))
+dw$y <- 0.3 * dw$x1 - 0.1 * dw$x2 + rnorm(wn)
+fitw <- felm(y ~ x1 + x2, data = dw, keepCX = TRUE)
+for (kern in c("uniform", "bartlett")) {
+  vp <- vcovSpHAC(fitw, lat = "lat", lon = "lon", kernel = kern,
+                  dist_fn = "spherical", dist_cutoff = 600, ncores = 4,
+                  method = "pairwise", data = dw)
+  vg <- vcovSpHAC(fitw, lat = "lat", lon = "lon", kernel = kern,
+                  dist_fn = "spherical", dist_cutoff = 600, ncores = 4,
+                  method = "grid", data = dw)
+  stopifnot(rel_diff(vg, vp) < 1e-9)
+}
+cat("9. dateline wrap (both kernels vs pairwise, stop + auto fallback, end-to-end): OK\n")
 
 cat("\nAll grid-meat checks passed.\n")

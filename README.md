@@ -129,6 +129,27 @@ it only when a lattice is detected and the kernel is uniform — scattered
 data and bartlett stay on the pairwise engine. No approximation: natively
 gridded data gets the exact great-circle answer.
 
+### v0.8.0: bartlett on the grid engine (ring-FFT) + dateline wrap
+
+The grid engine now covers `kernel = "bartlett"`: on a lattice the
+per-ring-pair inner sum becomes a 1D convolution (the weight varies with
+the longitude offset), computed via FFT with cached per-ring score
+spectra. Same C1-study raster (2.25M cells, 250 km, ~1.8×10¹¹ pairs),
+bartlett/spherical: **2.9 s vs 710 s** for the 16-core pairwise engine
+(**242×**, error ~1e-13); even single-threaded (20.5 s) it beats the
+16-core pairwise engine 35×. Agreement with the pairwise engine is
+~1e-15 (haversine) to ~1e-12 (spherical/chord — inherent acos/sqrt
+conditioning at near-zero distances, not algorithm error), and results
+remain bit-identical across `ncores`.
+
+v0.8.0 also fixes a v0.7.0 bug: on rasters spanning the full 360°
+longitude circle the grid engine clamped windows at the lattice edge and
+silently missed pairs across the dateline (~5e-3 relative error on a
+global test raster). Windows now wrap correctly for both kernels; if wrap
+would be needed but the lon step doesn't tile 360° evenly, `method =
+"grid"` errors informatively and `method = "auto"` falls back to the
+pairwise engine.
+
 ### vs `fixest::vcov_conley` (v0.6.1, large data)
 
 Post-estimation only, `kernel = "uniform"`, great-circle distance, k = 10,

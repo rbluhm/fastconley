@@ -40,11 +40,12 @@ FastSerialHacPanel <- function(unit, time, cutoff, X = NULL, e = NULL,
 
 FastGridMeat <- function(ring, col, time, scores, lat0, dlat, dlon,
                          n_ring, n_col, cutoff, dist_fn = "spherical",
-                         ncores = 1L) {
+                         kernel = "uniform", n_col_full = 0L, ncores = 1L) {
   if (!is.integer(ring)) ring <- as.integer(ring)
   if (!is.integer(col)) col <- as.integer(col)
   RcppParallel::setThreadOptions(numThreads = as.integer(max(1L, ncores)))
   .Call(`_fastconley_FastGridMeat`, ring, col, .as_dbl_vector(time),
         .as_dbl_matrix(scores), lat0, dlat, dlon,
-        as.integer(n_ring), as.integer(n_col), cutoff, dist_fn, ncores)
+        as.integer(n_ring), as.integer(n_col), as.integer(n_col_full),
+        cutoff, dist_fn, kernel, ncores)
 }

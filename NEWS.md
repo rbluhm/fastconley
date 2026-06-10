@@ -1,3 +1,48 @@
+# fastconley 0.8.0
+
+Grid engine, part two: bartlett support (ring-FFT) and dateline wrap.
+
+## `method = "grid"` / `"auto"` now covers `kernel = "bartlett"`
+
+On a lattice the bartlett weight varies with the longitude offset, so the
+per-ring-pair inner sum is a true 1D convolution rather than a boxcar.
+`FastGridMeat` computes it via FFT (`arma::fft`): per ring pair, the
+even-symmetric weight vector's (real) spectrum multiplies cached per-ring
+score spectra, with one inverse FFT per target ring. Score spectra are
+cached for a sliding latitude band plus a cutoff halo, and the reduction
+is deterministically chunked — results remain bit-identical across
+`ncores`.
+
+Weights use the same per-distance arithmetic as the pairwise engine
+(`atan2` haversine, `acos` spherical, `sqrt` chord), and the same-cell
+distance is hard-set to 0, so agreement with the pairwise engine is
+~1e-15 (haversine) to ~1e-12 (spherical/chord — inherent conditioning of
+acos/sqrt near zero distance, not algorithm error). The `"auto"` rule
+uses an FFT-aware cost model for bartlett.
+
+- C1-study config (2.25M cells at ~1.1 km, 250 km cutoff, ~1.8e11 pairs,
+  bartlett/spherical): 2.9 s vs 710 s for the 16-core pairwise engine
+  (**242x**); single-threaded (20.5 s) it still beats 16-core pairwise
+  35x. The kernel's evenness halves the work (T(r2,r1) = T(r1,r2)', so
+  only upper-triangle ring pairs are computed, with self-ring weights
+  halved and the half-meat symmetrized).
+
+## Dateline wrap (bug fix for global rasters)
+
+v0.7.0's grid engine clamped longitude windows at the lattice edges, so
+on a raster spanning the full 360° circle it silently missed pairs that
+are close "the short way" across the dateline (observed ~5e-3 relative
+error on a global test raster). The engine now detects when the accept
+window reaches across the dateline gap and switches both kernels to
+circular windows (modular prefix-sum arcs for uniform; circular
+convolution with period `n_col_full` for bartlett) — exact, validated
+against the pairwise engine. When wrap would be needed but the lon step
+does not tile 360° evenly (no consistent circular lattice exists),
+`method = "grid"` stops with an informative error and `method = "auto"`
+falls back to the pairwise engine. Non-wrapping rasters are unaffected:
+results are bitwise identical to v0.7.0 (verified on the 30-config
+battery).
+
 # fastconley 0.7.0
 
 Workstream C2: exact grid-native meat for raster data.

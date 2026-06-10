@@ -69,13 +69,16 @@ Ignored for \code{kernel = "uniform"}, which stores no weights.}
 
 \item{method}{Spatial meat engine. "pairwise" enumerates neighbor pairs
 (the default engine; works for any data). "grid" uses the exact
-grid-native sliding-window meat — requires \code{kernel = "uniform"}
-and observations on a regular lat/lon lattice (e.g. raster data);
-cost is independent of the pair count, so it is dramatically faster
-on dense grids with large cutoffs. "auto" (default) picks "grid" when
-it detects a lattice, the kernel is uniform, and the estimated pair
-count makes it worthwhile; both engines are exact, so the choice only
-affects speed (results agree to FP summation order).}
+grid-native meat — requires observations on a regular lat/lon lattice
+(e.g. raster data); cost is independent of the pair count, so it is
+dramatically faster on dense grids with large cutoffs. The uniform
+kernel uses sliding-window prefix sums; the bartlett kernel uses
+per-ring-pair FFT convolutions. Lattices spanning the full longitude
+circle wrap correctly across the dateline. "auto" (default) picks
+"grid" when it detects a lattice and a flop-balance estimate says it
+wins; both engines are exact, so the choice only affects speed
+(results agree to FP summation order, plus ~1e-12 acos conditioning
+for the bartlett spherical/chord weights).}
 
 \item{maxobsmem}{Ignored by the fast spatial path. Kept for backward compatibility.}
 
