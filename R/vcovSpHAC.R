@@ -44,6 +44,15 @@ vcovSpHAC.default <- function(reg, ...) {
 #'   weights: "double" (default, exact) or "float" (halves the per-pair
 #'   weight memory; introduces at most ~6e-8 relative error per weight).
 #'   Ignored for \code{kernel = "uniform"}, which stores no weights.
+#' @param method Spatial meat engine. "pairwise" enumerates neighbor pairs
+#'   (the default engine; works for any data). "grid" uses the exact
+#'   grid-native sliding-window meat — requires \code{kernel = "uniform"}
+#'   and observations on a regular lat/lon lattice (e.g. raster data);
+#'   cost is independent of the pair count, so it is dramatically faster
+#'   on dense grids with large cutoffs. "auto" (default) picks "grid" when
+#'   it detects a lattice, the kernel is uniform, and the estimated pair
+#'   count makes it worthwhile; both engines are exact, so the choice only
+#'   affects speed (results agree to FP summation order).
 #' @param maxobsmem Ignored by the fast spatial path. Kept for backward compatibility.
 #' @param data Optional. The data frame to draw \code{lat}/\code{lon} from.
 #'   If \code{NULL} (default), the data is recovered from the fit's call and
@@ -69,12 +78,13 @@ vcovSpHAC.felm <- function(reg,
                            pixel = 0,
                            neighbor = c("grid", "band"),
                            csr_weight = c("double", "float"),
+                           method = c("auto", "pairwise", "grid"),
                            maxobsmem = 50000L,
                            data = NULL,
                            ...) {
 
   args <- validate_args(kernel, dist_fn, dist_cutoff, lag_cutoff, pixel, ncores,
-                        neighbor, csr_weight)
+                        neighbor, csr_weight, method)
 
   noFEs <- length(unit) == 0L
   if (noFEs) {
@@ -145,7 +155,8 @@ vcovSpHAC.felm <- function(reg,
                  dist_cutoff = dist_cutoff, lag_cutoff = lag_cutoff,
                  balanced_pnl = balanced_pnl, ncores = args$ncores,
                  pixel = pixel, neighbor = args$neighbor,
-                 csr_weight = args$csr_weight, verbose = verbose)
+                 csr_weight = args$csr_weight, method = args$method,
+                 verbose = verbose)
 }
 
 #' Spatial HAC variance-covariance matrix for fixest::feols models
@@ -173,6 +184,8 @@ vcovSpHAC.felm <- function(reg,
 #'   See \code{\link{vcovSpHAC.felm}}.
 #' @param csr_weight Balanced-path bartlett weight storage: "double"
 #'   (default) or "float". See \code{\link{vcovSpHAC.felm}}.
+#' @param method Spatial meat engine: "auto" (default), "pairwise", or
+#'   "grid". See \code{\link{vcovSpHAC.felm}}.
 #' @param data Optional. The model frame to draw \code{lat}/\code{lon}/
 #'   \code{unit}/\code{time} from. If \code{NULL} (default), the data is
 #'   recovered from the fit's call. Pass it explicitly if the original data
@@ -195,11 +208,12 @@ vcovSpHAC.fixest <- function(reg,
                              pixel = 0,
                              neighbor = c("grid", "band"),
                              csr_weight = c("double", "float"),
+                             method = c("auto", "pairwise", "grid"),
                              data = NULL,
                              ...) {
 
   args <- validate_args(kernel, dist_fn, dist_cutoff, lag_cutoff, pixel, ncores,
-                        neighbor, csr_weight)
+                        neighbor, csr_weight, method)
 
   if (is.null(reg$X_demeaned)) {
     stop("vcovSpHAC.fixest requires the fit to have been called with ",
@@ -298,14 +312,15 @@ vcovSpHAC.fixest <- function(reg,
                  dist_cutoff = dist_cutoff, lag_cutoff = lag_cutoff,
                  balanced_pnl = balanced_pnl, ncores = args$ncores,
                  pixel = pixel, neighbor = args$neighbor,
-                 csr_weight = args$csr_weight, verbose = verbose)
+                 csr_weight = args$csr_weight, method = args$method,
+                 verbose = verbose)
 }
 
 # Shared post-extraction core. `dt` must carry Xvars, unit, time, lat, lon, e.
 vcovSpHAC_core <- function(dt, Xvars, n, invXX,
                            kernel, dist_fn, dist_cutoff, lag_cutoff,
                            balanced_pnl, ncores, pixel, neighbor, csr_weight,
-                           verbose) {
+                           method, verbose) {
 
   # The FastSpatialMeat / FastSerialHacPanel C++ entry points require numeric
   # vectors for time and unit (arma::vec). Equality is the only thing they use
@@ -367,20 +382,33 @@ vcovSpHAC_core <- function(dt, Xvars, n, invXX,
   agg <- aggregate_scores(dt, Xvars, pixel = pixel,
                           balanced_pnl = balanced_pnl, verbose = verbose)
 
-  if (verbose) message("Starting fast spatial HAC meat in C++")
-  XeeX <- FastSpatialMeat(
-    lat = agg$lat,
-    lon = agg$lon,
-    time = agg$time,
-    scores = agg$scores,
-    cutoff = dist_cutoff,
-    kernel = kernel,
-    dist_fn = dist_fn,
-    balanced_pnl = balanced_pnl,
-    ncores = ncores,
-    neighbor = neighbor,
-    csr_weight = csr_weight
-  )
+  gi <- choose_grid_method(method, kernel, agg, dist_cutoff)
+  if (verbose) {
+    message("Starting fast spatial HAC meat in C++ (",
+            if (is.null(gi)) "pairwise" else "grid", " engine)")
+  }
+  XeeX <- if (!is.null(gi)) {
+    FastGridMeat(
+      ring = gi$ring, col = gi$col, time = agg$time, scores = agg$scores,
+      lat0 = gi$lat0, dlat = gi$dlat, dlon = gi$dlon,
+      n_ring = gi$n_ring, n_col = gi$n_col,
+      cutoff = dist_cutoff, dist_fn = dist_fn, ncores = ncores
+    )
+  } else {
+    FastSpatialMeat(
+      lat = agg$lat,
+      lon = agg$lon,
+      time = agg$time,
+      scores = agg$scores,
+      cutoff = dist_cutoff,
+      kernel = kernel,
+      dist_fn = dist_fn,
+      balanced_pnl = balanced_pnl,
+      ncores = ncores,
+      neighbor = neighbor,
+      csr_weight = csr_weight
+    )
+  }
 
   if (lag_cutoff > 0 && length(unique(dt[["time"]])) > 1L) {
     data.table::setorderv(dt, c("unit", "time"))
@@ -407,11 +435,13 @@ vcovSpHAC_core <- function(dt, Xvars, n, invXX,
 # Argument validation shared by both methods.
 validate_args <- function(kernel, dist_fn, dist_cutoff, lag_cutoff, pixel, ncores,
                           neighbor = c("grid", "band"),
-                          csr_weight = c("double", "float")) {
+                          csr_weight = c("double", "float"),
+                          method = c("auto", "pairwise", "grid")) {
   kernel     <- match.arg(kernel,  c("bartlett", "uniform"))
   dist_fn    <- match.arg(dist_fn, c("haversine", "spherical", "chord"))
   neighbor   <- match.arg(neighbor, c("grid", "band"))
   csr_weight <- match.arg(csr_weight, c("double", "float"))
+  method     <- match.arg(method, c("auto", "pairwise", "grid"))
   if (is.null(dist_cutoff) || length(dist_cutoff) != 1L ||
       !is.finite(dist_cutoff) || dist_cutoff <= 0) {
     stop("dist_cutoff must be a single positive finite number.")
@@ -427,7 +457,76 @@ validate_args <- function(kernel, dist_fn, dist_cutoff, lag_cutoff, pixel, ncore
   }
   ncores <- as.integer(max(1L, ncores))
   list(kernel = kernel, dist_fn = dist_fn, ncores = ncores, neighbor = neighbor,
-       csr_weight = csr_weight)
+       csr_weight = csr_weight, method = method)
+}
+
+# Detect whether the coordinates lie on a regular lat/lon lattice (gaps —
+# missing cells — are fine; rings/columns just need a common step). Returns
+# NULL or list(lat0, dlat, lon0, dlon, ring, col, n_ring, n_col) with
+# 0-based integer cell indices aligned to the input rows.
+detect_lonlat_grid <- function(lat, lon, tol = 1e-6) {
+  ul <- sort(unique(lat))
+  uo <- sort(unique(lon))
+  if (length(ul) < 2L || length(uo) < 2L) return(NULL)
+  dl <- diff(ul); dol <- diff(uo)
+  step_l <- min(dl); step_o <- min(dol)
+  if (step_l <= 0 || step_o <= 0) return(NULL)
+  if (any(abs(dl / step_l - round(dl / step_l)) > tol)) return(NULL)
+  if (any(abs(dol / step_o - round(dol / step_o)) > tol)) return(NULL)
+  ring <- as.integer(round((lat - ul[1L]) / step_l))
+  col  <- as.integer(round((lon - uo[1L]) / step_o))
+  if (max(abs(lat - (ul[1L] + ring * step_l))) > tol * step_l) return(NULL)
+  if (max(abs(lon - (uo[1L] + col * step_o))) > tol * step_o) return(NULL)
+  list(lat0 = ul[1L], dlat = step_l, lon0 = uo[1L], dlon = step_o,
+       ring = ring, col = col,
+       n_ring = max(ring) + 1L, n_col = max(col) + 1L)
+}
+
+# Decide whether the grid-native meat applies. Returns the lattice info
+# (to be passed to FastGridMeat) or NULL for the pairwise engine. Both
+# engines are exact, so a "wrong" auto choice only costs speed.
+choose_grid_method <- function(method, kernel, agg, dist_cutoff) {
+  if (method == "pairwise") return(NULL)
+  if (kernel != "uniform") {
+    if (method == "grid") {
+      stop("method = 'grid' currently supports kernel = 'uniform' only ",
+           "(the bartlett ring-FFT variant is planned; see NEWS).")
+    }
+    return(NULL)
+  }
+  gi <- detect_lonlat_grid(agg$lat, agg$lon)
+  if (is.null(gi)) {
+    if (method == "grid") {
+      stop("method = 'grid' requires observations on a regular lat/lon ",
+           "lattice (e.g. raster cell centers); no lattice detected.")
+    }
+    return(NULL)
+  }
+  cells <- as.numeric(gi$n_ring) * as.numeric(gi$n_col)
+  n <- length(agg$lat)
+  if (cells > 100 * n || cells > 4e9) {
+    # Degenerate lattice (e.g. two nearly-coincident coordinate values
+    # implying a huge sparse grid): the dense prefix tensor would explode.
+    if (method == "grid") {
+      stop("method = 'grid': the implied lattice has ", format(cells),
+           " cells for ", n, " observations; too sparse/degenerate. ",
+           "Use method = 'pairwise'.")
+    }
+    return(NULL)
+  }
+  if (method == "grid") return(gi)
+  # auto: flop-balance rule. Grid work ~ n_blocks * R * window * C; pairwise
+  # work ~ expected within-cutoff pairs. Prefer grid only when pairs clearly
+  # dominate.
+  ang <- dist_cutoff / 6371
+  rho_r <- max(1, ang / (gi$dlat * pi / 180))
+  cosbar <- max(0.05, mean(cos(agg$lat * pi / 180)))
+  dbar <- max(1, ang / (gi$dlon * pi / 180) / cosbar)
+  nb <- as.numeric(table(agg$time))
+  pairs_est <- sum(nb^2) * pi * rho_r * dbar / cells / 2
+  grid_work <- length(nb) * as.numeric(gi$n_ring) * (2 * rho_r + 1) *
+    as.numeric(gi$n_col)
+  if (pairs_est > 2 * grid_work) gi else NULL
 }
 
 # Map any unit/time vector to integer group codes. The FastSpatialMeat /

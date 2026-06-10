@@ -20,6 +20,7 @@
   pixel = 0,
   neighbor = c("grid", "band"),
   csr_weight = c("double", "float"),
+  method = c("auto", "pairwise", "grid"),
   maxobsmem = 50000L,
   data = NULL,
   ...
@@ -65,6 +66,16 @@ summation order.}
 weights: "double" (default, exact) or "float" (halves the per-pair
 weight memory; introduces at most ~6e-8 relative error per weight).
 Ignored for \code{kernel = "uniform"}, which stores no weights.}
+
+\item{method}{Spatial meat engine. "pairwise" enumerates neighbor pairs
+(the default engine; works for any data). "grid" uses the exact
+grid-native sliding-window meat — requires \code{kernel = "uniform"}
+and observations on a regular lat/lon lattice (e.g. raster data);
+cost is independent of the pair count, so it is dramatically faster
+on dense grids with large cutoffs. "auto" (default) picks "grid" when
+it detects a lattice, the kernel is uniform, and the estimated pair
+count makes it worthwhile; both engines are exact, so the choice only
+affects speed (results agree to FP summation order).}
 
 \item{maxobsmem}{Ignored by the fast spatial path. Kept for backward compatibility.}
 

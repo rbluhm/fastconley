@@ -20,6 +20,7 @@
   pixel = 0,
   neighbor = c("grid", "band"),
   csr_weight = c("double", "float"),
+  method = c("auto", "pairwise", "grid"),
   data = NULL,
   ...
 )
@@ -58,6 +59,9 @@ See \code{\link{vcovSpHAC.felm}}.}
 
 \item{csr_weight}{Balanced-path bartlett weight storage: "double"
 (default) or "float". See \code{\link{vcovSpHAC.felm}}.}
+
+\item{method}{Spatial meat engine: "auto" (default), "pairwise", or
+"grid". See \code{\link{vcovSpHAC.felm}}.}
 
 \item{data}{Optional. The model frame to draw \code{lat}/\code{lon}/
 \code{unit}/\code{time} from. If \code{NULL} (default), the data is

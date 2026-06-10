@@ -56,9 +56,42 @@ BEGIN_RCPP
 END_RCPP
 }
 
+// FastGridMeat
+arma::mat FastGridMeat(Rcpp::IntegerVector ring, Rcpp::IntegerVector col,
+                       Rcpp::NumericVector time, Rcpp::NumericMatrix scores,
+                       double lat0, double dlat, double dlon,
+                       int n_ring, int n_col,
+                       double cutoff, std::string dist_fn, int ncores);
+RcppExport SEXP _fastconley_FastGridMeat(SEXP ringSEXP, SEXP colSEXP, SEXP timeSEXP,
+                                         SEXP scoresSEXP, SEXP lat0SEXP, SEXP dlatSEXP,
+                                         SEXP dlonSEXP, SEXP n_ringSEXP, SEXP n_colSEXP,
+                                         SEXP cutoffSEXP, SEXP dist_fnSEXP, SEXP ncoresSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< Rcpp::IntegerVector >::type ring(ringSEXP);
+    Rcpp::traits::input_parameter< Rcpp::IntegerVector >::type col(colSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type time(timeSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericMatrix >::type scores(scoresSEXP);
+    Rcpp::traits::input_parameter< double >::type lat0(lat0SEXP);
+    Rcpp::traits::input_parameter< double >::type dlat(dlatSEXP);
+    Rcpp::traits::input_parameter< double >::type dlon(dlonSEXP);
+    Rcpp::traits::input_parameter< int >::type n_ring(n_ringSEXP);
+    Rcpp::traits::input_parameter< int >::type n_col(n_colSEXP);
+    Rcpp::traits::input_parameter< double >::type cutoff(cutoffSEXP);
+    Rcpp::traits::input_parameter< std::string >::type dist_fn(dist_fnSEXP);
+    Rcpp::traits::input_parameter< int >::type ncores(ncoresSEXP);
+    rcpp_result_gen = Rcpp::wrap(FastGridMeat(ring, col, time, scores, lat0, dlat,
+                                              dlon, n_ring, n_col, cutoff, dist_fn,
+                                              ncores));
+    return rcpp_result_gen;
+END_RCPP
+}
+
 static const R_CallMethodDef CallEntries[] = {
     {"_fastconley_FastSpatialMeat", (DL_FUNC) &_fastconley_FastSpatialMeat, 11},
     {"_fastconley_FastSerialHacPanel", (DL_FUNC) &_fastconley_FastSerialHacPanel, 5},
+    {"_fastconley_FastGridMeat", (DL_FUNC) &_fastconley_FastGridMeat, 12},
     {NULL, NULL, 0}
 };
 

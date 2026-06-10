@@ -1352,6 +1352,57 @@ arma::mat serial_hac_panel(const arma::vec& times, double cutoff,
   return meat + meat.t();
 }
 
+// ------------------------------------------------------------------
+// Grid-native exact meat (workstream C2; see notes/OPTIMIZATION_PLAN.md
+// and the C1 prototype tests/manual/proto-conv-c1.R).
+//
+// For the UNIFORM kernel on a regular lat/lon lattice the accept set
+// between two latitude rings is a longitude-index interval, so the inner
+// sum over a ring pair is a sliding-window sum over per-ring prefix sums:
+// O(n_ring * window * n_col * k) total, independent of the pair count.
+// Exact: the dot-product accept threshold is the same constant the
+// pairwise engine uses, so the answer agrees to FP summation order.
+//
+// Layout: one dense prefix tensor per time block, ring-major:
+// P[r * (C+1) * k + c * k + kk] = sum of scores over columns < c of ring
+// r (k-wide rows). Raw cell scores are recovered as adjacent differences,
+// so no separate dense score copy is held. Memory: (C+1) * R * k doubles.
+// ------------------------------------------------------------------
+
+struct GridGeom {
+  std::size_t n_ring;
+  std::size_t n_col;
+  double dlam_rad;
+  std::vector<double> sphi;  // sin(lat) per ring
+  std::vector<double> cphi;  // cos(lat) per ring
+};
+
+// Largest lon-index offset accepted between rings r1 and r2 (-1 = none),
+// matching the pairwise accept "dot >= coscut" with a boundary fix-up in
+// the same arithmetic.
+inline long grid_delta_star(const GridGeom& gg, std::size_t r1, std::size_t r2,
+                            double coscut) {
+  const double base = gg.sphi[r1] * gg.sphi[r2];
+  const double cc12 = gg.cphi[r1] * gg.cphi[r2];
+  const long dmaxc = static_cast<long>(gg.n_col) - 1;
+  if (cc12 < 1e-300) {
+    return (base >= coscut) ? dmaxc : -1;
+  }
+  const double rhs = (coscut - base) / cc12;
+  if (rhs > 1.0) return -1;
+  long ds;
+  if (rhs <= -1.0) {
+    ds = dmaxc;
+  } else {
+    ds = static_cast<long>(std::acos(rhs) / gg.dlam_rad) + 1;
+    if (ds > dmaxc) ds = dmaxc;
+  }
+  while (ds >= 0 && base + cc12 * std::cos(ds * gg.dlam_rad) < coscut) --ds;
+  while (ds + 1 <= dmaxc &&
+         base + cc12 * std::cos((ds + 1) * gg.dlam_rad) >= coscut) ++ds;
+  return ds;
+}
+
 } // anonymous namespace
 
 // Entry points take pre-computed scores (scores = e * X, possibly
@@ -1437,4 +1488,139 @@ arma::mat FastSerialHacPanel(Rcpp::NumericVector unit, Rcpp::NumericVector time,
   const UnitBlocks blocks = make_unit_blocks(unit_v);
   const RowMajorScores S(S_col, ncores);
   return serial_hac_panel(time_v, cutoff, S, blocks, ncores);
+}
+
+
+// [[Rcpp::export]]
+arma::mat FastGridMeat(Rcpp::IntegerVector ring, Rcpp::IntegerVector col,
+                       Rcpp::NumericVector time, Rcpp::NumericMatrix scores,
+                       double lat0, double dlat, double dlon,
+                       int n_ring, int n_col,
+                       double cutoff, std::string dist_fn = "spherical",
+                       int ncores = 1) {
+  const std::size_t n = static_cast<std::size_t>(scores.nrow());
+  const std::size_t k = static_cast<std::size_t>(scores.ncol());
+  if (static_cast<std::size_t>(ring.size()) != n ||
+      static_cast<std::size_t>(col.size()) != n ||
+      static_cast<std::size_t>(time.size()) != n) {
+    Rcpp::stop("ring, col, time, and scores have incompatible lengths.");
+  }
+  if (cutoff < 0.0) Rcpp::stop("FastGridMeat requires a non-negative cutoff.");
+  if (n_ring < 1 || n_col < 1) Rcpp::stop("n_ring and n_col must be >= 1.");
+  ncores = std::max(1, ncores);
+
+  arma::mat meat_total(k, k, arma::fill::zeros);
+  if (n == 0) return meat_total;
+
+  const int dist_id = parse_dist_id(dist_fn);
+  const ScreenParams screen = make_screen_params(cutoff, dist_id);
+  // Uniform-kernel accept threshold on the unit-vector dot product. All
+  // three distances are monotone in the chord, so each maps to a dot
+  // threshold: haversine/spherical use cos(angular); chord uses
+  // 1 - chord_sq/2.
+  const double coscut = (dist_id == DIST_CHORD)
+      ? 1.0 - screen.chord_cutoff_sq / 2.0
+      : screen.cos_cutoff;
+
+  const std::size_t R = static_cast<std::size_t>(n_ring);
+  const std::size_t C = static_cast<std::size_t>(n_col);
+  GridGeom gg;
+  gg.n_ring = R;
+  gg.n_col = C;
+  gg.dlam_rad = dlon * DE2RA;
+  gg.sphi.resize(R);
+  gg.cphi.resize(R);
+  for (std::size_t r = 0; r < R; ++r) {
+    const double la = (lat0 + static_cast<double>(r) * dlat) * DE2RA;
+    gg.sphi[r] = std::sin(la);
+    gg.cphi[r] = std::cos(la);
+  }
+  const double dlat_rad = std::fabs(dlat) * DE2RA;
+  const std::size_t rho =
+      std::min(R, static_cast<std::size_t>(screen.angular_cutoff_rad /
+                                           std::max(dlat_rad, 1e-300)) + 2);
+
+  for (std::size_t i = 0; i < n; ++i) {
+    if (ring[i] < 0 || ring[i] >= n_ring || col[i] < 0 || col[i] >= n_col) {
+      Rcpp::stop("ring/col indices out of range.");
+    }
+  }
+
+  const arma::vec time_v(time.begin(), n, false, true);
+  const TimeBlocks blocks = make_time_blocks(time_v);
+  const std::size_t rowlen = (C + 1) * k;
+  std::vector<double> P(R * rowlen);
+  std::vector<std::size_t> ring_count(R);
+
+  for (std::size_t b = 0; b < blocks.start.size(); ++b) {
+    std::fill(P.begin(), P.end(), 0.0);
+    std::fill(ring_count.begin(), ring_count.end(), 0);
+
+    // Scatter block scores into the (c+1) slots, then prefix-sum per ring.
+    for (std::size_t i = blocks.start[b]; i < blocks.end[b]; ++i) {
+      const std::size_t r = static_cast<std::size_t>(ring[i]);
+      const std::size_t c = static_cast<std::size_t>(col[i]);
+      double* dst = P.data() + r * rowlen + (c + 1) * k;
+      for (std::size_t kk = 0; kk < k; ++kk) dst[kk] += scores(i, kk);
+      ++ring_count[r];
+    }
+    parallel_range(R, ncores, [&](std::size_t lo, std::size_t hi) {
+      for (std::size_t r = lo; r < hi; ++r) {
+        if (ring_count[r] == 0) continue;
+        double* Pr = P.data() + r * rowlen;
+        for (std::size_t c = 0; c < C; ++c) {
+          const double* prev = Pr + c * k;
+          double* cur = Pr + (c + 1) * k;
+          for (std::size_t kk = 0; kk < k; ++kk) cur[kk] += prev[kk];
+        }
+      }
+    });
+
+    // Deterministic reduce over target rings.
+    auto body = [&](std::size_t lo, std::size_t hi, arma::mat& meat) {
+      std::vector<double> cf(C * k);
+      for (std::size_t r1 = lo; r1 < hi; ++r1) {
+        if (ring_count[r1] == 0) continue;
+        std::fill(cf.begin(), cf.end(), 0.0);
+        bool any = false;
+        const std::size_t r2_lo = r1 >= rho ? r1 - rho : 0;
+        const std::size_t r2_hi = std::min(R - 1, r1 + rho);
+        for (std::size_t r2 = r2_lo; r2 <= r2_hi; ++r2) {
+          if (ring_count[r2] == 0) continue;
+          const long ds = grid_delta_star(gg, r1, r2, coscut);
+          if (ds < 0) continue;
+          any = true;
+          const double* Pr2 = P.data() + r2 * rowlen;
+          for (std::size_t c = 0; c < C; ++c) {
+            const std::size_t hi_i =
+                std::min(C - 1, c + static_cast<std::size_t>(ds)) + 1;
+            const std::size_t lo_i =
+                c >= static_cast<std::size_t>(ds)
+                    ? c - static_cast<std::size_t>(ds) : 0;
+            const double* ph = Pr2 + hi_i * k;
+            const double* pl = Pr2 + lo_i * k;
+            double* cfc = cf.data() + c * k;
+            for (std::size_t kk = 0; kk < k; ++kk) cfc[kk] += ph[kk] - pl[kk];
+          }
+        }
+        if (!any) continue;
+        const double* Pr1 = P.data() + r1 * rowlen;
+        for (std::size_t c = 0; c < C; ++c) {
+          const double* pc = Pr1 + c * k;
+          const double* pn = Pr1 + (c + 1) * k;
+          const double* cfc = cf.data() + c * k;
+          for (std::size_t k1 = 0; k1 < k; ++k1) {
+            const double s1 = pn[k1] - pc[k1];
+            if (s1 == 0.0) continue;
+            for (std::size_t k2 = 0; k2 < k; ++k2) {
+              meat(k1, k2) += s1 * cfc[k2];
+            }
+          }
+        }
+      }
+    };
+    meat_total += reduce_deterministic(R, k, 4, ncores, body);
+  }
+
+  return meat_total;
 }

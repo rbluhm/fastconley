@@ -1,3 +1,34 @@
+# fastconley 0.7.0
+
+Workstream C2: exact grid-native meat for raster data.
+
+## New: `method = c("auto", "pairwise", "grid")`
+
+For the uniform kernel on a regular lat/lon lattice (raster cell centers,
+gridded covariates), the within-cutoff accept set between two latitude
+rings is a longitude-index interval, so the spatial meat reduces to
+sliding-window sums over per-ring prefix sums — `FastGridMeat`. Cost is
+O(n_ring * window * n_col * k), **independent of the pair count**, and the
+accept threshold is the same dot-product constant the pairwise engine
+uses, so the result is exact (agrees to FP summation order; no
+approximation anywhere for natively gridded data).
+
+- C1-study config (2.25M cells at ~1.1 km, 250 km cutoff, ~1.8e11 pairs):
+  0.81 s vs 244 s for the 16-core pairwise engine — **302x**, error 5e-15.
+- 9M-cell continental raster (3000 x 3000, 250 km, ~7e11 pairs): 3.5 s.
+- Supports all three `dist_fn`s (monotone in the chord), multiple time
+  blocks (panels apply it per period), sparse occupancy, duplicate cells,
+  and is deterministic across `ncores`.
+
+`method = "auto"` (the new default) switches to the grid engine only when
+a lattice is detected, the kernel is uniform, and a flop-balance estimate
+says it wins; otherwise the pairwise engine runs as before. Scattered
+(non-lattice) data is unaffected. `method = "grid"` errors informatively
+when its requirements are not met.
+
+The bartlett ring-FFT variant (exact per the C1 study) is planned as a
+follow-up; bartlett rasters currently stay on the pairwise engine.
+
 # fastconley 0.6.1
 
 Minor-backlog items M1-M4 from `notes/OPTIMIZATION_PLAN.md`.

@@ -118,6 +118,17 @@ Since v0.5.0 candidate enumeration uses a 3D cell grid by default (`neighbor = "
 
 Since v0.6.0 results are **bit-identical across `ncores` values** (deterministic chunked reduction), the C++ entry points alias R memory with zero input copies (peak RSS −27 to −33% on large runs), haversine gains an exact dot-product pre-screen (bartlett/haversine ~1.4× single-threaded), and `csr_weight = "float"` optionally halves balanced-path bartlett weight storage.
 
+### v0.7.0: exact grid engine for rasters (`method = "auto"/"grid"`)
+
+For the uniform kernel on a regular lat/lon lattice (raster data), the meat
+reduces to exact sliding-window sums whose cost is independent of the pair
+count. On 2.25M cells at ~1.1 km with a 250 km cutoff (~1.8×10¹¹ pairs):
+**0.81 s vs 244 s** for the 16-core pairwise engine (302×, error 5e-15); a
+9M-cell continental raster takes 3.5 s. `method = "auto"` (default) engages
+it only when a lattice is detected and the kernel is uniform — scattered
+data and bartlett stay on the pairwise engine. No approximation: natively
+gridded data gets the exact great-circle answer.
+
 ### vs `fixest::vcov_conley` (v0.6.1, large data)
 
 Post-estimation only, `kernel = "uniform"`, great-circle distance, k = 10,
