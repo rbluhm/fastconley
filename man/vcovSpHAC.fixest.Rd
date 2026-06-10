@@ -8,8 +8,8 @@
   reg,
   unit = NULL,
   time = NULL,
-  lat,
-  lon,
+  lat = NULL,
+  lon = NULL,
   kernel = c("bartlett", "uniform"),
   dist_fn = c("haversine", "spherical", "chord"),
   dist_cutoff = NULL,
@@ -21,6 +21,8 @@
   neighbor = c("grid", "band"),
   csr_weight = c("double", "float"),
   method = c("auto", "pairwise", "grid"),
+  ssc = TRUE,
+  psd_fix = TRUE,
   data = NULL,
   ...
 )
@@ -34,9 +36,11 @@ share a single period — no serial HAC).}
 
 \item{time}{Optional name of the time variable. Ignored when \code{unit} is NULL.}
 
-\item{lat}{Name of the latitude variable.}
+\item{lat}{Name of the latitude variable. If \code{NULL} (default),
+auto-detected from the data's column names. See \code{\link{vcovSpHAC.felm}}.}
 
-\item{lon}{Name of the longitude variable.}
+\item{lon}{Name of the longitude variable. If \code{NULL} (default),
+auto-detected. See \code{\link{vcovSpHAC.felm}}.}
 
 \item{kernel}{Spatial kernel, either "bartlett" or "uniform".}
 
@@ -63,6 +67,12 @@ See \code{\link{vcovSpHAC.felm}}.}
 \item{method}{Spatial meat engine: "auto" (default), "pairwise", or
 "grid". See \code{\link{vcovSpHAC.felm}}.}
 
+\item{ssc}{Small-sample correction (\code{n / (n - K)} when \code{TRUE},
+the default). See \code{\link{vcovSpHAC.felm}}.}
+
+\item{psd_fix}{Clamp negative eigenvalues when \code{TRUE} (the
+default). See \code{\link{vcovSpHAC.felm}}.}
+
 \item{data}{Optional. The model frame to draw \code{lat}/\code{lon}/
 \code{unit}/\code{time} from. If \code{NULL} (default), the data is
 recovered from the fit's call. Pass it explicitly if the original data
@@ -76,7 +86,8 @@ A variance-covariance matrix.
 \description{
 Requires the fit to have been called with \code{feols(..., demeaned = TRUE)}
 so that the centered design matrix \code{X_demeaned} is stored on the fit
-object. Weighted fits are not supported.
+object. Weighted fits are supported (the scores carry the weights and the
+bread uses \eqn{X'WX}, matching \code{fixest}'s own weighted Conley vcov).
 }
 \details{
 The returned matrix can be passed to \code{fixest}'s \code{vcov} argument.

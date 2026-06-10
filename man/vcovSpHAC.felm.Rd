@@ -8,8 +8,8 @@
   reg,
   unit = NULL,
   time = NULL,
-  lat,
-  lon,
+  lat = NULL,
+  lon = NULL,
   kernel = c("bartlett", "uniform"),
   dist_fn = c("haversine", "spherical", "chord"),
   dist_cutoff = NULL,
@@ -21,6 +21,8 @@
   neighbor = c("grid", "band"),
   csr_weight = c("double", "float"),
   method = c("auto", "pairwise", "grid"),
+  ssc = TRUE,
+  psd_fix = TRUE,
   maxobsmem = 50000L,
   data = NULL,
   ...
@@ -33,9 +35,13 @@
 
 \item{time}{Optional name of the time variable.}
 
-\item{lat}{Name of the latitude variable.}
+\item{lat}{Name of the latitude variable. If \code{NULL} (default), it is
+auto-detected from the data's column names (\code{"lat"},
+\code{"latitude"}, case-insensitive); a message reports the pick.}
 
-\item{lon}{Name of the longitude variable.}
+\item{lon}{Name of the longitude variable. If \code{NULL} (default), it is
+auto-detected (\code{"lon"}, \code{"long"}, \code{"longitude"},
+\code{"lng"}, case-insensitive).}
 
 \item{kernel}{Spatial kernel, either "bartlett" or "uniform".}
 
@@ -82,6 +88,22 @@ for the bartlett spherical/chord weights). Pass \code{verbose = TRUE}
 to see which engine ran; if you expect gridded data to use the grid
 engine and it does not, run once with \code{method = "grid"} — it
 errors with the specific reason instead of falling back.}
+
+\item{ssc}{Small-sample correction. If \code{TRUE} (default), the variance
+matrix is scaled by \code{n / (n - K)} where \code{K} counts all
+estimated parameters including absorbed fixed-effect levels (taken from
+the fit's residual degrees of freedom). This matches \code{fixest}'s
+default Conley correction (its cluster adjustment is a no-op for Conley
+vcovs). Pass \code{FALSE} for no correction — that reproduces
+\code{rbluhm/conley}, fastconley versions before 0.9.0, and
+\code{fixest} with \code{ssc(adj = FALSE, cluster.adj = FALSE)}.}
+
+\item{psd_fix}{The spatial kernels do not guarantee a positive
+semi-definite variance matrix. If \code{TRUE} (default), negative
+eigenvalues are clamped (to 1e-16, as \code{fixest}'s \code{vcov_fix}
+does) and a warning reports when the fix noticeably changed the matrix.
+If \code{FALSE}, the matrix is returned as computed, with a warning
+when it is not positive semi-definite.}
 
 \item{maxobsmem}{Ignored by the fast spatial path. Kept for backward compatibility.}
 

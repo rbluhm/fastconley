@@ -22,8 +22,12 @@ vcovSpHAC.default <- function(reg, ...) {
 #' @param reg A fitted object of class "felm".
 #' @param unit Optional name of the panel unit variable.
 #' @param time Optional name of the time variable.
-#' @param lat Name of the latitude variable.
-#' @param lon Name of the longitude variable.
+#' @param lat Name of the latitude variable. If \code{NULL} (default), it is
+#'   auto-detected from the data's column names (\code{"lat"},
+#'   \code{"latitude"}, case-insensitive); a message reports the pick.
+#' @param lon Name of the longitude variable. If \code{NULL} (default), it is
+#'   auto-detected (\code{"lon"}, \code{"long"}, \code{"longitude"},
+#'   \code{"lng"}, case-insensitive).
 #' @param kernel Spatial kernel, either "bartlett" or "uniform".
 #' @param dist_fn Distance function, one of "haversine", "spherical", "chord".
 #' @param dist_cutoff Spatial cutoff in km.
@@ -59,6 +63,20 @@ vcovSpHAC.default <- function(reg, ...) {
 #'   to see which engine ran; if you expect gridded data to use the grid
 #'   engine and it does not, run once with \code{method = "grid"} — it
 #'   errors with the specific reason instead of falling back.
+#' @param ssc Small-sample correction. If \code{TRUE} (default), the variance
+#'   matrix is scaled by \code{n / (n - K)} where \code{K} counts all
+#'   estimated parameters including absorbed fixed-effect levels (taken from
+#'   the fit's residual degrees of freedom). This matches \code{fixest}'s
+#'   default Conley correction (its cluster adjustment is a no-op for Conley
+#'   vcovs). Pass \code{FALSE} for no correction — that reproduces
+#'   \code{rbluhm/conley}, fastconley versions before 0.9.0, and
+#'   \code{fixest} with \code{ssc(adj = FALSE, cluster.adj = FALSE)}.
+#' @param psd_fix The spatial kernels do not guarantee a positive
+#'   semi-definite variance matrix. If \code{TRUE} (default), negative
+#'   eigenvalues are clamped (to 1e-16, as \code{fixest}'s \code{vcov_fix}
+#'   does) and a warning reports when the fix noticeably changed the matrix.
+#'   If \code{FALSE}, the matrix is returned as computed, with a warning
+#'   when it is not positive semi-definite.
 #' @param maxobsmem Ignored by the fast spatial path. Kept for backward compatibility.
 #' @param data Optional. The data frame to draw \code{lat}/\code{lon} from.
 #'   If \code{NULL} (default), the data is recovered from the fit's call and
@@ -107,8 +125,8 @@ vcovSpHAC.default <- function(reg, ...) {
 vcovSpHAC.felm <- function(reg,
                            unit = NULL,
                            time = NULL,
-                           lat,
-                           lon,
+                           lat = NULL,
+                           lon = NULL,
                            kernel = c("bartlett", "uniform"),
                            dist_fn = c("haversine", "spherical", "chord"),
                            dist_cutoff = NULL,
@@ -120,12 +138,24 @@ vcovSpHAC.felm <- function(reg,
                            neighbor = c("grid", "band"),
                            csr_weight = c("double", "float"),
                            method = c("auto", "pairwise", "grid"),
+                           ssc = TRUE,
+                           psd_fix = TRUE,
                            maxobsmem = 50000L,
                            data = NULL,
                            ...) {
 
   args <- validate_args(kernel, dist_fn, dist_cutoff, lag_cutoff, pixel, ncores,
-                        neighbor, csr_weight, method)
+                        neighbor, csr_weight, method, ssc, psd_fix)
+
+  if (is.null(lat) || is.null(lon)) {
+    nm_src <- if (!is.null(data)) names(data) else {
+      names(tryCatch(eval(reg$call$data, environment(formula(reg))),
+                     error = function(e) NULL))
+    }
+    cn  <- detect_coord_names(nm_src, lat, lon)
+    lat <- cn$lat
+    lon <- cn$lon
+  }
 
   noFEs <- length(unit) == 0L
   if (noFEs) {
@@ -181,15 +211,24 @@ vcovSpHAC.felm <- function(reg,
     c(ifelse(!noFEs, names(reg$fe)[1L], unit),
       ifelse(!noFEs, names(reg$fe)[2L], time))
   )
-  dt[, e := as.numeric(reg$residuals)]
+  # Weighted (WLS) fits: the meat scores are s_i = w_i * e_i * x_i and the
+  # bread is (X'WX)^{-1}. lfe stores sqrt(w) in reg$weights, so square it.
+  # Folding w into the residual column covers both the spatial and the
+  # serial-HAC meat (both build scores as e * X downstream).
+  w <- if (!is.null(reg$weights)) as.numeric(reg$weights)^2 else NULL
+  res <- as.numeric(reg$residuals)
+  if (!is.null(w)) res <- res * w
+  dt[, e := res]
 
   data.table::setnames(dt, c(unit, time, lat, lon),
                             c("unit", "time", "lat", "lon"))
 
   X <- as.matrix(dt[, Xvars, with = FALSE])
   n <- nrow(dt)
-  invXX <- solve(crossprod(X)) * n
+  invXX <- solve(if (is.null(w)) crossprod(X) else crossprod(X, X * w)) * n
   rm(X)
+
+  dof_scale <- ssc_scale(ssc, n, reg$df.residual)
 
   vcovSpHAC_core(dt = dt, Xvars = Xvars, n = n, invXX = invXX,
                  kernel = args$kernel, dist_fn = args$dist_fn,
@@ -197,6 +236,7 @@ vcovSpHAC.felm <- function(reg,
                  balanced_pnl = balanced_pnl, ncores = args$ncores,
                  pixel = pixel, neighbor = args$neighbor,
                  csr_weight = args$csr_weight, method = args$method,
+                 dof_scale = dof_scale, psd_fix = psd_fix,
                  verbose = verbose)
 }
 
@@ -204,7 +244,8 @@ vcovSpHAC.felm <- function(reg,
 #'
 #' Requires the fit to have been called with \code{feols(..., demeaned = TRUE)}
 #' so that the centered design matrix \code{X_demeaned} is stored on the fit
-#' object. Weighted fits are not supported.
+#' object. Weighted fits are supported (the scores carry the weights and the
+#' bread uses \eqn{X'WX}, matching \code{fixest}'s own weighted Conley vcov).
 #'
 #' The returned matrix can be passed to \code{fixest}'s \code{vcov} argument.
 #' For the usual \code{fixest} workflow, define a one-argument wrapper such as
@@ -218,8 +259,10 @@ vcovSpHAC.felm <- function(reg,
 #'   call is treated as a cross-section (each row is its own unit, all rows
 #'   share a single period — no serial HAC).
 #' @param time Optional name of the time variable. Ignored when \code{unit} is NULL.
-#' @param lat Name of the latitude variable.
-#' @param lon Name of the longitude variable.
+#' @param lat Name of the latitude variable. If \code{NULL} (default),
+#'   auto-detected from the data's column names. See \code{\link{vcovSpHAC.felm}}.
+#' @param lon Name of the longitude variable. If \code{NULL} (default),
+#'   auto-detected. See \code{\link{vcovSpHAC.felm}}.
 #' @param kernel Spatial kernel, either "bartlett" or "uniform".
 #' @param dist_fn Distance function, one of "haversine", "spherical", "chord".
 #' @param dist_cutoff Spatial cutoff in km.
@@ -234,6 +277,10 @@ vcovSpHAC.felm <- function(reg,
 #'   (default) or "float". See \code{\link{vcovSpHAC.felm}}.
 #' @param method Spatial meat engine: "auto" (default), "pairwise", or
 #'   "grid". See \code{\link{vcovSpHAC.felm}}.
+#' @param ssc Small-sample correction (\code{n / (n - K)} when \code{TRUE},
+#'   the default). See \code{\link{vcovSpHAC.felm}}.
+#' @param psd_fix Clamp negative eigenvalues when \code{TRUE} (the
+#'   default). See \code{\link{vcovSpHAC.felm}}.
 #' @param data Optional. The model frame to draw \code{lat}/\code{lon}/
 #'   \code{unit}/\code{time} from. If \code{NULL} (default), the data is
 #'   recovered from the fit's call. Pass it explicitly if the original data
@@ -266,8 +313,8 @@ vcovSpHAC.felm <- function(reg,
 vcovSpHAC.fixest <- function(reg,
                              unit = NULL,
                              time = NULL,
-                             lat,
-                             lon,
+                             lat = NULL,
+                             lon = NULL,
                              kernel = c("bartlett", "uniform"),
                              dist_fn = c("haversine", "spherical", "chord"),
                              dist_cutoff = NULL,
@@ -279,18 +326,17 @@ vcovSpHAC.fixest <- function(reg,
                              neighbor = c("grid", "band"),
                              csr_weight = c("double", "float"),
                              method = c("auto", "pairwise", "grid"),
+                             ssc = TRUE,
+                             psd_fix = TRUE,
                              data = NULL,
                              ...) {
 
   args <- validate_args(kernel, dist_fn, dist_cutoff, lag_cutoff, pixel, ncores,
-                        neighbor, csr_weight, method)
+                        neighbor, csr_weight, method, ssc, psd_fix)
 
   if (is.null(reg$X_demeaned)) {
     stop("vcovSpHAC.fixest requires the fit to have been called with ",
          "feols(..., demeaned = TRUE) so the centered design matrix is available.")
-  }
-  if (!is.null(reg$weights)) {
-    stop("vcovSpHAC.fixest does not currently support weighted fits.")
   }
 
   # Use direct field access rather than coef(reg) / residuals(reg) — the
@@ -324,6 +370,11 @@ vcovSpHAC.fixest <- function(reg,
       stop("Could not locate the model data on the fit's call. ",
            "Pass `data = ` to vcovSpHAC explicitly.")
     }
+  }
+  if (is.null(lat) || is.null(lon)) {
+    cn  <- detect_coord_names(names(data), lat, lon)
+    lat <- cn$lat
+    lon <- cn$lon
   }
   # We index `data` by column name with `[[`, which works identically on
   # data.frame and data.table — avoid converting (a data.table-to-data.frame
@@ -366,6 +417,12 @@ vcovSpHAC.fixest <- function(reg,
          "Pass `data = ` explicitly or refit on a frame with no extra rows.")
   }
 
+  # Weighted (WLS) fits: scores are s_i = w_i * e_i * x_i, bread is
+  # (X'WX)^{-1}. fixest stores the weights on the original scale and
+  # X_demeaned / residuals on the raw (unweighted) scale.
+  w <- if (!is.null(reg$weights)) as.numeric(reg$weights) else NULL
+  if (!is.null(w)) e <- e * w
+
   dt <- data.table::data.table(
     cX,
     unit = unit_v,
@@ -375,7 +432,9 @@ vcovSpHAC.fixest <- function(reg,
     e    = e
   )
 
-  invXX <- solve(crossprod(cX)) * n
+  invXX <- solve(if (is.null(w)) crossprod(cX) else crossprod(cX, cX * w)) * n
+
+  dof_scale <- ssc_scale(ssc, n, reg$nobs - reg$nparams)
 
   vcovSpHAC_core(dt = dt, Xvars = Xvars, n = n, invXX = invXX,
                  kernel = args$kernel, dist_fn = args$dist_fn,
@@ -383,14 +442,16 @@ vcovSpHAC.fixest <- function(reg,
                  balanced_pnl = balanced_pnl, ncores = args$ncores,
                  pixel = pixel, neighbor = args$neighbor,
                  csr_weight = args$csr_weight, method = args$method,
+                 dof_scale = dof_scale, psd_fix = psd_fix,
                  verbose = verbose)
 }
 
-# Shared post-extraction core. `dt` must carry Xvars, unit, time, lat, lon, e.
+# Shared post-extraction core. `dt` must carry Xvars, unit, time, lat, lon, e
+# (with any regression weights already folded into e on entry).
 vcovSpHAC_core <- function(dt, Xvars, n, invXX,
                            kernel, dist_fn, dist_cutoff, lag_cutoff,
                            balanced_pnl, ncores, pixel, neighbor, csr_weight,
-                           method, verbose) {
+                           method, dof_scale = 1, psd_fix = FALSE, verbose) {
 
   # The FastSpatialMeat / FastSerialHacPanel C++ entry points require numeric
   # vectors for time and unit (arma::vec). Equality is the only thing they use
@@ -518,7 +579,30 @@ vcovSpHAC_core <- function(dt, Xvars, n, invXX,
 
   V_spatial_HAC <- invXX %*% (XeeX / n) %*% invXX / n
   V_spatial_HAC <- (V_spatial_HAC + t(V_spatial_HAC)) / 2
+  if (dof_scale != 1) V_spatial_HAC <- V_spatial_HAC * dof_scale
   rownames(V_spatial_HAC) <- colnames(V_spatial_HAC) <- Xvars
+
+  # The spatial kernels do not guarantee a PSD meat. Mirror fixest's
+  # vcov_fix: clamp eigenvalues to 1e-16 and warn only when the fix
+  # noticeably changed the matrix.
+  ev <- eigen(V_spatial_HAC, symmetric = TRUE)
+  if (any(ev$values <= 0)) {
+    V_fixed <- tcrossprod(ev$vectors %*% diag(pmax(ev$values, 1e-16),
+                                              length(ev$values)),
+                          ev$vectors)
+    noticeable <- max(abs(V_spatial_HAC - V_fixed)) > 1e-8
+    if (psd_fix) {
+      dimnames(V_fixed) <- dimnames(V_spatial_HAC)
+      V_spatial_HAC <- V_fixed
+      if (noticeable) {
+        warning("The vcov matrix was not positive semi-definite and was ",
+                "fixed by clamping negative eigenvalues.", call. = FALSE)
+      }
+    } else if (noticeable) {
+      warning("The vcov matrix is not positive semi-definite. Pass ",
+              "psd_fix = TRUE to clamp negative eigenvalues.", call. = FALSE)
+    }
+  }
   V_spatial_HAC
 }
 
@@ -526,7 +610,14 @@ vcovSpHAC_core <- function(dt, Xvars, n, invXX,
 validate_args <- function(kernel, dist_fn, dist_cutoff, lag_cutoff, pixel, ncores,
                           neighbor = c("grid", "band"),
                           csr_weight = c("double", "float"),
-                          method = c("auto", "pairwise", "grid")) {
+                          method = c("auto", "pairwise", "grid"),
+                          ssc = FALSE, psd_fix = FALSE) {
+  if (!(isTRUE(ssc) || isFALSE(ssc))) {
+    stop("ssc must be TRUE or FALSE.")
+  }
+  if (!(isTRUE(psd_fix) || isFALSE(psd_fix))) {
+    stop("psd_fix must be TRUE or FALSE.")
+  }
   kernel     <- match.arg(kernel,  c("bartlett", "uniform"))
   dist_fn    <- match.arg(dist_fn, c("haversine", "spherical", "chord"))
   neighbor   <- match.arg(neighbor, c("grid", "band"))
@@ -548,6 +639,49 @@ validate_args <- function(kernel, dist_fn, dist_cutoff, lag_cutoff, pixel, ncore
   ncores <- as.integer(max(1L, ncores))
   list(kernel = kernel, dist_fn = dist_fn, ncores = ncores, neighbor = neighbor,
        csr_weight = csr_weight, method = method)
+}
+
+# Small-sample scale factor n / max(n - K, 1), with n - K taken from the
+# fit's residual degrees of freedom (the max(., 1) floor is fixest's
+# convention for saturated fits). Returns 1 when ssc is FALSE or the fit
+# does not expose its df (with a warning, so a silent no-op cannot be
+# mistaken for a correction).
+ssc_scale <- function(ssc, n, df_resid) {
+  if (!isTRUE(ssc)) return(1.0)
+  if (!length(df_resid) || !is.finite(df_resid)) {
+    warning("ssc = TRUE, but the fit does not expose its residual degrees ",
+            "of freedom; no small-sample correction applied.", call. = FALSE)
+    return(1.0)
+  }
+  n / max(as.numeric(df_resid), 1)
+}
+
+# Guess lat/lon column names from the data when the user did not pass them.
+# Case-insensitive exact matches only — a substring match could grab
+# "dilation" or "elongation". Errors when no (or an ambiguous) match exists.
+detect_coord_names <- function(nms, lat, lon) {
+  if (is.null(nms) || !length(nms)) {
+    stop("lat/lon were not supplied and the model data could not be located ",
+         "to auto-detect them. Pass lat = and lon = (or data = ) explicitly.")
+  }
+  low <- tolower(nms)
+  pick1 <- function(cands, what) {
+    for (cand in cands) {
+      i <- which(low == cand)
+      if (length(i) == 1L) return(nms[i])
+      if (length(i) > 1L) {
+        stop("Auto-detection of the ", what, " column is ambiguous (several ",
+             "columns named '", cand, "' up to case). Pass it explicitly.")
+      }
+    }
+    stop("Could not auto-detect the ", what, " column (looked for: ",
+         paste(cands, collapse = ", "), "). Pass it explicitly.")
+  }
+  if (is.null(lat)) lat <- pick1(c("lat", "latitude"), "latitude")
+  if (is.null(lon)) lon <- pick1(c("lon", "long", "longitude", "lng"), "longitude")
+  message("vcovSpHAC: using lat = \"", lat, "\", lon = \"", lon,
+          "\" (auto-detected).")
+  list(lat = lat, lon = lon)
 }
 
 # Detect whether the coordinates lie on a regular lat/lon lattice (gaps —

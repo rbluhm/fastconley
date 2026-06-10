@@ -65,13 +65,21 @@ is the difference between a significant and an insignificant result far more
 often than is comfortable.
 
 `fastconley` computes Conley spatial HAC standard errors for models estimated
-with `fixest::feols()` or `lfe::felm()`. Three properties distinguish it:
+with `fixest::feols()` or `lfe::felm()` — for cross-sections and for panels,
+where it implements the full Conley (1999) spatial-*temporal* HAC. Four
+properties distinguish it:
 
 - **Exact.** Distances are true great-circle distances and every
   within-cutoff pair enters with its exact kernel weight — no dense-matrix
   shortcuts, no approximate distance formulas. Against a brute-force
   reference, results agree to near machine precision (the dense-baseline
   benchmark below shows this directly).
+- **Complete for panels.** With `lag_cutoff > 0` the spatial adjustment
+  within each period is combined with a Newey-West serial HAC term within
+  each unit — the spatial-temporal correction of Conley (1999) as
+  popularized by Hsiang (2010). `fixest`'s `vcov_conley()` is spatial-only;
+  it makes you choose between the Conley and the Driscoll-Kraay/Newey-West
+  corrections, while here they enter one covariance matrix together.
 - **Reproducible.** Results are bit-identical across thread counts: the same
   data and settings give the same covariance matrix on a laptop with
   `ncores = 2` and a server with `ncores = 64`.
@@ -84,7 +92,9 @@ The usual workflow is:
 
 1. Estimate the model.
 2. Pick a spatial cutoff that is meaningful for the application.
-3. Pass the fitted model and coordinate columns to `vcovSpHAC()`.
+3. Pass the fitted model and coordinate columns to `vcovSpHAC()` (when the
+   columns have standard names like `lat` / `lon`, they are auto-detected
+   and can be omitted).
 4. Use the returned covariance matrix in `summary()`, `etable()`, or your
    preferred table-making code.
 
@@ -279,6 +289,16 @@ affect inference.
 | `lag_cutoff` | Number of time lags for serial HAC in panel data. Use `0` for spatial-only inference. |
 | `ncores` | Number of threads used for the covariance calculation. |
 | `pixel = 0` | Exact deduplication of identical coordinates. Positive values trade a little spatial precision for more aggregation. |
+| `ssc = TRUE` | Small-sample correction. The default scales the matrix by $n/(n-K)$, counting absorbed fixed-effect levels in $K$ — exactly `fixest`'s default Conley correction. `FALSE` applies none, reproducing `rbluhm/conley` and fastconley before 0.9.0. |
+| `psd_fix = TRUE` | Conley kernels do not formally guarantee a positive semi-definite matrix. The default clamps negative eigenvalues (same semantics as `fixest`'s `vcov_fix`); either way a warning reports a noticeably non-PSD result. |
+
+Two conveniences need no argument at all. Weighted regressions
+(`feols(..., weights = ~w)` or `felm(..., weights = w)`) are handled
+automatically — the scores and the bread pick up the weights from the fit,
+matching `fixest`'s own weighted Conley vcov. And if `lat` / `lon` are
+omitted, they are auto-detected from common column names (`lat`/`latitude`,
+`lon`/`long`/`longitude`/`lng`, case-insensitive), with a message reporting
+the pick.
 
 Start with `pixel = 0`. If many observations share the same coordinates, this
 is exact and often faster. If the data are very large and the application can
@@ -427,13 +447,19 @@ K_{\text{bartlett}}(u) = 1 - u,
 $$
 
 The uniform kernel weights every within-cutoff pair equally; the bartlett
-kernel downweights linearly with distance and guarantees a positive
-semi-definite estimate. The covariance matrix is the usual sandwich:
+kernel downweights linearly with distance, which makes a non-positive
+semi-definite estimate much less likely (neither spatial kernel formally
+guarantees one — by default negative eigenvalues are clamped, with the same
+semantics as `fixest`'s `vcov_fix`; pass `psd_fix = FALSE` to return the
+matrix as computed). The covariance matrix is the usual sandwich:
 
 $$
 \widehat V =
 (X'X)^{-1}\widehat\Omega(X'X)^{-1}.
 $$
+
+For weighted (WLS) fits the scores become $s_i = w_i \hat u_i x_i$ and the
+bread uses $X'WX$, matching `fixest`'s weighted Conley vcov.
 
 For panel data, the spatial part is applied within time period. If
 `lag_cutoff` is positive, `fastconley` adds a serial HAC term within unit:
@@ -464,9 +490,11 @@ fixed-size chunks, so the same data and settings produce a bit-identical
 matrix regardless of `ncores`. Both properties hold for every engine
 (`pairwise` and `grid`), which is why `method` is purely a speed choice.
 
-No small-sample correction is applied: $\widehat V$ is reported as defined
-above. See the comparison section below for how this interacts with
-`fixest`'s defaults.
+By default $\widehat V$ is scaled by the $n/(n-K)$ small-sample correction —
+the same one `fixest` applies to Conley vcovs — so out of the box the two
+packages' defaults line up. Pass `ssc = FALSE` to report $\widehat V$
+exactly as defined above (the convention of `rbluhm/conley` and fastconley
+versions before 0.9.0).
 
 ## Why It Scales
 
@@ -585,13 +613,12 @@ numerically exact one.
 If you are migrating from `vcov_conley()` and want to reconcile results,
 two things matter:
 
-1. **Small-sample corrections.** `fastconley` applies none. `fixest` by
-   default applies its `ssc()` adjustments, so for a like-for-like comparison
-   call `vcov_conley` with `ssc(adj = FALSE, cluster.adj = FALSE)` (or
-   equivalently compare against `summary(est, ssc = ssc(adj = FALSE,
-   cluster.adj = FALSE), vcov = ...)`). If you want fixest's correction on
-   top of a `fastconley` matrix, scale it yourself — the adjustment is a
-   scalar factor.
+1. **Small-sample corrections.** Since v0.9.0 the defaults already agree:
+   both packages scale by $n/(n-K)$, where $K$ counts all estimated
+   parameters including absorbed fixed-effect levels (`fixest`'s cluster
+   adjustment is a no-op for Conley vcovs). To compare *uncorrected*
+   matrices instead, pass `ssc = FALSE` to `vcovSpHAC()` and
+   `ssc(adj = FALSE, cluster.adj = FALSE)` to `fixest`.
 2. **Distances.** After aligning the corrections, the remaining ~1e-2
    relative difference is fixest's approximate spherical distance, as
    described above. It shrinks with the cutoff's distance from the mass of

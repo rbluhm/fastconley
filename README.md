@@ -66,7 +66,9 @@ library(fastconley)
 est <- feols(y ~ x1 + x2 | unit + time, data = panel, demeaned = TRUE)
 ```
 
-`fixest::feols()` must be called with `demeaned = TRUE` so the centered design matrix is stored on the fit object — analogous to `keepCX = TRUE` for `felm`. The fixest method returns exactly the same VCOV as the felm method on identical data; the dispatch only changes how the centered design and residuals are extracted. Weighted fits (`feols(..., weights = w)`) are not currently supported. If you fit the model in one frame and the data is no longer reachable from the call site, pass `data = ` explicitly.
+`fixest::feols()` must be called with `demeaned = TRUE` so the centered design matrix is stored on the fit object — analogous to `keepCX = TRUE` for `felm`. The fixest method returns exactly the same VCOV as the felm method on identical data; the dispatch only changes how the centered design and residuals are extracted. Weighted fits (`feols(..., weights = ~w)` / `felm(..., weights = w)`) are supported since v0.9.0: the meat scores carry the weights and the bread uses `X'WX`, the same formula `fixest`'s own weighted Conley vcov uses. If you fit the model in one frame and the data is no longer reachable from the call site, pass `data = ` explicitly.
+
+Since v0.9.0 three conveniences mirror `fixest`, including its defaults: `ssc = TRUE` (the default) applies the `n / (n − K)` small-sample correction — exactly `fixest`'s default Conley correction; its cluster adjustment is a no-op for Conley vcovs — `psd_fix = TRUE` (the default) clamps negative eigenvalues with `fixest::vcov_fix` semantics, and `lat` / `lon` are auto-detected from common column names when omitted. **Note the behavior change:** earlier fastconley versions and upstream `rbluhm/conley` apply no correction; pass `ssc = FALSE, psd_fix = FALSE` to reproduce their output bit-for-bit.
 
 `fixest` accepts external covariance functions in its `vcov` argument. The most natural way to use `fastconley` in a `fixest` workflow is to define a one-argument wrapper that records the spatial settings and returns `vcovSpHAC()`:
 

@@ -1,3 +1,58 @@
+# fastconley 0.9.0
+
+fixest feature parity: weighted fits, small-sample correction, PSD repair,
+lat/lon auto-detection. **Breaking:** `ssc` and `psd_fix` default to `TRUE`
+to match `fixest`'s defaults out of the box; pass
+`ssc = FALSE, psd_fix = FALSE` to reproduce earlier fastconley versions and
+`rbluhm/conley` bit-for-bit.
+
+## Weighted (WLS) fits supported
+
+`vcovSpHAC` now accepts weighted `felm()` and `feols()` fits. The meat
+scores become `s_i = w_i * e_i * x_i` and the bread `(X'WX)^{-1}` — the
+formula `fixest`'s own weighted Conley vcov uses (verified exactly against
+it with a self-pairs-only cutoff, rel. err ~1e-15). Weights enter only the
+scores and the bread, so every engine — pairwise, grid/FFT, serial HAC,
+pixel aggregation, balanced CSR reuse — works unchanged. Note `lfe` stores
+`sqrt(w)` on the fit; `vcovSpHAC` squares it back.
+
+## `ssc`: small-sample correction (default `TRUE`)
+
+Scales the variance matrix by `n / (n - K)`, with `K` counting all
+estimated parameters including absorbed fixed-effect levels (taken from
+the fit's residual degrees of freedom). This is exactly `fixest`'s default
+Conley correction — its cluster adjustment (`G.adj` / `cluster.adj`) is a
+no-op for Conley vcovs, so this one factor reproduces `fixest` defaults.
+`ssc = FALSE` applies no correction, matching `rbluhm/conley` and previous
+fastconley versions.
+
+## `psd_fix`: positive semi-definite repair (default `TRUE`)
+
+Conley spatial kernels do not guarantee a PSD variance matrix. With
+`psd_fix = TRUE` (default, as in `fixest`) negative eigenvalues are
+clamped to 1e-16 — the same semantics as `fixest`'s `vcov_fix` — with a
+warning when the fix noticeably changed the matrix (> 1e-8). With
+`psd_fix = FALSE` the matrix is returned as computed and a warning is
+emitted when it is noticeably non-PSD.
+
+## lat/lon auto-detection
+
+`lat` and `lon` now default to `NULL` and are auto-detected from the
+data's column names (`lat`/`latitude` and `lon`/`long`/`longitude`/`lng`,
+case-insensitive exact matches). A message reports the pick; ambiguous or
+missing matches error with instructions.
+
+## Validation
+
+- 24-config battery (balanced/unbalanced/cross-section x kernels x
+  distances x lags x engines) bitwise-identical to v0.8.0 with
+  `ssc = FALSE, psd_fix = FALSE` (the C++ engines and the default-off code
+  paths are untouched).
+- Weighted fits: exact match to `fixest` at self-pairs-only cutoff;
+  ~1e-10 against a dense brute-force reference at 200 km for both
+  kernels; felm and fixest paths agree to ~1e-10.
+- New testthat coverage: `tests/testthat/test-weights-ssc.R` (14 tests).
+
 # fastconley 0.8.0
 
 Grid engine, part two: bartlett support (ring-FFT) and dateline wrap.
