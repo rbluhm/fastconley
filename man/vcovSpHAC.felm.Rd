@@ -78,7 +78,10 @@ circle wrap correctly across the dateline. "auto" (default) picks
 "grid" when it detects a lattice and a flop-balance estimate says it
 wins; both engines are exact, so the choice only affects speed
 (results agree to FP summation order, plus ~1e-12 acos conditioning
-for the bartlett spherical/chord weights).}
+for the bartlett spherical/chord weights). Pass \code{verbose = TRUE}
+to see which engine ran; if you expect gridded data to use the grid
+engine and it does not, run once with \code{method = "grid"} — it
+errors with the specific reason instead of falling back.}
 
 \item{maxobsmem}{Ignored by the fast spatial path. Kept for backward compatibility.}
 
@@ -96,4 +99,40 @@ A variance-covariance matrix.
 }
 \description{
 Spatial HAC variance-covariance matrix for felm() models
+}
+\examples{
+if (requireNamespace("lfe", quietly = TRUE)) {
+  ## Cross-section on a regular 0.5-degree raster with holes. method =
+  ## "grid" forces the exact grid engine; the default method = "auto"
+  ## picks it automatically when the raster is large enough to win
+  ## (on a toy example this small, pairwise is just as fast).
+  set.seed(1)
+  cells <- expand.grid(lat = seq(40, 49.5, by = 0.5),
+                       lon = seq(-10, 9.5, by = 0.5))
+  cells <- cells[sample(nrow(cells), 600), ]   # irregular occupancy
+  cells$x <- rnorm(nrow(cells))
+  cells$y <- 0.5 * cells$x + rnorm(nrow(cells))
+
+  fit <- lfe::felm(y ~ x, data = cells, keepCX = TRUE)
+  V <- vcovSpHAC(fit, lat = "lat", lon = "lon",
+                 kernel = "bartlett", dist_fn = "spherical",
+                 dist_cutoff = 200, ncores = 2, method = "grid",
+                 data = cells)
+  sqrt(diag(V))
+
+  ## Panel with spatial + serial HAC (scattered points: pairwise engine)
+  pnl <- data.frame(unit = rep(1:200, each = 5),
+                    time = rep(1:5, times = 200),
+                    lat = rep(runif(200, 40, 50), each = 5),
+                    lon = rep(runif(200, -10, 10), each = 5))
+  pnl$x <- rnorm(nrow(pnl))
+  pnl$y <- 0.5 * pnl$x + rnorm(nrow(pnl))
+  fit2 <- lfe::felm(y ~ x | unit + time, data = pnl, keepCX = TRUE)
+  V2 <- vcovSpHAC(fit2, unit = "unit", time = "time",
+                  lat = "lat", lon = "lon", kernel = "bartlett",
+                  dist_fn = "haversine", dist_cutoff = 300,
+                  lag_cutoff = 2, balanced_pnl = TRUE, ncores = 2,
+                  data = pnl)
+  sqrt(diag(V2))
+}
 }

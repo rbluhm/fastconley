@@ -55,7 +55,10 @@ vcovSpHAC.default <- function(reg, ...) {
 #'   "grid" when it detects a lattice and a flop-balance estimate says it
 #'   wins; both engines are exact, so the choice only affects speed
 #'   (results agree to FP summation order, plus ~1e-12 acos conditioning
-#'   for the bartlett spherical/chord weights).
+#'   for the bartlett spherical/chord weights). Pass \code{verbose = TRUE}
+#'   to see which engine ran; if you expect gridded data to use the grid
+#'   engine and it does not, run once with \code{method = "grid"} — it
+#'   errors with the specific reason instead of falling back.
 #' @param maxobsmem Ignored by the fast spatial path. Kept for backward compatibility.
 #' @param data Optional. The data frame to draw \code{lat}/\code{lon} from.
 #'   If \code{NULL} (default), the data is recovered from the fit's call and
@@ -65,6 +68,41 @@ vcovSpHAC.default <- function(reg, ...) {
 #'   direct column access with no model-frame rebuild at all.
 #' @param ... Currently unused.
 #' @return A variance-covariance matrix.
+#' @examples
+#' if (requireNamespace("lfe", quietly = TRUE)) {
+#'   ## Cross-section on a regular 0.5-degree raster with holes. method =
+#'   ## "grid" forces the exact grid engine; the default method = "auto"
+#'   ## picks it automatically when the raster is large enough to win
+#'   ## (on a toy example this small, pairwise is just as fast).
+#'   set.seed(1)
+#'   cells <- expand.grid(lat = seq(40, 49.5, by = 0.5),
+#'                        lon = seq(-10, 9.5, by = 0.5))
+#'   cells <- cells[sample(nrow(cells), 600), ]   # irregular occupancy
+#'   cells$x <- rnorm(nrow(cells))
+#'   cells$y <- 0.5 * cells$x + rnorm(nrow(cells))
+#'
+#'   fit <- lfe::felm(y ~ x, data = cells, keepCX = TRUE)
+#'   V <- vcovSpHAC(fit, lat = "lat", lon = "lon",
+#'                  kernel = "bartlett", dist_fn = "spherical",
+#'                  dist_cutoff = 200, ncores = 2, method = "grid",
+#'                  data = cells)
+#'   sqrt(diag(V))
+#'
+#'   ## Panel with spatial + serial HAC (scattered points: pairwise engine)
+#'   pnl <- data.frame(unit = rep(1:200, each = 5),
+#'                     time = rep(1:5, times = 200),
+#'                     lat = rep(runif(200, 40, 50), each = 5),
+#'                     lon = rep(runif(200, -10, 10), each = 5))
+#'   pnl$x <- rnorm(nrow(pnl))
+#'   pnl$y <- 0.5 * pnl$x + rnorm(nrow(pnl))
+#'   fit2 <- lfe::felm(y ~ x | unit + time, data = pnl, keepCX = TRUE)
+#'   V2 <- vcovSpHAC(fit2, unit = "unit", time = "time",
+#'                   lat = "lat", lon = "lon", kernel = "bartlett",
+#'                   dist_fn = "haversine", dist_cutoff = 300,
+#'                   lag_cutoff = 2, balanced_pnl = TRUE, ncores = 2,
+#'                   data = pnl)
+#'   sqrt(diag(V2))
+#' }
 #' @export
 vcovSpHAC.felm <- function(reg,
                            unit = NULL,
@@ -168,6 +206,13 @@ vcovSpHAC.felm <- function(reg,
 #' so that the centered design matrix \code{X_demeaned} is stored on the fit
 #' object. Weighted fits are not supported.
 #'
+#' The returned matrix can be passed to \code{fixest}'s \code{vcov} argument.
+#' For the usual \code{fixest} workflow, define a one-argument wrapper such as
+#' \code{function(x) vcovSpHAC(x, ...)} and pass that function to
+#' \code{summary()}, \code{etable()}, or \code{feols(vcov = )}. The wrapper
+#' keeps the coordinate names, cutoffs, panel variables, and optional
+#' \code{data = } argument together.
+#'
 #' @param reg A fitted object of class "fixest".
 #' @param unit Optional name of the panel unit variable. If \code{NULL} the
 #'   call is treated as a cross-section (each row is its own unit, all rows
@@ -195,6 +240,28 @@ vcovSpHAC.felm <- function(reg,
 #'   has gone out of scope, or if you want to override.
 #' @param ... Currently unused.
 #' @return A variance-covariance matrix.
+#' @examples
+#' if (requireNamespace("fixest", quietly = TRUE)) {
+#'   ## feols must be fit with demeaned = TRUE (the keepCX analogue).
+#'   set.seed(1)
+#'   cells <- expand.grid(lat = seq(40, 49.5, by = 0.5),
+#'                        lon = seq(-10, 9.5, by = 0.5))
+#'   cells$x <- rnorm(nrow(cells))
+#'   cells$y <- 0.5 * cells$x + rnorm(nrow(cells))
+#'
+#'   fit <- fixest::feols(y ~ x, data = cells, demeaned = TRUE)
+#'   vcov_fc <- function(x) {
+#'     vcovSpHAC(x, lat = "lat", lon = "lon",
+#'               kernel = "uniform", dist_fn = "spherical",
+#'               dist_cutoff = 200, ncores = 2, data = cells)
+#'   }
+#'   V <- vcov_fc(fit)
+#'   sqrt(diag(V))
+#'
+#'   ## The same wrapper can be used directly in fixest's vcov argument.
+#'   fit_sum <- summary(fit, vcov = vcov_fc)
+#'   sqrt(diag(fit_sum$cov.scaled))
+#' }
 #' @export
 vcovSpHAC.fixest <- function(reg,
                              unit = NULL,
@@ -496,10 +563,15 @@ detect_lonlat_grid <- function(lat, lon, tol = 1e-6) {
   if (step_l <= 0 || step_o <= 0) return(NULL)
   if (any(abs(dl / step_l - round(dl / step_l)) > tol)) return(NULL)
   if (any(abs(dol / step_o - round(dol / step_o)) > tol)) return(NULL)
-  ring <- as.integer(round((lat - ul[1L]) / step_l))
-  col  <- as.integer(round((lon - uo[1L]) / step_o))
-  if (max(abs(lat - (ul[1L] + ring * step_l))) > tol * step_l) return(NULL)
-  if (max(abs(lon - (uo[1L] + col * step_o))) > tol * step_o) return(NULL)
+  ring_d <- round((lat - ul[1L]) / step_l)
+  col_d  <- round((lon - uo[1L]) / step_o)
+  if (!all(is.finite(ring_d)) || !all(is.finite(col_d))) return(NULL)
+  if (max(ring_d) > .Machine$integer.max - 1 ||
+      max(col_d) > .Machine$integer.max - 1) return(NULL)
+  if (max(abs(lat - (ul[1L] + ring_d * step_l))) > tol * step_l) return(NULL)
+  if (max(abs(lon - (uo[1L] + col_d * step_o))) > tol * step_o) return(NULL)
+  ring <- as.integer(ring_d)
+  col  <- as.integer(col_d)
   n_col <- max(col) + 1L
   # Full-circle column count when the lon step tiles 360 degrees evenly
   # (0 otherwise). FastGridMeat uses it to wrap windows across the

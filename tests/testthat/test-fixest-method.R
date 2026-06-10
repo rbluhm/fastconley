@@ -55,6 +55,29 @@ test_that("vcovSpHAC.fixest honors subset= in feols", {
   expect_lt(max(abs(V_sub - V_pre)), 1e-12)
 })
 
+test_that("vcovSpHAC.fixest works as a fixest vcov function", {
+  skip_if_not_installed("fixest")
+  RcppParallel::setThreadOptions(numThreads = 1L)
+
+  d <- make_cross_section(n = 180L, k = 2L, seed = 56L)
+  fit <- fixest::feols(y ~ x1 + x2, data = d, demeaned = TRUE)
+  vcov_fc <- function(x) {
+    vcovSpHAC(x, lat = "lat", lon = "lon",
+              kernel = "uniform", dist_fn = "spherical",
+              dist_cutoff = 500, ncores = 1L, data = d)
+  }
+
+  V <- vcov_fc(fit)
+  fit_sum <- summary(fit, vcov = vcov_fc)
+  expect_equal(dim(fit_sum$cov.scaled), dim(V))
+  expect_equal(as.numeric(fit_sum$cov.scaled), as.numeric(V), tolerance = 1e-12)
+
+  fit_with_vcov <- fixest::feols(y ~ x1 + x2, data = d, demeaned = TRUE,
+                                 vcov = vcov_fc)
+  expect_equal(as.numeric(fixest::se(fit_with_vcov)),
+               as.numeric(sqrt(diag(V))), tolerance = 1e-12)
+})
+
 test_that("vcovSpHAC.fixest errors without demeaned=TRUE", {
   skip_if_not_installed("fixest")
   d <- make_cross_section(n = 100L, k = 2L, seed = 61L)

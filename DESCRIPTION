@@ -19,11 +19,14 @@ Imports:
     stats
 Suggests:
     fixest,
+    knitr,
     lfe,
+    rmarkdown,
     testthat (>= 3.0.0)
 LinkingTo:
     Rcpp,
     RcppArmadillo,
     RcppParallel
 SystemRequirements: GNU make
+VignetteBuilder: knitr
 RoxygenNote: 7.3.2

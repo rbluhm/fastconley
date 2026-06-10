@@ -35,3 +35,9 @@ __pycache__/
 # Exclude legacy notes
 /notes/
 
+
+# vignette build artifacts and package build output
+vignettes/*.html
+vignettes/*.R
+fastconley_*.tar.gz
+fastconley.Rcheck/

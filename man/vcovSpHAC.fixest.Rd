@@ -78,3 +78,34 @@ Requires the fit to have been called with \code{feols(..., demeaned = TRUE)}
 so that the centered design matrix \code{X_demeaned} is stored on the fit
 object. Weighted fits are not supported.
 }
+\details{
+The returned matrix can be passed to \code{fixest}'s \code{vcov} argument.
+For the usual \code{fixest} workflow, define a one-argument wrapper such as
+\code{function(x) vcovSpHAC(x, ...)} and pass that function to
+\code{summary()}, \code{etable()}, or \code{feols(vcov = )}. The wrapper
+keeps the coordinate names, cutoffs, panel variables, and optional
+\code{data = } argument together.
+}
+\examples{
+if (requireNamespace("fixest", quietly = TRUE)) {
+  ## feols must be fit with demeaned = TRUE (the keepCX analogue).
+  set.seed(1)
+  cells <- expand.grid(lat = seq(40, 49.5, by = 0.5),
+                       lon = seq(-10, 9.5, by = 0.5))
+  cells$x <- rnorm(nrow(cells))
+  cells$y <- 0.5 * cells$x + rnorm(nrow(cells))
+
+  fit <- fixest::feols(y ~ x, data = cells, demeaned = TRUE)
+  vcov_fc <- function(x) {
+    vcovSpHAC(x, lat = "lat", lon = "lon",
+              kernel = "uniform", dist_fn = "spherical",
+              dist_cutoff = 200, ncores = 2, data = cells)
+  }
+  V <- vcov_fc(fit)
+  sqrt(diag(V))
+
+  ## The same wrapper can be used directly in fixest's vcov argument.
+  fit_sum <- summary(fit, vcov = vcov_fc)
+  sqrt(diag(fit_sum$cov.scaled))
+}
+}

@@ -83,3 +83,10 @@ test_that("balanced_pnl errors on time-varying coordinates", {
     regexp = "time-invariant coordinates"
   )
 })
+
+
+test_that("grid lattice detection rejects degenerate implied grids", {
+  lat <- c(0, 1e-12, 1)
+  lon <- c(0, 1e-12, 1)
+  expect_null(fastconley:::detect_lonlat_grid(lat, lon))
+})

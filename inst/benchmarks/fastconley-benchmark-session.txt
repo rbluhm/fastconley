@@ -1,0 +1,37 @@
+run_date: 2026-06-10 16:33:53.326545
+threads: 8
+reps: 2
+fastconley: 0.8.0
+fixest: 0.14.1
+lfe: 3.1.1
+
+R version 4.6.0 (2026-04-24)
+Platform: x86_64-pc-linux-gnu
+Running under: Ubuntu 24.04.4 LTS
+
+Matrix products: default
+BLAS:   /usr/lib/x86_64-linux-gnu/blas/libblas.so.3.12.0 
+LAPACK: /usr/lib/x86_64-linux-gnu/lapack/liblapack.so.3.12.0  LAPACK version 3.12.0
+
+locale:
+ [1] LC_CTYPE=C.UTF-8       LC_NUMERIC=C           LC_TIME=C.UTF-8       
+ [4] LC_COLLATE=C.UTF-8     LC_MONETARY=C.UTF-8    LC_MESSAGES=C.UTF-8   
+ [7] LC_PAPER=C.UTF-8       LC_NAME=C              LC_ADDRESS=C          
+[10] LC_TELEPHONE=C         LC_MEASUREMENT=C.UTF-8 LC_IDENTIFICATION=C   
+
+time zone: Europe/Berlin
+tzcode source: system (glibc)
+
+attached base packages:
+[1] stats     graphics  grDevices utils     datasets  methods   base     
+
+other attached packages:
+[1] fastconley_0.8.0  data.table_1.18.4
+
+loaded via a namespace (and not attached):
+ [1] Formula_1.2-5         numDeriv_2016.8-1.1   fixest_0.14.1        
+ [4] Matrix_1.7-5          lattice_0.22-9        stringmagic_1.2.0    
+ [7] zoo_1.8-15            parallel_4.6.0        RcppParallel_5.1.11-2
+[10] lfe_3.1.1             dreamerr_1.5.0        xtable_1.8-8         
+[13] grid_4.6.0            sandwich_3.1-1        compiler_4.6.0       
+[16] tools_4.6.0           nlme_3.1-169          Rcpp_1.1.1-1.1       

@@ -64,26 +64,68 @@ library(fixest)
 library(fastconley)
 
 est <- feols(y ~ x1 + x2 | unit + time, data = panel, demeaned = TRUE)
-
-V <- vcovSpHAC(
-  est,
-  unit         = "unit",
-  time         = "time",
-  lat          = "lat",
-  lon          = "lon",
-  kernel       = "bartlett",
-  dist_fn      = "haversine",
-  dist_cutoff  = 500,
-  lag_cutoff   = 0,
-  balanced_pnl = TRUE,
-  ncores       = NA,
-  pixel        = 0
-)
 ```
 
 `fixest::feols()` must be called with `demeaned = TRUE` so the centered design matrix is stored on the fit object — analogous to `keepCX = TRUE` for `felm`. The fixest method returns exactly the same VCOV as the felm method on identical data; the dispatch only changes how the centered design and residuals are extracted. Weighted fits (`feols(..., weights = w)`) are not currently supported. If you fit the model in one frame and the data is no longer reachable from the call site, pass `data = ` explicitly.
 
+`fixest` accepts external covariance functions in its `vcov` argument. The most natural way to use `fastconley` in a `fixest` workflow is to define a one-argument wrapper that records the spatial settings and returns `vcovSpHAC()`:
+
+```r
+vcov_fastconley <- function(x) {
+  vcovSpHAC(
+    x,
+    unit         = "unit",
+    time         = "time",
+    lat          = "lat",
+    lon          = "lon",
+    kernel       = "bartlett",
+    dist_fn      = "haversine",
+    dist_cutoff  = 500,
+    lag_cutoff   = 1,
+    balanced_pnl = TRUE,
+    ncores       = NA,
+    pixel        = 0,
+    data         = panel
+  )
+}
+
+summary(est, vcov = vcov_fastconley)
+etable(est, vcov = vcov_fastconley)
+```
+
+The same wrapper can be passed directly at estimation time:
+
+```r
+est <- feols(
+  y ~ x1 + x2 | unit + time,
+  data = panel,
+  demeaned = TRUE,
+  vcov = vcov_fastconley
+)
+```
+
+If you will print or export the same model many times, compute the covariance matrix once and pass the matrix to `fixest`:
+
+```r
+V <- vcov_fastconley(est)
+summary(est, vcov = V)
+etable(est, vcov = V)
+```
+
 This wires `fastconley` in as a drop-in spatial HAC for the `fixest` workflow while still computing the textbook within-period spatial + within-unit serial-HAC object (see the panel-comparison section below); it is structurally different from `fixest::vcov_conley + vcov_NW − vcov_hetero`.
+
+### Matching settings to your data
+
+Most users can leave `method = "auto"`. The explicit settings below are useful when you want the call to document the intended data layout, or when you want an early error if the data do not have the structure you expected.
+
+| Data layout | Recommended `vcovSpHAC()` settings | Meaning |
+|---|---|---|
+| Scattered cross-section | Omit `unit` and `time`; use `lag_cutoff = 0`; leave `method = "auto"` or set `method = "pairwise"`. | Exact spatial Conley for ordinary point locations. |
+| Repeated locations | Same as scattered data; start with `pixel = 0`. | Rows with identical coordinates are combined exactly before the covariance is computed. |
+| Approximate location snapping | Set a positive `pixel`, such as `pixel = 5`, only after checking sensitivity. | Nearby locations are snapped to a kilometer grid. This can be faster, but it is an approximation. |
+| Regular raster or grid | Use `method = "auto"`, or `method = "grid"` if you want to require a regular latitude-longitude lattice. | Exact Conley for complete or partly occupied regular rasters. If `method = "grid"` and the data are not a lattice, the call errors instead of falling back. |
+| Balanced panel with fixed locations | Provide `unit` and `time`; set `lag_cutoff` as needed; set `balanced_pnl = TRUE`. | Spatial correlation is computed within period; serial HAC is computed within unit. This is faster when every period has the same units and locations do not move. |
+| Unbalanced panel or moving locations | Provide `unit` and `time`; set `lag_cutoff` as needed; leave `balanced_pnl = FALSE`. | Uses the general panel route. This is safer when units enter, exit, duplicate within a period, or change coordinates. |
 
 ### The `pixel` argument
 
@@ -91,6 +133,65 @@ This wires `fastconley` in as a drop-in spatial HAC for the `fixest` workflow wh
 
 - `pixel = 0` (default): exact-coordinate dedupe only. Two rows are collapsed iff their `(lat, lon)` match exactly. The answer is unchanged (machine precision); free win when units share coordinates (panels with time-invariant coords, point-aggregated data).
 - `pixel > 0`: snap `(lat, lon)` to a uniform `pixel`-km grid before the dedupe. Nearby points collapse to a common representative. The pair distance is approximate up to roughly `pixel / 2` km — this is a speed/accuracy trade-off; pick `pixel` an order of magnitude smaller than `dist_cutoff`.
+
+### Raster / gridded data: the grid engine
+
+If your unit of observation is a raster cell — PRIO-GRID, gridded
+population or nightlights, climate cells, anything you aggregated to a
+regular lat/lon grid yourself — the spatial meat is computed by a
+dedicated engine whose cost is independent of the pair count. On dense
+rasters with realistic cutoffs this is two to three orders of magnitude
+faster than enumerating pairs (see the benchmark sections below), with
+no approximation: the same accept threshold and weights as the pairwise
+engine, exact for natively gridded data.
+
+You don't have to do anything to use it: `method = "auto"` (the default)
+detects the lattice and engages the engine when a flop-balance estimate
+says it wins. A typical workflow from a raster:
+
+```r
+library(terra); library(lfe); library(fastconley)
+
+r <- rast("nightlights.tif")                      # any regular lat/lon raster
+d <- as.data.frame(r, xy = TRUE, na.rm = TRUE)    # x = lon, y = lat, holes dropped
+d$gdp <- ...                                      # your cell-level variables
+
+fit <- felm(log(lights) ~ log(gdp), data = d, keepCX = TRUE)
+V <- vcovSpHAC(fit, lat = "y", lon = "x",
+               kernel = "bartlett", dist_fn = "spherical",
+               dist_cutoff = 250, data = d)
+```
+
+**Requirements and limits:**
+
+- Coordinates must lie on a regular lat/lon lattice: all unique
+  latitudes share a common step, all unique longitudes share a common
+  step (the two steps may differ, e.g. 0.5° × 0.25°). Raster cell
+  centers from `terra`/`raster` satisfy this by construction.
+- **Holes are fine.** The lattice only has to describe the coordinate
+  system; occupancy can be arbitrary — country masks, coastlines,
+  land-only cells, missing data. Empty cells cost a little speed, never
+  correctness; at extreme sparsity `auto` switches back to the pairwise
+  engine on its own.
+- Panels work (the engine runs per period) and need not be balanced;
+  duplicates within a cell are handled.
+- Both kernels (`uniform`, `bartlett`) and all three `dist_fn`s are
+  supported. Rasters spanning the full 360° longitude circle wrap
+  correctly across the dateline.
+- **Not supported:** scattered point data (households, firms, survey
+  clusters) and projected coordinates (UTM meters) — these always use
+  the pairwise engine. A `pixel`-style snapping mode to let scattered
+  points ride the grid engine is on the roadmap.
+- Coordinates must match the lattice to within ~1e-6 of the step. If
+  you computed cell centroids yourself with floating-point noise beyond
+  that, detection fails silently and `auto` falls back to the (correct
+  but slower) pairwise engine.
+
+To see which engine actually ran, pass `verbose = TRUE` — it prints
+`pairwise` or `grid`. If you believe your data is gridded but the grid
+engine doesn't engage, run once with `method = "grid"`: instead of
+falling back it errors with the specific reason (no lattice detected,
+degenerate lattice, or a dateline-wrap incompatibility).
 
 ## What changed vs. `rbluhm/conley`
 
