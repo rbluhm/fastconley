@@ -2,6 +2,8 @@
 
 Fast Conley (1997) spatial HAC standard errors for `lfe::felm()` and `fixest::feols()` models in R.
 
+Documentation site: **<https://rbluhm.github.io/fastconley/>** — function reference, changelog, and the [performance vignette](https://rbluhm.github.io/fastconley/articles/fastconley-performance.html).
+
 `fastconley` is a drop-in replacement for the spatial path of [`rbluhm/conley`](https://github.com/rbluhm/conley) that scales to large cross-sections and high-dimensional regressions. `vcovSpHAC()` still accepts `felm` fits with the same call signature it always did; numerical equivalence with upstream `conley` holds at machine precision for the three supported distance functions (the upstream-only `dist_fn = "flatearth"` option was dropped, and `pixel` was added as a new optional argument — see the [Compatibility](#compatibility-with-rbluhmconley) section for the full diff). `vcovSpHAC()` is also now an S3 generic with a `fixest` method.
 
 The original `conley` package was written by Richard Bluhm with contributions from [Darin Christensen](https://github.com/darinchristensen/conley-se). Some key speed up ideas (sorting on distances and pruning) are from [Laurent Berge](https://github.com/lrberge/fixest) and [Christian Düben](https://github.com/cdueben/conleyreg).

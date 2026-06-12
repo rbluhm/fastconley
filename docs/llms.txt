@@ -5,6 +5,10 @@ Fast Conley (1997) spatial HAC standard errors for
 [`fixest::feols()`](https://lrberge.github.io/fixest/reference/feols.html)
 models in R.
 
+Documentation site: **<https://rbluhm.github.io/fastconley/>** —
+function reference, changelog, and the [performance
+vignette](https://rbluhm.github.io/fastconley/articles/fastconley-performance.html).
+
 `fastconley` is a drop-in replacement for the spatial path of
 [`rbluhm/conley`](https://github.com/rbluhm/conley) that scales to large
 cross-sections and high-dimensional regressions.
