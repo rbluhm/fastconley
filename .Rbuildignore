@@ -6,3 +6,6 @@
 ^fastconley\.Rcheck$
 ^fastconley_.*\.tar\.gz$
 ^\.obsidian$
+^_pkgdown\.yml$
+^docs$
+^pkgdown$

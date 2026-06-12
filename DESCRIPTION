@@ -11,6 +11,8 @@ Description: Conley (1999) spatial HAC standard errors for linear fixed effects
     matrices, yielding large speedups over rbluhm/conley on big
     cross-sections and high-dimensional regressions.
 License: MIT + file LICENSE
+URL: https://github.com/rbluhm/fastconley, https://rbluhm.github.io/fastconley/
+BugReports: https://github.com/rbluhm/fastconley/issues
 Encoding: UTF-8
 Imports:
     data.table,

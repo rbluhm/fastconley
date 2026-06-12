@@ -1,0 +1,19 @@
+url: https://rbluhm.github.io/fastconley/
+
+template:
+  bootstrap: 5
+
+home:
+  title: "fastconley: Fast and exact Conley standard errors"
+
+navbar:
+  structure:
+    left: [intro, reference, articles, news]
+    right: [search, github]
+
+reference:
+- title: Conley spatial HAC standard errors
+  contents:
+  - vcovSpHAC
+  - vcovSpHAC.felm
+  - vcovSpHAC.fixest
