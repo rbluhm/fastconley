@@ -1,5 +1,41 @@
 # Changelog
 
+## fastconley 0.10.0
+
+GLM support and documented IV support.
+
+### `fixest::feglm()` / `fixest::fepois()` fits supported
+
+`vcovSpHAC.fixest` now accepts GLM fits (any `feglm` family, including
+`fepois`). The variance is the M-estimation sandwich `H^{-1} B H^{-1}`,
+built from the maximum-likelihood score matrix and inverse Hessian that
+`fixest` stores on every (non-`lean`) fit — the same construction
+`fixest`’s own
+[`vcov_conley()`](https://lrberge.github.io/fixest/reference/vcov_conley.html)
+uses for GLMs, verified against it at the distance-formulation tolerance
+and against an exact same-distance yardstick at ~1e-15. No estimation
+flag is needed (`demeaned = TRUE` is only required for `feols`);
+weights, offsets, and the fixed-effect profiling are already folded into
+the stored scores. Because the scores ride through the existing engines
+unchanged, everything composes: pairwise and grid/FFT engines, pixel
+aggregation, `ssc`, `psd_fix`, and — beyond what `fixest` offers — the
+panel spatial **+ serial** HAC via `lag_cutoff`, now available for
+Poisson/GLM panels. `lean = TRUE` fits (no stored scores) and
+[`femlm()`](https://lrberge.github.io/fixest/reference/femlm.html)/[`feNmlm()`](https://lrberge.github.io/fixest/reference/feNmlm.html)
+fits are rejected with clear errors.
+
+### IV/2SLS support documented and tested
+
+IV fits have in fact always produced the correct 2SLS Conley sandwich
+through both methods — `lfe` and `fixest` store the projected
+(second-stage) design in `cX` / `X_demeaned` and the structural
+residuals in `residuals`, which is exactly what the score construction
+needs. This is now documented and covered by the validation suite:
+`felm` IV and `feols` IV agree with each other and with the exact
+yardstick at ~1e-15, including weighted IV, multiple endogenous
+regressors, and IV panels with serial HAC. See
+`tests/manual/test-glm-iv-parity.R`.
+
 ## fastconley 0.9.0
 
 fixest feature parity: weighted fits, small-sample correction, PSD

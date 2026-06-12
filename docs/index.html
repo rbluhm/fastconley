@@ -11,8 +11,8 @@
 <script src="deps/bootstrap-5.3.8/bootstrap.bundle.min.js"></script><link href="deps/font-awesome-6.5.2/css/all.min.css" rel="stylesheet">
 <link href="deps/font-awesome-6.5.2/css/v4-shims.min.css" rel="stylesheet">
 <script src="deps/headroom-0.11.0/headroom.min.js"></script><script src="deps/headroom-0.11.0/jQuery.headroom.min.js"></script><script src="deps/bootstrap-toc-1.0.1/bootstrap-toc.min.js"></script><script src="deps/clipboard.js-2.0.11/clipboard.min.js"></script><script src="deps/search-1.0.0/autocomplete.jquery.min.js"></script><script src="deps/search-1.0.0/fuse.min.js"></script><script src="deps/search-1.0.0/mark.min.js"></script><!-- pkgdown --><script src="pkgdown.js"></script><meta property="og:title" content="fastconley: Fast and exact Conley standard errors">
-<meta name="description" content="Conley (1999) spatial HAC standard errors for linear fixed effects panel models and cross-sectional models estimated with lfe::felm() or fixest::feols(). The spatial path uses score accumulation, a 3D cell-grid neighbor search, and CSR neighbor lists instead of dense distance matrices, yielding large speedups over rbluhm/conley on big cross-sections and high-dimensional regressions.">
-<meta property="og:description" content="Conley (1999) spatial HAC standard errors for linear fixed effects panel models and cross-sectional models estimated with lfe::felm() or fixest::feols(). The spatial path uses score accumulation, a 3D cell-grid neighbor search, and CSR neighbor lists instead of dense distance matrices, yielding large speedups over rbluhm/conley on big cross-sections and high-dimensional regressions.">
+<meta name="description" content="Conley (1999) spatial HAC standard errors for fixed effects panel and cross-sectional models estimated with lfe::felm() (OLS and IV/2SLS) or with fixest's feols() (OLS and IV), feglm(), and fepois(); GLM fits use the M-estimation sandwich built from the stored scores and inverse Hessian. The spatial path uses score accumulation, a 3D cell-grid neighbor search, and CSR neighbor lists instead of dense distance matrices, yielding large speedups over rbluhm/conley on big cross-sections and high-dimensional regressions.">
+<meta property="og:description" content="Conley (1999) spatial HAC standard errors for fixed effects panel and cross-sectional models estimated with lfe::felm() (OLS and IV/2SLS) or with fixest's feols() (OLS and IV), feglm(), and fepois(); GLM fits use the M-estimation sandwich built from the stored scores and inverse Hessian. The spatial path uses score accumulation, a 3D cell-grid neighbor search, and CSR neighbor lists instead of dense distance matrices, yielding large speedups over rbluhm/conley on big cross-sections and high-dimensional regressions.">
 </head>
 <body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
@@ -22,7 +22,7 @@
 
     <a class="navbar-brand me-2" href="index.html">fastconley</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.9.0</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.10.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -55,7 +55,7 @@
   <main id="main" class="col-md-9"><div class="section level1">
 <div class="page-header"><h1 id="fastconley">fastconley<a class="anchor" aria-label="anchor" href="#fastconley"></a>
 </h1></div>
-<p>Fast Conley (1997) spatial HAC standard errors for <code><a href="https://rdrr.io/pkg/lfe/man/felm.html" class="external-link">lfe::felm()</a></code> and <code><a href="https://lrberge.github.io/fixest/reference/feols.html" class="external-link">fixest::feols()</a></code> models in R.</p>
+<p>Fast Conley (1997) spatial HAC standard errors for <code><a href="https://rdrr.io/pkg/lfe/man/felm.html" class="external-link">lfe::felm()</a></code> (OLS and IV/2SLS) and <code>fixest</code> models — <code><a href="https://lrberge.github.io/fixest/reference/feols.html" class="external-link">feols()</a></code> (OLS and IV), <code><a href="https://lrberge.github.io/fixest/reference/feglm.html" class="external-link">feglm()</a></code>, and <code><a href="https://rdrr.io/pkg/lfe/man/fepois.html" class="external-link">fepois()</a></code> — in R.</p>
 <p>Documentation site: <strong><a href="https://rbluhm.github.io/fastconley/" class="uri">https://rbluhm.github.io/fastconley/</a></strong> — function reference, changelog, and the <a href="https://rbluhm.github.io/fastconley/articles/fastconley-performance.html">performance vignette</a>.</p>
 <p><code>fastconley</code> is a drop-in replacement for the spatial path of <a href="https://github.com/rbluhm/conley" class="external-link"><code>rbluhm/conley</code></a> that scales to large cross-sections and high-dimensional regressions. <code><a href="reference/vcovSpHAC.html">vcovSpHAC()</a></code> still accepts <code>felm</code> fits with the same call signature it always did; numerical equivalence with upstream <code>conley</code> holds at machine precision for the three supported distance functions (the upstream-only <code>dist_fn = "flatearth"</code> option was dropped, and <code>pixel</code> was added as a new optional argument — see the <a href="#compatibility-with-rbluhmconley">Compatibility</a> section for the full diff). <code><a href="reference/vcovSpHAC.html">vcovSpHAC()</a></code> is also now an S3 generic with a <code>fixest</code> method.</p>
 <p>The original <code>conley</code> package was written by Richard Bluhm with contributions from <a href="https://github.com/darinchristensen/conley-se" class="external-link">Darin Christensen</a>. Some key speed up ideas (sorting on distances and pruning) are from <a href="https://github.com/lrberge/fixest" class="external-link">Laurent Berge</a> and <a href="https://github.com/cdueben/conleyreg" class="external-link">Christian Düben</a>.</p>
@@ -77,7 +77,7 @@
 <div class="section level2">
 <h2 id="usage">Usage<a class="anchor" aria-label="anchor" href="#usage"></a>
 </h2>
-<p><code><a href="reference/vcovSpHAC.html">vcovSpHAC()</a></code> is an S3 generic with methods for <code><a href="https://rdrr.io/pkg/lfe/man/felm.html" class="external-link">lfe::felm</a></code> and <code><a href="https://lrberge.github.io/fixest/reference/feols.html" class="external-link">fixest::feols</a></code> fits.</p>
+<p><code><a href="reference/vcovSpHAC.html">vcovSpHAC()</a></code> is an S3 generic with methods for <code><a href="https://rdrr.io/pkg/lfe/man/felm.html" class="external-link">lfe::felm</a></code> and <code>fixest</code> fits (<code>feols</code>, <code>feglm</code>, <code>fepois</code>).</p>
 <div class="section level3">
 <h3 id="with-lfefelm">With <code>lfe::felm</code>
 <a class="anchor" aria-label="anchor" href="#with-lfefelm"></a>
@@ -103,6 +103,7 @@
 <span>  pixel        <span class="op">=</span> <span class="fl">0</span>               <span class="co"># score-pre-aggregation cell size in km; 0 = exact dedupe only</span></span>
 <span><span class="op">)</span></span></code></pre></div>
 <p><code><a href="https://rdrr.io/pkg/lfe/man/felm.html" class="external-link">lfe::felm()</a></code> must be called with <code>keepCX = TRUE</code> so <code>cY</code> and <code>cX</code> are populated; without it, both <code>conley</code> and <code>fastconley</code> will fail to extract the centered design matrix.</p>
+<p>IV/2SLS fits — the <code>felm</code> multi-part formula with <code>(endog ~ instruments)</code> — work out of the box and produce the correct 2SLS Conley sandwich: <code>lfe</code> stores the projected (second-stage) design in <code>cX</code> and the structural residuals in <code>residuals</code>, which is exactly what the score construction needs. Verified against the <code>fixest</code> IV path at machine precision (see <code>tests/manual/test-glm-iv-parity.R</code>).</p>
 </div>
 <div class="section level3">
 <h3 id="with-fixestfeols">With <code>fixest::feols</code>
@@ -151,6 +152,22 @@
 <span><span class="fu"><a href="https://rdrr.io/r/base/summary.html" class="external-link">summary</a></span><span class="op">(</span><span class="va">est</span>, vcov <span class="op">=</span> <span class="va">V</span><span class="op">)</span></span>
 <span><span class="fu"><a href="https://lrberge.github.io/fixest/reference/etable.html" class="external-link">etable</a></span><span class="op">(</span><span class="va">est</span>, vcov <span class="op">=</span> <span class="va">V</span><span class="op">)</span></span></code></pre></div>
 <p>This wires <code>fastconley</code> in as a drop-in spatial HAC for the <code>fixest</code> workflow while still computing the textbook within-period spatial + within-unit serial-HAC object (see the panel-comparison section below); it is structurally different from <code>fixest::vcov_conley + vcov_NW − vcov_hetero</code>.</p>
+<p>IV fits (<code>feols(y ~ x1 | fe | x2 ~ z)</code>) work out of the box: with <code>demeaned = TRUE</code>, <code>fixest</code> stores the projected (second-stage) design and the structural residuals, which is exactly the 2SLS sandwich. The felm and feols IV paths agree with each other at machine precision.</p>
+</div>
+<div class="section level3">
+<h3 id="with-fixestfeglm--fixestfepois-since-v0100">With <code>fixest::feglm</code> / <code>fixest::fepois</code> (since v0.10.0)<a class="anchor" aria-label="anchor" href="#with-fixestfeglm--fixestfepois-since-v0100"></a>
+</h3>
+<p>GLM fits need no estimation flag at all — <code>demeaned = TRUE</code> is only a <code>feols</code> requirement:</p>
+<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">est</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://lrberge.github.io/fixest/reference/feglm.html" class="external-link">fepois</a></span><span class="op">(</span><span class="va">conflict_events</span> <span class="op">~</span> <span class="va">temp</span> <span class="op">+</span> <span class="va">precip</span> <span class="op">|</span> <span class="va">cell</span> <span class="op">+</span> <span class="va">year</span>, data <span class="op">=</span> <span class="va">panel</span><span class="op">)</span></span>
+<span></span>
+<span><span class="va">V</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/vcovSpHAC.html">vcovSpHAC</a></span><span class="op">(</span></span>
+<span>  <span class="va">est</span>,</span>
+<span>  unit <span class="op">=</span> <span class="st">"cell"</span>, time <span class="op">=</span> <span class="st">"year"</span>, lat <span class="op">=</span> <span class="st">"lat"</span>, lon <span class="op">=</span> <span class="st">"lon"</span>,</span>
+<span>  kernel <span class="op">=</span> <span class="st">"bartlett"</span>, dist_fn <span class="op">=</span> <span class="st">"haversine"</span>,</span>
+<span>  dist_cutoff <span class="op">=</span> <span class="fl">500</span>, lag_cutoff <span class="op">=</span> <span class="fl">2</span>, data <span class="op">=</span> <span class="va">panel</span></span>
+<span><span class="op">)</span></span></code></pre></div>
+<p>The variance is the M-estimation sandwich <code>H⁻¹ B H⁻¹</code>, built from the maximum-likelihood score matrix and inverse Hessian that <code>fixest</code> stores on every fit (<code>lean = TRUE</code> fits are rejected — they carry no scores). Weights, offsets, and the fixed-effect profiling are already folded into the stored scores, and the scores ride through every engine unchanged: pairwise, grid/FFT for rasters, <code>pixel</code> aggregation, and — beyond what <code><a href="https://lrberge.github.io/fixest/reference/vcov_conley.html" class="external-link">fixest::vcov_conley()</a></code> offers — the panel spatial <strong>+ serial</strong> HAC via <code>lag_cutoff</code>, now available for Poisson/GLM panels (count outcomes à la conflict or mortality, PPML gravity). Any <code>feglm</code> family works; <code><a href="https://lrberge.github.io/fixest/reference/femlm.html" class="external-link">femlm()</a></code>/<code><a href="https://lrberge.github.io/fixest/reference/feNmlm.html" class="external-link">feNmlm()</a></code> fits are not supported.</p>
 </div>
 <div class="section level3">
 <h3 id="matching-settings-to-your-data">Matching settings to your data<a class="anchor" aria-label="anchor" href="#matching-settings-to-your-data"></a>
@@ -217,7 +234,7 @@
 </h3>
 <p>If your unit of observation is a raster cell — PRIO-GRID, gridded population or nightlights, climate cells, anything you aggregated to a regular lat/lon grid yourself — the spatial meat is computed by a dedicated engine whose cost is independent of the pair count. On dense rasters with realistic cutoffs this is two to three orders of magnitude faster than enumerating pairs (see the benchmark sections below), with no approximation: the same accept threshold and weights as the pairwise engine, exact for natively gridded data.</p>
 <p>You don’t have to do anything to use it: <code>method = "auto"</code> (the default) detects the lattice and engages the engine when a flop-balance estimate says it wins. A typical workflow from a raster:</p>
-<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://rspatial.org/" class="external-link">terra</a></span><span class="op">)</span>; <span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://github.com/r-econometrics/lfe" class="external-link">lfe</a></span><span class="op">)</span>; <span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://github.com/rbluhm/fastconley" class="external-link">fastconley</a></span><span class="op">)</span></span>
 <span></span>
 <span><span class="va">r</span> <span class="op">&lt;-</span> <span class="fu">rast</span><span class="op">(</span><span class="st">"nightlights.tif"</span><span class="op">)</span>                      <span class="co"># any regular lat/lon raster</span></span>
@@ -469,7 +486,7 @@
 <div class="section level2">
 <h2 id="requirements">Requirements<a class="anchor" aria-label="anchor" href="#requirements"></a>
 </h2>
-<p>R ≥ 3.5 with a C++11 compiler and GNU make. Imports <code>data.table</code>, <code>lfe</code>, <code>Rcpp</code>, <code>RcppArmadillo</code>, <code>RcppParallel</code>.</p>
+<p>R ≥ 3.5 with a C++11 compiler and GNU make. Imports <code>data.table</code>, <code>Rcpp</code>, <code>RcppParallel</code> (and links against <code>RcppArmadillo</code>); <code>lfe</code> and <code>fixest</code> are suggested — you need whichever one fits your models.</p>
 </div>
 <div class="section level2">
 <h2 id="citation">Citation<a class="anchor" aria-label="anchor" href="#citation"></a>

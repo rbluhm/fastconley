@@ -1,7 +1,10 @@
 #' Spatial HAC variance-covariance matrix
 #'
 #' Computes Conley (1999) spatial HAC variance-covariance matrices for models
-#' estimated with \code{lfe::felm()} or \code{fixest::feols()}. The spatial
+#' estimated with \code{lfe::felm()} (OLS and IV/2SLS) or with
+#' \code{fixest}'s \code{feols()} (OLS and IV), \code{feglm()}, and
+#' \code{fepois()}. For GLM fits the variance is the M-estimation sandwich
+#' built from the stored score matrix and inverse Hessian. The spatial
 #' meat uses a fast CSR/cumulative-score implementation in C++; see
 #' \code{\link{vcovSpHAC.felm}} and \code{\link{vcovSpHAC.fixest}} for the
 #' per-method argument lists.
@@ -19,7 +22,15 @@ vcovSpHAC.default <- function(reg, ...) {
 
 #' Spatial HAC variance-covariance matrix for felm() models
 #'
-#' @param reg A fitted object of class "felm".
+#' The fit must have been called with \code{felm(..., keepCX = TRUE)} so the
+#' centered design matrix is stored on the object. IV/2SLS fits (the
+#' \code{felm} multi-part formula with \code{(endog ~ instruments)}) work
+#' out of the box: \code{lfe} stores the projected (second-stage) design in
+#' \code{cX} and the structural residuals in \code{residuals}, which is
+#' exactly the 2SLS sandwich. Weighted fits are supported (the scores carry
+#' the weights and the bread uses \eqn{X'WX}).
+#'
+#' @param reg A fitted object of class "felm", including IV fits.
 #' @param unit Optional name of the panel unit variable.
 #' @param time Optional name of the time variable.
 #' @param lat Name of the latitude variable. If \code{NULL} (default), it is
@@ -240,12 +251,29 @@ vcovSpHAC.felm <- function(reg,
                  verbose = verbose)
 }
 
-#' Spatial HAC variance-covariance matrix for fixest::feols models
+#' Spatial HAC variance-covariance matrix for fixest models
 #'
-#' Requires the fit to have been called with \code{feols(..., demeaned = TRUE)}
-#' so that the centered design matrix \code{X_demeaned} is stored on the fit
-#' object. Weighted fits are supported (the scores carry the weights and the
-#' bread uses \eqn{X'WX}, matching \code{fixest}'s own weighted Conley vcov).
+#' Supports \code{fixest::feols()} (including IV/2SLS) and
+#' \code{fixest::feglm()} / \code{fixest::fepois()} fits.
+#'
+#' For \code{feols}, the fit must have been called with
+#' \code{feols(..., demeaned = TRUE)} so that the centered design matrix
+#' \code{X_demeaned} is stored on the fit object. Weighted fits are supported
+#' (the scores carry the weights and the bread uses \eqn{X'WX}, matching
+#' \code{fixest}'s own weighted Conley vcov). IV fits work out of the box:
+#' \code{X_demeaned} holds the projected (second-stage) design and
+#' \code{residuals} the structural residuals, which is exactly the 2SLS
+#' sandwich.
+#'
+#' For \code{feglm} / \code{fepois}, no estimation flag is needed: the
+#' variance is the M-estimation sandwich \eqn{H^{-1} B H^{-1}}, built from
+#' the maximum-likelihood score matrix and inverse Hessian that
+#' \code{fixest} stores on every (non-\code{lean}) fit. Weights, offsets,
+#' and the fixed-effect profiling are already folded into the stored
+#' scores. This is the same construction \code{fixest}'s own
+#' \code{vcov_conley()} uses for GLMs — but with exact great-circle
+#' distances, and with the serial-HAC panel extension available via
+#' \code{lag_cutoff} (which \code{fixest} does not offer for Conley vcovs).
 #'
 #' The returned matrix can be passed to \code{fixest}'s \code{vcov} argument.
 #' For the usual \code{fixest} workflow, define a one-argument wrapper such as
@@ -254,7 +282,10 @@ vcovSpHAC.felm <- function(reg,
 #' keeps the coordinate names, cutoffs, panel variables, and optional
 #' \code{data = } argument together.
 #'
-#' @param reg A fitted object of class "fixest".
+#' @param reg A fitted object of class "fixest": a \code{feols()} fit
+#'   (including IV) with \code{demeaned = TRUE}, or a \code{feglm()} /
+#'   \code{fepois()} fit (any family; \code{lean = TRUE} fits are rejected
+#'   because they carry no score matrix).
 #' @param unit Optional name of the panel unit variable. If \code{NULL} the
 #'   call is treated as a cross-section (each row is its own unit, all rows
 #'   share a single period — no serial HAC).
@@ -308,6 +339,15 @@ vcovSpHAC.felm <- function(reg,
 #'   ## The same wrapper can be used directly in fixest's vcov argument.
 #'   fit_sum <- summary(fit, vcov = vcov_fc)
 #'   sqrt(diag(fit_sum$cov.scaled))
+#'
+#'   ## Poisson (fepois / feglm): no demeaned = TRUE needed — the stored
+#'   ## ML scores and inverse Hessian are used directly.
+#'   cells$cnt <- rpois(nrow(cells), exp(0.4 * cells$x))
+#'   fit_pois <- fixest::fepois(cnt ~ x, data = cells)
+#'   V_pois <- vcovSpHAC(fit_pois, lat = "lat", lon = "lon",
+#'                       kernel = "uniform", dist_fn = "spherical",
+#'                       dist_cutoff = 200, ncores = 2, data = cells)
+#'   sqrt(diag(V_pois))
 #' }
 #' @export
 vcovSpHAC.fixest <- function(reg,
@@ -334,23 +374,62 @@ vcovSpHAC.fixest <- function(reg,
   args <- validate_args(kernel, dist_fn, dist_cutoff, lag_cutoff, pixel, ncores,
                         neighbor, csr_weight, method, ssc, psd_fix)
 
-  if (is.null(reg$X_demeaned)) {
-    stop("vcovSpHAC.fixest requires the fit to have been called with ",
-         "feols(..., demeaned = TRUE) so the centered design matrix is available.")
+  method_type <- reg$method_type
+  if (is.null(method_type)) method_type <- "feols"
+  if (!method_type %in% c("feols", "feglm")) {
+    stop("vcovSpHAC.fixest supports feols() and feglm()/fepois() fits, but ",
+         "this fit has method_type '", method_type, "'. femlm()/feNmlm() ",
+         "fits are not supported.")
   }
+  is_glm <- method_type == "feglm"
 
   # Use direct field access rather than coef(reg) / residuals(reg) — the
   # generic accessors in `fixest` can be 100x+ slower than field access
   # under do.call() evaluation contexts (they recompute or look up the call
   # environment), which makes vcovSpHAC inadvertently slow when wrapped.
   Xvars <- names(reg$coefficients)
-  if (is.null(Xvars)) Xvars <- colnames(reg$X_demeaned)
-  cX    <- reg$X_demeaned[, Xvars, drop = FALSE]
-  e     <- as.numeric(reg$residuals)
-  n     <- length(e)
-  if (nrow(cX) != n) {
-    stop("Internal: X_demeaned rows (", nrow(cX),
-         ") do not match residual length (", n, ").")
+  if (is_glm) {
+    # M-estimation sandwich H^{-1} B H^{-1}: fixest stores the ML score
+    # rows (FE profiling, weights, and offsets already folded in) and
+    # cov.iid = H^{-1}. The score matrix rides through the core as the
+    # "X" columns with e = 1, so every engine (pairwise, grid/FFT, serial
+    # HAC, pixel aggregation) sees the same score rows it would for OLS.
+    if (!is.null(reg$isBounded) && any(reg$isBounded)) {
+      stop("vcovSpHAC.fixest: fits with parameters estimated at a bound ",
+           "are not supported.")
+    }
+    cX <- reg$scores
+    if (is.null(cX)) {
+      stop("vcovSpHAC.fixest: the fit carries no score matrix (was it fit ",
+           "with lean = TRUE?). Refit with lean = FALSE.")
+    }
+    cX <- as.matrix(cX)
+    if (is.null(Xvars)) Xvars <- colnames(cX)
+    if (ncol(cX) != length(Xvars)) {
+      stop("Internal: score columns (", ncol(cX),
+           ") do not match the coefficient count (", length(Xvars), ").")
+    }
+    colnames(cX) <- Xvars
+    if (is.null(reg$cov.iid) || anyNA(reg$cov.iid)) {
+      stop("vcovSpHAC.fixest: the fit's iid vcov (inverse Hessian) is ",
+           "missing or contains NAs (collinearity?); cannot build the ",
+           "sandwich bread.")
+    }
+    n <- nrow(cX)
+    e <- rep(1, n)
+  } else {
+    if (is.null(reg$X_demeaned)) {
+      stop("vcovSpHAC.fixest requires the fit to have been called with ",
+           "feols(..., demeaned = TRUE) so the centered design matrix is available.")
+    }
+    if (is.null(Xvars)) Xvars <- colnames(reg$X_demeaned)
+    cX <- reg$X_demeaned[, Xvars, drop = FALSE]
+    e  <- as.numeric(reg$residuals)
+    n  <- length(e)
+    if (nrow(cX) != n) {
+      stop("Internal: X_demeaned rows (", nrow(cX),
+           ") do not match residual length (", n, ").")
+    }
   }
 
   if (is.null(data)) {
@@ -417,10 +496,11 @@ vcovSpHAC.fixest <- function(reg,
          "Pass `data = ` explicitly or refit on a frame with no extra rows.")
   }
 
-  # Weighted (WLS) fits: scores are s_i = w_i * e_i * x_i, bread is
+  # Weighted (WLS) feols fits: scores are s_i = w_i * e_i * x_i, bread is
   # (X'WX)^{-1}. fixest stores the weights on the original scale and
-  # X_demeaned / residuals on the raw (unweighted) scale.
-  w <- if (!is.null(reg$weights)) as.numeric(reg$weights) else NULL
+  # X_demeaned / residuals on the raw (unweighted) scale. On the GLM path
+  # the stored scores already carry the weights, so nothing is folded.
+  w <- if (!is_glm && !is.null(reg$weights)) as.numeric(reg$weights) else NULL
   if (!is.null(w)) e <- e * w
 
   dt <- data.table::data.table(
@@ -432,7 +512,14 @@ vcovSpHAC.fixest <- function(reg,
     e    = e
   )
 
-  invXX <- solve(if (is.null(w)) crossprod(cX) else crossprod(cX, cX * w)) * n
+  # The core computes invXX %*% (XeeX / n) %*% invXX / n, i.e. it expects
+  # n * bread. For GLMs the bread is the inverse Hessian fixest stores as
+  # cov.iid; for (possibly weighted) feols it is (X'WX)^{-1}.
+  invXX <- if (is_glm) {
+    unname(reg$cov.iid) * n
+  } else {
+    solve(if (is.null(w)) crossprod(cX) else crossprod(cX, cX * w)) * n
+  }
 
   dof_scale <- ssc_scale(ssc, n, reg$nobs - reg$nparams)
 

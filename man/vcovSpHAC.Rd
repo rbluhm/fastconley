@@ -13,7 +13,10 @@ vcovSpHAC(reg, ...)
 }
 \description{
 Computes Conley (1999) spatial HAC variance-covariance matrices for models
-estimated with \code{lfe::felm()} or \code{fixest::feols()}. The spatial
+estimated with \code{lfe::felm()} (OLS and IV/2SLS) or with
+\code{fixest}'s \code{feols()} (OLS and IV), \code{feglm()}, and
+\code{fepois()}. For GLM fits the variance is the M-estimation sandwich
+built from the stored score matrix and inverse Hessian. The spatial
 meat uses a fast CSR/cumulative-score implementation in C++; see
 \code{\link{vcovSpHAC.felm}} and \code{\link{vcovSpHAC.fixest}} for the
 per-method argument lists.

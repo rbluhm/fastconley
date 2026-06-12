@@ -20,7 +20,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">fastconley</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.9.0</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.10.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -76,10 +76,14 @@ institutions, treatments rolled out by region), this is the difference
 between a significant and an insignificant result far more often than is
 comfortable.</p>
 <p><code>fastconley</code> computes Conley spatial HAC standard errors
-for models estimated with <code><a href="https://lrberge.github.io/fixest/reference/feols.html" class="external-link">fixest::feols()</a></code> or
-<code><a href="https://rdrr.io/pkg/lfe/man/felm.html" class="external-link">lfe::felm()</a></code> — for cross-sections and for panels, where it
-implements the full Conley (1999) spatial-<em>temporal</em> HAC. Four
-properties distinguish it:</p>
+for models estimated with <code>fixest</code> (<code><a href="https://lrberge.github.io/fixest/reference/feols.html" class="external-link">feols()</a></code>
+including IV, <code><a href="https://lrberge.github.io/fixest/reference/feglm.html" class="external-link">feglm()</a></code>, <code><a href="https://rdrr.io/pkg/lfe/man/fepois.html" class="external-link">fepois()</a></code>) or
+<code><a href="https://rdrr.io/pkg/lfe/man/felm.html" class="external-link">lfe::felm()</a></code> (OLS and IV/2SLS) — for cross-sections and for
+panels, where it implements the full Conley (1999)
+spatial-<em>temporal</em> HAC. For GLM fits the variance is the
+M-estimation sandwich built from the scores and inverse Hessian
+<code>fixest</code> stores on the fit, so Poisson panels get the spatial
++ serial correction too. Four properties distinguish it:</p>
 <ul>
 <li>
 <strong>Exact.</strong> Distances are true great-circle distances
@@ -196,9 +200,15 @@ quickly.</p>
 <div class="section level2">
 <h2 id="quick-start">Quick Start<a class="anchor" aria-label="anchor" href="#quick-start"></a>
 </h2>
-<p>For <code>fixest</code>, fit the model with
+<p>For <code><a href="https://lrberge.github.io/fixest/reference/feols.html" class="external-link">fixest::feols()</a></code>, fit the model with
 <code>demeaned = TRUE</code>. This keeps the centered design matrix that
-<code>fastconley</code> needs after estimation.</p>
+<code>fastconley</code> needs after estimation. (IV fits work the same
+way — the stored design is the projected second-stage one, which is
+exactly what the 2SLS sandwich needs.) GLM fits — <code><a href="https://rdrr.io/pkg/lfe/man/fepois.html" class="external-link">fepois()</a></code>
+/ <code><a href="https://lrberge.github.io/fixest/reference/feglm.html" class="external-link">feglm()</a></code> — need no flag at all: the stored
+maximum-likelihood scores and inverse Hessian are used directly, and
+everything below (including <code>lag_cutoff</code> for panels) applies
+unchanged.</p>
 <p><code>fixest</code> accepts an external covariance function in its
 <code>vcov</code> argument. The most convenient pattern is to define a
 small function that records the coordinate columns, cutoff, kernel, and
@@ -248,7 +258,9 @@ recomputed.</p>
 <span><span class="fu"><a href="https://rdrr.io/r/base/summary.html" class="external-link">summary</a></span><span class="op">(</span><span class="va">est</span>, vcov <span class="op">=</span> <span class="va">V_conley</span><span class="op">)</span></span>
 <span><span class="fu"><a href="https://lrberge.github.io/fixest/reference/etable.html" class="external-link">etable</a></span><span class="op">(</span><span class="va">est</span>, vcov <span class="op">=</span> <span class="va">V_conley</span><span class="op">)</span></span></code></pre></div>
 <p>For <code>lfe</code>, use <code>keepCX = TRUE</code> when fitting the
-model.</p>
+model. IV/2SLS fits (the <code>felm</code> multi-part formula with
+<code>(endog ~ instruments)</code>) work out of the box and agree with
+the <code>fixest</code> IV path at machine precision.</p>
 <div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://github.com/r-econometrics/lfe" class="external-link">lfe</a></span><span class="op">)</span></span>
 <span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://github.com/rbluhm/fastconley" class="external-link">fastconley</a></span><span class="op">)</span></span>

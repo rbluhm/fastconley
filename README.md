@@ -1,6 +1,6 @@
 # fastconley
 
-Fast Conley (1997) spatial HAC standard errors for `lfe::felm()` and `fixest::feols()` models in R.
+Fast Conley (1997) spatial HAC standard errors for `lfe::felm()` (OLS and IV/2SLS) and `fixest` models — `feols()` (OLS and IV), `feglm()`, and `fepois()` — in R.
 
 Documentation site: **<https://rbluhm.github.io/fastconley/>** — function reference, changelog, and the [performance vignette](https://rbluhm.github.io/fastconley/articles/fastconley-performance.html).
 
@@ -31,7 +31,7 @@ Results are numerically identical either way; this only affects speed.
 
 ## Usage
 
-`vcovSpHAC()` is an S3 generic with methods for `lfe::felm` and `fixest::feols` fits.
+`vcovSpHAC()` is an S3 generic with methods for `lfe::felm` and `fixest` fits (`feols`, `feglm`, `fepois`).
 
 ### With `lfe::felm`
 
@@ -58,6 +58,8 @@ V <- vcovSpHAC(
 ```
 
 `lfe::felm()` must be called with `keepCX = TRUE` so `cY` and `cX` are populated; without it, both `conley` and `fastconley` will fail to extract the centered design matrix.
+
+IV/2SLS fits — the `felm` multi-part formula with `(endog ~ instruments)` — work out of the box and produce the correct 2SLS Conley sandwich: `lfe` stores the projected (second-stage) design in `cX` and the structural residuals in `residuals`, which is exactly what the score construction needs. Verified against the `fixest` IV path at machine precision (see `tests/manual/test-glm-iv-parity.R`).
 
 ### With `fixest::feols`
 
@@ -117,6 +119,25 @@ etable(est, vcov = V)
 ```
 
 This wires `fastconley` in as a drop-in spatial HAC for the `fixest` workflow while still computing the textbook within-period spatial + within-unit serial-HAC object (see the panel-comparison section below); it is structurally different from `fixest::vcov_conley + vcov_NW − vcov_hetero`.
+
+IV fits (`feols(y ~ x1 | fe | x2 ~ z)`) work out of the box: with `demeaned = TRUE`, `fixest` stores the projected (second-stage) design and the structural residuals, which is exactly the 2SLS sandwich. The felm and feols IV paths agree with each other at machine precision.
+
+### With `fixest::feglm` / `fixest::fepois` (since v0.10.0)
+
+GLM fits need no estimation flag at all — `demeaned = TRUE` is only a `feols` requirement:
+
+```r
+est <- fepois(conflict_events ~ temp + precip | cell + year, data = panel)
+
+V <- vcovSpHAC(
+  est,
+  unit = "cell", time = "year", lat = "lat", lon = "lon",
+  kernel = "bartlett", dist_fn = "haversine",
+  dist_cutoff = 500, lag_cutoff = 2, data = panel
+)
+```
+
+The variance is the M-estimation sandwich `H⁻¹ B H⁻¹`, built from the maximum-likelihood score matrix and inverse Hessian that `fixest` stores on every fit (`lean = TRUE` fits are rejected — they carry no scores). Weights, offsets, and the fixed-effect profiling are already folded into the stored scores, and the scores ride through every engine unchanged: pairwise, grid/FFT for rasters, `pixel` aggregation, and — beyond what `fixest::vcov_conley()` offers — the panel spatial **+ serial** HAC via `lag_cutoff`, now available for Poisson/GLM panels (count outcomes à la conflict or mortality, PPML gravity). Any `feglm` family works; `femlm()`/`feNmlm()` fits are not supported.
 
 ### Matching settings to your data
 
@@ -326,7 +347,7 @@ Numerical results match upstream to machine precision for `dist_fn ∈ {haversin
 
 ## Requirements
 
-R ≥ 3.5 with a C++11 compiler and GNU make. Imports `data.table`, `lfe`, `Rcpp`, `RcppArmadillo`, `RcppParallel`.
+R ≥ 3.5 with a C++11 compiler and GNU make. Imports `data.table`, `Rcpp`, `RcppParallel` (and links against `RcppArmadillo`); `lfe` and `fixest` are suggested — you need whichever one fits your models.
 
 ## Citation
 

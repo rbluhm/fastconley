@@ -29,7 +29,7 @@
 )
 }
 \arguments{
-\item{reg}{A fitted object of class "felm".}
+\item{reg}{A fitted object of class "felm", including IV fits.}
 
 \item{unit}{Optional name of the panel unit variable.}
 
@@ -120,7 +120,13 @@ direct column access with no model-frame rebuild at all.}
 A variance-covariance matrix.
 }
 \description{
-Spatial HAC variance-covariance matrix for felm() models
+The fit must have been called with \code{felm(..., keepCX = TRUE)} so the
+centered design matrix is stored on the object. IV/2SLS fits (the
+\code{felm} multi-part formula with \code{(endog ~ instruments)}) work
+out of the box: \code{lfe} stores the projected (second-stage) design in
+\code{cX} and the structural residuals in \code{residuals}, which is
+exactly the 2SLS sandwich. Weighted fits are supported (the scores carry
+the weights and the bread uses \eqn{X'WX}).
 }
 \examples{
 if (requireNamespace("lfe", quietly = TRUE)) {

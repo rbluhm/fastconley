@@ -2,7 +2,7 @@
 % Please edit documentation in R/vcovSpHAC.R
 \name{vcovSpHAC.fixest}
 \alias{vcovSpHAC.fixest}
-\title{Spatial HAC variance-covariance matrix for fixest::feols models}
+\title{Spatial HAC variance-covariance matrix for fixest models}
 \usage{
 \method{vcovSpHAC}{fixest}(
   reg,
@@ -28,7 +28,10 @@
 )
 }
 \arguments{
-\item{reg}{A fitted object of class "fixest".}
+\item{reg}{A fitted object of class "fixest": a \code{feols()} fit
+(including IV) with \code{demeaned = TRUE}, or a \code{feglm()} /
+\code{fepois()} fit (any family; \code{lean = TRUE} fits are rejected
+because they carry no score matrix).}
 
 \item{unit}{Optional name of the panel unit variable. If \code{NULL} the
 call is treated as a cross-section (each row is its own unit, all rows
@@ -84,12 +87,29 @@ has gone out of scope, or if you want to override.}
 A variance-covariance matrix.
 }
 \description{
-Requires the fit to have been called with \code{feols(..., demeaned = TRUE)}
-so that the centered design matrix \code{X_demeaned} is stored on the fit
-object. Weighted fits are supported (the scores carry the weights and the
-bread uses \eqn{X'WX}, matching \code{fixest}'s own weighted Conley vcov).
+Supports \code{fixest::feols()} (including IV/2SLS) and
+\code{fixest::feglm()} / \code{fixest::fepois()} fits.
 }
 \details{
+For \code{feols}, the fit must have been called with
+\code{feols(..., demeaned = TRUE)} so that the centered design matrix
+\code{X_demeaned} is stored on the fit object. Weighted fits are supported
+(the scores carry the weights and the bread uses \eqn{X'WX}, matching
+\code{fixest}'s own weighted Conley vcov). IV fits work out of the box:
+\code{X_demeaned} holds the projected (second-stage) design and
+\code{residuals} the structural residuals, which is exactly the 2SLS
+sandwich.
+
+For \code{feglm} / \code{fepois}, no estimation flag is needed: the
+variance is the M-estimation sandwich \eqn{H^{-1} B H^{-1}}, built from
+the maximum-likelihood score matrix and inverse Hessian that
+\code{fixest} stores on every (non-\code{lean}) fit. Weights, offsets,
+and the fixed-effect profiling are already folded into the stored
+scores. This is the same construction \code{fixest}'s own
+\code{vcov_conley()} uses for GLMs — but with exact great-circle
+distances, and with the serial-HAC panel extension available via
+\code{lag_cutoff} (which \code{fixest} does not offer for Conley vcovs).
+
 The returned matrix can be passed to \code{fixest}'s \code{vcov} argument.
 For the usual \code{fixest} workflow, define a one-argument wrapper such as
 \code{function(x) vcovSpHAC(x, ...)} and pass that function to
@@ -118,5 +138,14 @@ if (requireNamespace("fixest", quietly = TRUE)) {
   ## The same wrapper can be used directly in fixest's vcov argument.
   fit_sum <- summary(fit, vcov = vcov_fc)
   sqrt(diag(fit_sum$cov.scaled))
+
+  ## Poisson (fepois / feglm): no demeaned = TRUE needed — the stored
+  ## ML scores and inverse Hessian are used directly.
+  cells$cnt <- rpois(nrow(cells), exp(0.4 * cells$x))
+  fit_pois <- fixest::fepois(cnt ~ x, data = cells)
+  V_pois <- vcovSpHAC(fit_pois, lat = "lat", lon = "lon",
+                      kernel = "uniform", dist_fn = "spherical",
+                      dist_cutoff = 200, ncores = 2, data = cells)
+  sqrt(diag(V_pois))
 }
 }

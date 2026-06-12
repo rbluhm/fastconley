@@ -65,9 +65,12 @@ is the difference between a significant and an insignificant result far more
 often than is comfortable.
 
 `fastconley` computes Conley spatial HAC standard errors for models estimated
-with `fixest::feols()` or `lfe::felm()` — for cross-sections and for panels,
-where it implements the full Conley (1999) spatial-*temporal* HAC. Four
-properties distinguish it:
+with `fixest` (`feols()` including IV, `feglm()`, `fepois()`) or `lfe::felm()`
+(OLS and IV/2SLS) — for cross-sections and for panels, where it implements
+the full Conley (1999) spatial-*temporal* HAC. For GLM fits the variance is
+the M-estimation sandwich built from the scores and inverse Hessian `fixest`
+stores on the fit, so Poisson panels get the spatial + serial correction
+too. Four properties distinguish it:
 
 - **Exact.** Distances are true great-circle distances and every
   within-cutoff pair enters with its exact kernel weight — no dense-matrix
@@ -158,8 +161,13 @@ computing them exactly and quickly.
 
 ## Quick Start
 
-For `fixest`, fit the model with `demeaned = TRUE`. This keeps the centered
-design matrix that `fastconley` needs after estimation.
+For `fixest::feols()`, fit the model with `demeaned = TRUE`. This keeps the
+centered design matrix that `fastconley` needs after estimation. (IV fits
+work the same way — the stored design is the projected second-stage one,
+which is exactly what the 2SLS sandwich needs.) GLM fits — `fepois()` /
+`feglm()` — need no flag at all: the stored maximum-likelihood scores and
+inverse Hessian are used directly, and everything below (including
+`lag_cutoff` for panels) applies unchanged.
 
 `fixest` accepts an external covariance function in its `vcov` argument. The
 most convenient pattern is to define a small function that records the
@@ -215,7 +223,9 @@ summary(est, vcov = V_conley)
 etable(est, vcov = V_conley)
 ```
 
-For `lfe`, use `keepCX = TRUE` when fitting the model.
+For `lfe`, use `keepCX = TRUE` when fitting the model. IV/2SLS fits (the
+`felm` multi-part formula with `(endog ~ instruments)`) work out of the box
+and agree with the `fixest` IV path at machine precision.
 
 ```{r quick-start-lfe, eval=FALSE}
 library(lfe)

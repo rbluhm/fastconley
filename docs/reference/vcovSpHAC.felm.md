@@ -1,6 +1,12 @@
 # Spatial HAC variance-covariance matrix for felm() models
 
-Spatial HAC variance-covariance matrix for felm() models
+The fit must have been called with `felm(..., keepCX = TRUE)` so the
+centered design matrix is stored on the object. IV/2SLS fits (the `felm`
+multi-part formula with `(endog ~ instruments)`) work out of the box:
+`lfe` stores the projected (second-stage) design in `cX` and the
+structural residuals in `residuals`, which is exactly the 2SLS sandwich.
+Weighted fits are supported (the scores carry the weights and the bread
+uses \\X'WX\\).
 
 ## Usage
 
@@ -35,7 +41,7 @@ vcovSpHAC(
 
 - reg:
 
-  A fitted object of class "felm".
+  A fitted object of class "felm", including IV fits.
 
 - unit:
 

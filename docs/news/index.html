@@ -7,7 +7,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">fastconley</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.9.0</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.10.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -36,6 +36,19 @@
       <small>Source: <a href="https://github.com/rbluhm/fastconley/blob/HEAD/NEWS.md" class="external-link"><code>NEWS.md</code></a></small>
     </div>
 
+    <div class="section level2">
+<h2 class="pkg-version" data-toc-text="0.10.0" id="fastconley-0100">fastconley 0.10.0<a class="anchor" aria-label="anchor" href="#fastconley-0100"></a></h2>
+<p>GLM support and documented IV support.</p>
+<div class="section level3">
+<h3 id="fixestfeglm--fixestfepois-fits-supported-0-10-0">
+<code>fixest::feglm()</code> / <code>fixest::fepois()</code> fits supported<a class="anchor" aria-label="anchor" href="#fixestfeglm--fixestfepois-fits-supported-0-10-0"></a></h3>
+<p><code>vcovSpHAC.fixest</code> now accepts GLM fits (any <code>feglm</code> family, including <code>fepois</code>). The variance is the M-estimation sandwich <code>H^{-1} B H^{-1}</code>, built from the maximum-likelihood score matrix and inverse Hessian that <code>fixest</code> stores on every (non-<code>lean</code>) fit — the same construction <code>fixest</code>’s own <code><a href="https://lrberge.github.io/fixest/reference/vcov_conley.html" class="external-link">vcov_conley()</a></code> uses for GLMs, verified against it at the distance-formulation tolerance and against an exact same-distance yardstick at ~1e-15. No estimation flag is needed (<code>demeaned = TRUE</code> is only required for <code>feols</code>); weights, offsets, and the fixed-effect profiling are already folded into the stored scores. Because the scores ride through the existing engines unchanged, everything composes: pairwise and grid/FFT engines, pixel aggregation, <code>ssc</code>, <code>psd_fix</code>, and — beyond what <code>fixest</code> offers — the panel spatial <strong>+ serial</strong> HAC via <code>lag_cutoff</code>, now available for Poisson/GLM panels. <code>lean = TRUE</code> fits (no stored scores) and <code><a href="https://lrberge.github.io/fixest/reference/femlm.html" class="external-link">femlm()</a></code>/<code><a href="https://lrberge.github.io/fixest/reference/feNmlm.html" class="external-link">feNmlm()</a></code> fits are rejected with clear errors.</p>
+</div>
+<div class="section level3">
+<h3 id="iv2sls-support-documented-and-tested-0-10-0">IV/2SLS support documented and tested<a class="anchor" aria-label="anchor" href="#iv2sls-support-documented-and-tested-0-10-0"></a></h3>
+<p>IV fits have in fact always produced the correct 2SLS Conley sandwich through both methods — <code>lfe</code> and <code>fixest</code> store the projected (second-stage) design in <code>cX</code> / <code>X_demeaned</code> and the structural residuals in <code>residuals</code>, which is exactly what the score construction needs. This is now documented and covered by the validation suite: <code>felm</code> IV and <code>feols</code> IV agree with each other and with the exact yardstick at ~1e-15, including weighted IV, multiple endogenous regressors, and IV panels with serial HAC. See <code>tests/manual/test-glm-iv-parity.R</code>.</p>
+</div>
+</div>
     <div class="section level2">
 <h2 class="pkg-version" data-toc-text="0.9.0" id="fastconley-090">fastconley 0.9.0<a class="anchor" aria-label="anchor" href="#fastconley-090"></a></h2>
 <p>fixest feature parity: weighted fits, small-sample correction, PSD repair, lat/lon auto-detection. <strong>Breaking:</strong> <code>ssc</code> and <code>psd_fix</code> default to <code>TRUE</code> to match <code>fixest</code>’s defaults out of the box; pass <code>ssc = FALSE, psd_fix = FALSE</code> to reproduce earlier fastconley versions and <code>rbluhm/conley</code> bit-for-bit.</p>

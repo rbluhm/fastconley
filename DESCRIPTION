@@ -1,12 +1,14 @@
 Package: fastconley
 Type: Package
-Title: Fast Conley Standard Errors for felm() and feols() Models
-Version: 0.9.0
+Title: Fast Conley Standard Errors for lfe and fixest Models
+Version: 0.10.0
 Authors@R: person("Richard", "Bluhm", email = "richard.bluhm@gmail.com", role = c("aut", "cre"))
 Maintainer: Richard Bluhm <richard.bluhm@gmail.com>
-Description: Conley (1999) spatial HAC standard errors for linear fixed effects
-    panel models and cross-sectional models estimated with lfe::felm() or
-    fixest::feols(). The spatial path uses score accumulation, a 3D cell-grid
+Description: Conley (1999) spatial HAC standard errors for fixed effects
+    panel and cross-sectional models estimated with lfe::felm() (OLS and
+    IV/2SLS) or with fixest's feols() (OLS and IV), feglm(), and fepois();
+    GLM fits use the M-estimation sandwich built from the stored scores and
+    inverse Hessian. The spatial path uses score accumulation, a 3D cell-grid
     neighbor search, and CSR neighbor lists instead of dense distance
     matrices, yielding large speedups over rbluhm/conley on big
     cross-sections and high-dimensional regressions.
@@ -31,4 +33,4 @@ LinkingTo:
     RcppParallel
 SystemRequirements: GNU make
 VignetteBuilder: knitr
-RoxygenNote: 7.3.2
+Config/roxygen2/version: 8.0.0

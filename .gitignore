@@ -41,3 +41,4 @@ vignettes/*.html
 vignettes/*.R
 fastconley_*.tar.gz
 fastconley.Rcheck/
+/.obsidian/

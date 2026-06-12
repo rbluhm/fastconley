@@ -7,4 +7,4 @@
 - [`vcovSpHAC(`*`<felm>`*`)`](https://rbluhm.github.io/fastconley/reference/vcovSpHAC.felm.md)
   : Spatial HAC variance-covariance matrix for felm() models
 - [`vcovSpHAC(`*`<fixest>`*`)`](https://rbluhm.github.io/fastconley/reference/vcovSpHAC.fixest.md)
-  : Spatial HAC variance-covariance matrix for fixest::feols models
+  : Spatial HAC variance-covariance matrix for fixest models

@@ -12,11 +12,17 @@ between a significant and an insignificant result far more often than is
 comfortable.
 
 `fastconley` computes Conley spatial HAC standard errors for models
-estimated with
-[`fixest::feols()`](https://lrberge.github.io/fixest/reference/feols.html)
-or [`lfe::felm()`](https://rdrr.io/pkg/lfe/man/felm.html) — for
-cross-sections and for panels, where it implements the full Conley
-(1999) spatial-*temporal* HAC. Four properties distinguish it:
+estimated with `fixest`
+([`feols()`](https://lrberge.github.io/fixest/reference/feols.html)
+including IV,
+[`feglm()`](https://lrberge.github.io/fixest/reference/feglm.html),
+[`fepois()`](https://rdrr.io/pkg/lfe/man/fepois.html)) or
+[`lfe::felm()`](https://rdrr.io/pkg/lfe/man/felm.html) (OLS and IV/2SLS)
+— for cross-sections and for panels, where it implements the full Conley
+(1999) spatial-*temporal* HAC. For GLM fits the variance is the
+M-estimation sandwich built from the scores and inverse Hessian `fixest`
+stores on the fit, so Poisson panels get the spatial + serial correction
+too. Four properties distinguish it:
 
 - **Exact.** Distances are true great-circle distances and every
   within-cutoff pair enters with its exact kernel weight — no
@@ -120,8 +126,17 @@ solve, and everything below is about computing them exactly and quickly.
 
 ## Quick Start
 
-For `fixest`, fit the model with `demeaned = TRUE`. This keeps the
-centered design matrix that `fastconley` needs after estimation.
+For
+[`fixest::feols()`](https://lrberge.github.io/fixest/reference/feols.html),
+fit the model with `demeaned = TRUE`. This keeps the centered design
+matrix that `fastconley` needs after estimation. (IV fits work the same
+way — the stored design is the projected second-stage one, which is
+exactly what the 2SLS sandwich needs.) GLM fits —
+[`fepois()`](https://rdrr.io/pkg/lfe/man/fepois.html) /
+[`feglm()`](https://lrberge.github.io/fixest/reference/feglm.html) —
+need no flag at all: the stored maximum-likelihood scores and inverse
+Hessian are used directly, and everything below (including `lag_cutoff`
+for panels) applies unchanged.
 
 `fixest` accepts an external covariance function in its `vcov` argument.
 The most convenient pattern is to define a small function that records
@@ -183,7 +198,9 @@ summary(est, vcov = V_conley)
 etable(est, vcov = V_conley)
 ```
 
-For `lfe`, use `keepCX = TRUE` when fitting the model.
+For `lfe`, use `keepCX = TRUE` when fitting the model. IV/2SLS fits (the
+`felm` multi-part formula with `(endog ~ instruments)`) work out of the
+box and agree with the `fixest` IV path at machine precision.
 
 ``` r
 library(lfe)
