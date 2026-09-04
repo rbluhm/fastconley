@@ -115,7 +115,7 @@ jobs:
           file "$plugin" "$plugin.debug"
           objdump -p "$plugin" > "$out/objdump.txt"
           exports="$(sed -n '/\[Ordinal\/Name Pointer\] Table/,/The Function Table/p' "$out/objdump.txt" | \
-            sed -n 's/^[[:space:]]*\[[[:space:]]*[0-9][^]]*\][[:space:]]*//p' | sort -u)"
+            grep -E '^[[:space:]]*\[[[:space:]]*[0-9]' | awk '{print $NF}' | sort -u)"
           imports="$(sed -n 's/^[[:space:]]*DLL Name: //p' "$out/objdump.txt" | tr '[:lower:]' '[:upper:]' | sort -u)"
           printf 'exports:\n%s\nimports:\n%s\n' "$exports" "$imports"
           test "$exports" = "$(printf 'pginit\nstata_call')"
