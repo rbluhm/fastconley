@@ -103,13 +103,14 @@ jobs:
           mv "armadillo-code-${ARMA_VERSION}" arma
       - name: Build, test, and inspect stripped Windows plugin
         run: |
-          out="$GITHUB_WORKSPACE/artifacts/windows"
+          ws="$(cygpath -u "$GITHUB_WORKSPACE")"
+          out="$ws/artifacts/windows"
           plugin="$out/fastconley_win64.plugin"
           mkdir -p "$out"
-          make -C stata/plugin windows OUT_DIR="$out" ARMA_INC="$GITHUB_WORKSPACE/arma/include" \
+          make -C stata/plugin windows OUT_DIR="$out" ARMA_INC="$ws/arma/include" \
             WIN_CC=gcc WIN_CXX=g++ WIN_STRIP=strip BUILD_ID="${GITHUB_SHA::7}"
           make -C stata/plugin check OUT_DIR="$out" PLUGIN="$plugin" \
-            ARMA_INC="$GITHUB_WORKSPACE/arma/include" GOLDEN_CXX=g++ CC=gcc \
+            ARMA_INC="$ws/arma/include" GOLDEN_CXX=g++ CC=gcc \
             SMOKE_SYSTEM=STWIN32 SMOKE_LIBS= EXE=.exe
           file "$plugin" "$plugin.debug"
           objdump -p "$plugin" > "$out/objdump.txt"
