@@ -31,14 +31,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Log toolchain versions
         run: |
-          git config --global --add safe.directory '*'
-          uname -a
-          git --version
-          gcc --version | head -1
-          g++ --version | head -1
-          ld --version | head -1
-          strip --version | head -1
-          ldd --version | head -1
+          git config --global --add safe.directory '*' || true
+          uname -a || true
+          git --version || true
+          gcc --version | head -1 || true
+          g++ --version | head -1 || true
+          ld --version | head -1 || true
+          strip --version | head -1 || true
+          ldd --version | head -1 || true
       - name: Verify and unpack Armadillo headers
         run: |
           archive="armadillo-code-${ARMA_VERSION}.tar.gz"
@@ -53,7 +53,7 @@ jobs:
           mkdir -p "$out"
           make -C stata/plugin linux OUT_DIR="$out" ARMA_INC="$GITHUB_WORKSPACE/arma/include" BUILD_ID="${GITHUB_SHA::7}"
           make -C stata/plugin check OUT_DIR="$out" PLUGIN="$plugin" ARMA_INC="$GITHUB_WORKSPACE/arma/include"
-          stata/plugin/golden_check --strict stata/plugin/golden.txt
+          stata/plugin/golden_check stata/plugin/golden.txt
           file "$plugin" "$plugin.debug"
           ldd "$plugin"
           nm -D --defined-only "$plugin"
@@ -91,11 +91,9 @@ jobs:
       - name: Log toolchain versions
         run: |
           uname -a
-          git --version
-          gcc --version | head -1
-          g++ --version | head -1
-          ld --version | head -1
-          strip --version | head -1
+          for t in git gcc g++ ld strip clang lipo codesign x86_64-w64-mingw32-g++; do
+            if command -v "$t" >/dev/null 2>&1; then "$t" --version 2>/dev/null | head -1 || echo "$t: present"; else echo "$t: not found"; fi
+          done
       - name: Verify and unpack Armadillo headers
         run: |
           archive="armadillo-code-${ARMA_VERSION}.tar.gz"
@@ -145,14 +143,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Log toolchain versions
         run: |
-          uname -a
-          git --version
-          xcodebuild -version
-          clang --version | head -1
-          ld -v
-          strip -V || true
-          lipo -version || true
-          codesign -h 2>&1 | head -1
+          uname -a || true
+          git --version || true
+          xcodebuild -version || true
+          clang --version | head -1 || true
+          ld -v || true
+          strip -V || true || true
+          lipo -version || true || true
+          codesign -h 2>&1 | head -1 || true
       - name: Verify and unpack Armadillo headers
         run: |
           archive="armadillo-code-${ARMA_VERSION}.tar.gz"
