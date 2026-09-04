@@ -1,0 +1,50 @@
+diff --git a/src/ms_parse_vce.ado b/src/ms_parse_vce.ado
+index 98fe205..0acd9a0 100644
+--- a/src/ms_parse_vce.ado
++++ b/src/ms_parse_vce.ado
+@@ -9,6 +9,7 @@ program ms_parse_vce, sclass
+ 	gettoken vcetype vce_arg : anything
+ 	loc clustervars
+ 	loc dkraay_lags
++	loc conley_vars
+ 
+ 	* vcetype abbreviations:
+ 	if (substr("`vcetype'",1,3)=="ols") loc vcetype unadjusted
+@@ -33,6 +34,12 @@ program ms_parse_vce, sclass
+ 			loc dkraay_lags `vce_arg'
+ 		}
+ 	}
++	else if ("`vcetype'" == "conley") {
++		* vce(conley latvar lonvar, cutoff(#) ...): the two coordinate variables
++		* are arguments; everything else is passed back through s(vceextra)
++		loc conley_vars `vce_arg'
++		_assert `: word count `conley_vars'' == 2, msg("vce(conley latvar lonvar, cutoff(#) ...): two coordinate variables required")
++	}
+ 
+ 	* Expand variable abbreviations for cluster variables
+ 	if ("`clustervars'" != "") {
+@@ -49,7 +56,7 @@ program ms_parse_vce, sclass
+ 	if ("`vcetype'"=="") loc vcetype unadjusted
+ 
+ 	* Sanity checks on vcetype
+-	_assert inlist("`vcetype'", "unadjusted", "robust", "cluster", "dkraay"), ///
++	_assert inlist("`vcetype'", "unadjusted", "robust", "cluster", "dkraay", "conley"), ///
+ 		msg("vcetype '`vcetype'' not allowed")
+ 
+ 	_assert !("`vcetype'"=="unadjusted" & "`weighttype'"=="pweight"), ///
+@@ -65,7 +72,7 @@ program ms_parse_vce, sclass
+ 	loc num_clusters : word count `clustervars'
+ 	_assert inlist( (`num_clusters'>0) + ("`vcetype'"=="cluster") , 0 , 2), msg("Can't specify cluster without clustervars (and viceversa)") // XOR
+ 
+-	_assert "`options'" == "", msg("VCE options not supported: `options'")
++	if ("`vcetype'" != "conley") _assert "`options'" == "", msg("VCE options not supported: `options'")
+ 
+ 	* Convert i.turn#i.trunk into turnk#trunk (so we can generate the new variable with the combination of both)
+ 
+@@ -75,5 +82,6 @@ program ms_parse_vce, sclass
+ 	sreturn loc clustervars `clustervars'
+ 	sreturn loc base_clustervars `base_clustervars'
+ 	sreturn loc dkraay_lags `dkraay_lags'
++	sreturn loc conley_vars `conley_vars'
+ 	sreturn loc vceextra `options'
+ end

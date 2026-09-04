@@ -1,0 +1,30 @@
+v 3
+d fastconley: Conley (1999) spatial HAC standard errors for reghdfe models
+d
+d fastconley fits linear models with many absorbed fixed effects (via
+d reghdfe) and reports Conley spatial HAC standard errors, with panel
+d serial HAC, Bartlett/uniform kernels, three great-circle distances, and
+d optional pixel aggregation. Port of the fastconley R package; results
+d match vcovSpHAC() on the same fit. Ships a compiled engine for Linux,
+d Windows, and macOS (shared with the R package) with a pure-Mata fallback.
+d
+d KW: conley
+d KW: spatial HAC
+d KW: standard errors
+d KW: fixed effects
+d KW: reghdfe
+d
+d Requires: Stata version 14.1, reghdfe 6.12.5+, ftools
+d
+d Distribution-Date: 20260903
+d
+d Author: Richard Bluhm
+d Support: https://github.com/rbluhm/fastconley/issues
+d
+f fastconley.ado
+f fastconley.mata
+f fastconley.sthlp
+g LINUX64 fastconley_linux64.plugin fastconley.plugin
+g WIN64 fastconley_win64.plugin fastconley.plugin
+g MACARM64 fastconley_macosx.plugin fastconley.plugin
+g MACINTEL64 fastconley_macosx.plugin fastconley.plugin

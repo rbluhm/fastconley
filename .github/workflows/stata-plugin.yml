@@ -1,0 +1,74 @@
+# Builds the fastconley Stata plugin (stata/plugin/) from the engine header
+# shared with the R package (src/conley_core.h) for Linux, Windows, and
+# macOS (universal), and uploads the three binaries as artifacts. Download
+# them into stata/src/ before a release; fastconley.pkg installs the one
+# matching the user's platform as fastconley.plugin.
+name: stata-plugin
+
+on:
+  push:
+    paths: ['src/conley_core.h', 'stata/plugin/**', '.github/workflows/stata-plugin.yml']
+  pull_request:
+    paths: ['src/conley_core.h', 'stata/plugin/**', '.github/workflows/stata-plugin.yml']
+  workflow_dispatch:
+
+env:
+  ARMA_VERSION: 12.8.x
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    # manylinux2014 = glibc 2.17 baseline, so the binary loads on old distros.
+    container: quay.io/pypa/manylinux2014_x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Armadillo headers
+        run: |
+          curl -sSL -o arma.tar.gz "https://gitlab.com/conradsnicta/armadillo-code/-/archive/${ARMA_VERSION}/armadillo-code-${ARMA_VERSION}.tar.gz"
+          tar xzf arma.tar.gz && mv armadillo-code-${ARMA_VERSION} arma
+      - name: Build
+        run: |
+          cd stata/plugin
+          make linux ARMA_INC=$GITHUB_WORKSPACE/arma/include BUILD_ID=${GITHUB_SHA::7}
+          ldd ../src/fastconley_linux64.plugin
+          make smoke PLUGIN=../src/fastconley_linux64.plugin
+      - uses: actions/upload-artifact@v4
+        with: { name: fastconley_linux64.plugin, path: stata/src/fastconley_linux64.plugin }
+
+  windows:
+    runs-on: windows-latest
+    defaults: { run: { shell: msys2 {0} } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc make curl tar
+      - name: Armadillo headers
+        run: |
+          curl -sSL -o arma.tar.gz "https://gitlab.com/conradsnicta/armadillo-code/-/archive/${ARMA_VERSION}/armadillo-code-${ARMA_VERSION}.tar.gz"
+          tar xzf arma.tar.gz && mv armadillo-code-${ARMA_VERSION} arma
+      - name: Build
+        run: |
+          cd stata/plugin
+          make windows WIN_CC=gcc WIN_CXX=g++ ARMA_INC=$(pwd)/../../arma/include BUILD_ID=${GITHUB_SHA::7}
+          make smoke PLUGIN=../src/fastconley_win64.plugin SMOKE_SYSTEM=STWIN32 SMOKE_LIBS= EXE=.exe
+      - uses: actions/upload-artifact@v4
+        with: { name: fastconley_win64.plugin, path: stata/src/fastconley_win64.plugin }
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Armadillo headers
+        run: |
+          curl -sSL -o arma.tar.gz "https://gitlab.com/conradsnicta/armadillo-code/-/archive/${ARMA_VERSION}/armadillo-code-${ARMA_VERSION}.tar.gz"
+          tar xzf arma.tar.gz && mv armadillo-code-${ARMA_VERSION} arma
+      - name: Build (universal)
+        run: |
+          cd stata/plugin
+          make macos ARMA_INC=$GITHUB_WORKSPACE/arma/include BUILD_ID=${GITHUB_SHA::7}
+          lipo -info ../src/fastconley_macosx.plugin
+          make smoke PLUGIN=../src/fastconley_macosx.plugin SMOKE_SYSTEM=APPLEMAC SMOKE_LIBS=
+      - uses: actions/upload-artifact@v4
+        with: { name: fastconley_macosx.plugin, path: stata/src/fastconley_macosx.plugin }

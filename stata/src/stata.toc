@@ -1,0 +1,3 @@
+v 3
+d fastconley: Conley (1999) spatial HAC standard errors for reghdfe models
+p fastconley
