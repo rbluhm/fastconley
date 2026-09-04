@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Shipped plugins rebuilt by CI from engine 0.11.1 (build fd27197): stripped, exporting only `stata_call`/`pginit`, GLIBC floor 2.25 on Linux, ad-hoc signed universal macOS binary, installed under their platform names by the .pkg.
+
 - Added `fastconley_reghdfe_vce`, the first provider for the proposed generic reghdfe `vce(external PROVIDER, ...)` hook, with standalone-identical Mata/plugin numerics and provider metadata.
 - Made the generic external-VCE hook the primary upstream proposal; retained the native pure-Mata `vce(conley ...)` patch as an alternative.
 - Optimized the pure-Mata uniform kernel with an all-accepted tile path, conditional verbose pair counting, and reuse of per-left-tile work vectors (about 10-20% faster on 100,000 points).
