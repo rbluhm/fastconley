@@ -18,8 +18,9 @@ env:
 jobs:
   linux:
     runs-on: ubuntu-latest
-    # manylinux2014 = glibc 2.17 baseline, so the binary loads on old distros.
-    container: quay.io/pypa/manylinux2014_x86_64
+    # manylinux_2_28 = glibc 2.28 baseline (RHEL 8 / Ubuntu 18.10 and newer), the
+    # oldest image that can still run GitHub's Node-based actions.
+    container: quay.io/pypa/manylinux_2_28_x86_64
     steps:
       - uses: actions/checkout@v4
       - name: Armadillo headers
