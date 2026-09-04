@@ -7,8 +7,12 @@ R package and reproduces `vcovSpHAC()` on the same fit (validated by
 `test/parity/`).
 
 ```stata
+ssc install ftools
+ssc install reghdfe     // >= 6.12.5; reghdfe 6.13+ also needs: ssc install require
+ssc install require
 net install fastconley, from("https://raw.githubusercontent.com/rbluhm/fastconley/main/stata/src/")
-ssc install reghdfe     // >= 6.12.5, plus ftools
+* until the dev branch is merged into main, install from it instead:
+net install fastconley, from("https://raw.githubusercontent.com/rbluhm/fastconley/dev/stata/src/")
 
 fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300)
 fastconley y x1 x2, absorb(id year) lat(lat) lon(lon) cutoff(500) ///
@@ -47,7 +51,9 @@ Two interchangeable engines compute the meat; `e(engine)` records which ran.
 
 - **plugin** (default when it loads): the R package's C++ engine
   (`src/conley_core.h`) compiled as a Stata plugin. Multithreaded
-  (`threads()`, default `c(processors)`), streaming (no pair list in memory),
+  (`threads()`, default `c(processors_mach)`, the machine's processor count;
+  the plugin's threads are independent of the Stata licence, so Stata/SE and
+  /BE get the same speed-up as /MP), streaming (no pair list in memory),
   and the only engine with the exact raster **grid engine**
   (`method(auto|pairwise|grid)`), which is pair-count independent on regular
   lat/lon lattices and wraps across the dateline. `fastconley.pkg` installs
@@ -99,6 +105,18 @@ Rscript stata/test/parity/compare.R OUT 1e-8
 
 Note that `reghdfe` drops singleton groups by default and fixest does not;
 the parity harness passes `keepsingletons`.
+
+On Windows, run the same do-files with `StataSE-64.exe /e do stata\test\test_basic.do`
+(or `StataMP-64.exe`) from the repository root in PowerShell or cmd. From Git
+Bash the `/e` flag is rewritten as a path; use `//e` or set
+`MSYS_NO_PATHCONV=1`. The log lands in the working directory.
+
+Reference timings from a Windows 11 laptop (Stata/SE, i7-1265U, 12 logical
+processors) on the same 100,000-point, 500 km case: plugin 15 s with
+`threads(8)` (106 s single-threaded), uniform kernel 10 s, Mata 169 s. The
+plugin's single-thread speed relative to Mata is somewhat lower there than on
+Linux, possibly the mingw math library; multithreading more than makes up for
+it.
 
 ## Release checklist
 

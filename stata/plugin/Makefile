@@ -48,5 +48,12 @@ SMOKE_SYSTEM ?= OPUNIX
 SMOKE_LIBS ?= -ldl
 EXE ?=
 
+# Standalone engine benchmark (no Stata): see bench_engine.cpp. On MSYS2 use
+# the same command; BENCH_CXX defaults to g++.
+BENCH_CXX ?= g++
+bench:
+	$(BENCH_CXX) $(COMMON) -pthread bench_engine.cpp -o bench_engine$(EXE)
+	./bench_engine$(EXE) 1 4
+
 clean:
-	rm -f stplugin_*.o load_check load_check.exe
+	rm -f stplugin_*.o load_check load_check.exe bench_engine bench_engine.exe

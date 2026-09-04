@@ -14,7 +14,7 @@ d KW: standard errors
 d KW: fixed effects
 d KW: reghdfe
 d
-d Requires: Stata version 14.1, reghdfe 6.12.5+, ftools
+d Requires: Stata version 14.1, reghdfe 6.12.5+, ftools, require (needed by reghdfe 6.13+)
 d
 d Distribution-Date: 20260903
 d

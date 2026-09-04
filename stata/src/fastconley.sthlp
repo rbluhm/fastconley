@@ -59,7 +59,7 @@
 {syntab:Engine}
 {synopt :{opt eng:ine(string)}}{opt auto} (default), {opt mata}, or {opt plugin}{p_end}
 {synopt :{opt meth:od(string)}}{opt auto} (default), {opt pairwise}, or {opt grid} (raster lattices; plugin only){p_end}
-{synopt :{opt thr:eads(#)}}threads for the plugin engine; default {cmd:c(processors)}{p_end}
+{synopt :{opt thr:eads(#)}}threads for the plugin engine; default {cmd:c(processors_mach)}{p_end}
 {synopt :{opt neigh:bor(string)}}{opt grid} (default) or {opt band} candidate search (plugin only){p_end}
 {synopt :{opt csr:weight(string)}}{opt double} (default) or {opt float} neighbour-weight storage on the balanced path (plugin only){p_end}
 {synopt :{opt tile(#)}}tile size for the Mata engine's dense blocks; default 1024{p_end}
@@ -192,7 +192,9 @@ the grid and pairwise engines.
 
 {phang}
 {opt threads(#)} sets the plugin's thread count (results do not depend on
-it). {opt neighbor()} and {opt csrweight()} are the plugin's candidate-search
+it). The default is the machine's processor count, {cmd:c(processors_mach)},
+not the licensed count: the plugin's threads are independent of the Stata
+licence, so Stata/SE and /BE users get the full speed-up as well. {opt neighbor()} and {opt csrweight()} are the plugin's candidate-search
 strategy and neighbour-weight precision, mirroring the R package's
 {cmd:neighbor} and {cmd:csr_weight}; the defaults are exact and fastest.
 

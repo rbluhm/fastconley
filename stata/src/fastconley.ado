@@ -77,6 +77,16 @@ program Estimate, eclass
 		exit 111
 	}
 	ms_get_version reghdfe, min_version("6.12.5")
+	* reghdfe 6.13+ depends on the require package and stops with a terse
+	* message without it; say what to install instead
+	cap ms_get_version reghdfe, min_version("6.13.0")
+	if (!c(rc)) {
+		cap which require
+		if (c(rc)) {
+			di as error "this reghdfe version needs the require package: ssc install require"
+			exit 111
+		}
+	}
 
 	* ---- options -----------------------------------------------------------
 	if ("`kernel'" == "") loc kernel bartlett
@@ -129,7 +139,9 @@ program Estimate, eclass
 		di as error "csrweight() must be double or float"
 		exit 198
 	}
-	if (`threads' <= 0) loc threads = c(processors)
+	* The plugin's threads are independent of the Stata licence (c(processors)
+	* is 1 on Stata/SE and /BE), so default to the machine's processor count
+	if (`threads' <= 0) loc threads = c(processors_mach)
 	if (`tile' < 16) {
 		di as error "tile() must be >= 16"
 		exit 198

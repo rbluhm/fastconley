@@ -47,3 +47,5 @@ fastconley.Rcheck/
 stata/plugin/*.o
 stata/plugin/load_check
 stata/plugin/load_check.exe
+stata/plugin/bench_engine
+stata/plugin/bench_engine.exe
