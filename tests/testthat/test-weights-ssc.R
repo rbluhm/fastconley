@@ -97,18 +97,28 @@ test_that("ssc (default TRUE) scales by n / df.residual, matching fixest", {
   expect_lt(max(abs(V1 - V_fx)) / max(abs(V_fx)), 1e-12)
 })
 
-test_that("ssc default on felm uses the fit's df.residual", {
+test_that("felm ssc uses regression df and ignores clustered-fit df.residual", {
   skip_if_not_installed("lfe")
   d <- make_cs_data()
   fit <- lfe::felm(y ~ x | g, data = d, keepCX = TRUE)
+  fit_cl <- lfe::felm(y ~ x | g | 0 | g, data = d, keepCX = TRUE)
   V0 <- vcovSpHAC(fit, lat = "latitude", lon = "longitude",
                   kernel = "bartlett", dist_fn = "haversine",
                   dist_cutoff = 200, ncores = 2, ssc = FALSE, data = d)
   V1 <- vcovSpHAC(fit, lat = "latitude", lon = "longitude",
                   kernel = "bartlett", dist_fn = "haversine",
                   dist_cutoff = 200, ncores = 2, data = d)
-  expect_equal(V1[1, 1] / V0[1, 1], nrow(d) / fit$df.residual,
+  V_cl <- vcovSpHAC(fit_cl, lat = "latitude", lon = "longitude",
+                    kernel = "bartlett", dist_fn = "haversine",
+                    dist_cutoff = 200, ncores = 2, data = d)
+  expect_equal(fit$df.residual, fit$N - fit$p)
+  expect_false(identical(fit_cl$df.residual, fit_cl$N - fit_cl$p))
+  expect_equal(V1[1, 1] / V0[1, 1], nrow(d) / (fit$N - fit$p),
                tolerance = 1e-14)
+  expect_identical(V_cl, V1)
+
+  fit_w <- lfe::felm(y ~ x | g, data = d, weights = d$w, keepCX = TRUE)
+  expect_equal(fit_w$df.residual, fit_w$N - fit_w$p)
 })
 
 test_that("psd_fix clamps negative eigenvalues with fixest semantics", {

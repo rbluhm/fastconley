@@ -24,7 +24,8 @@ M-estimation sandwich built from the scores and inverse Hessian `fixest`
 stores on the fit, so Poisson panels get the spatial + serial correction
 too. Four properties distinguish it:
 
-- **Exact.** Distances are true great-circle distances and every
+- **Exact.** Distances use the selected exact geometry (haversine or
+  spherical arc distance, or straight-line chord distance), and every
   within-cutoff pair enters with its exact kernel weight — no
   dense-matrix shortcuts, no approximate distance formulas. Against a
   brute-force reference, results agree to near machine precision (the
@@ -200,7 +201,11 @@ etable(est, vcov = V_conley)
 
 For `lfe`, use `keepCX = TRUE` when fitting the model. IV/2SLS fits (the
 `felm` multi-part formula with `(endog ~ instruments)`) work out of the
-box and agree with the `fixest` IV path at machine precision.
+box and agree with the `fixest` IV path and an independent dense-R
+sandwich at machine precision. Other k-class estimators, including LIML,
+are not supported. Explicit `unit` and `time` names are matched to
+absorbed effects or recovered from the model data; when both names are
+omitted, the first two absorbed effects are the default when available.
 
 ``` r
 library(lfe)
@@ -228,6 +233,8 @@ sqrt(diag(V_conley))
 
 For panel data, provide the unit and time variables. Set
 `lag_cutoff > 0` when you also want serial HAC adjustment within units.
+Supplying `time` alone still defines the spatial blocks and treats every
+row as its own unit; serial HAC requires `unit`.
 
 ``` r
 est <- feols(
@@ -266,16 +273,16 @@ The most important choice is `dist_cutoff`. It should come from the
 research design: the distance over which residual correlation is
 plausible enough to affect inference.
 
-| Argument              | Practical meaning                                                                                                                                                                                                                                  |
-|-----------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `dist_cutoff`         | Spatial range, in kilometers. Observations farther apart do not contribute to each other’s Conley adjustment.                                                                                                                                      |
-| `kernel = "uniform"`  | All observations inside the cutoff receive equal weight.                                                                                                                                                                                           |
-| `kernel = "bartlett"` | Observations inside the cutoff are downweighted with distance.                                                                                                                                                                                     |
-| `lag_cutoff`          | Number of time lags for serial HAC in panel data. Use `0` for spatial-only inference.                                                                                                                                                              |
-| `ncores`              | Number of threads used for the covariance calculation.                                                                                                                                                                                             |
-| `pixel = 0`           | Exact deduplication of identical coordinates. Positive values trade a little spatial precision for more aggregation.                                                                                                                               |
-| `ssc = TRUE`          | Small-sample correction. The default scales the matrix by $n/(n - K)$, counting absorbed fixed-effect levels in $K$ — exactly `fixest`’s default Conley correction. `FALSE` applies none, reproducing `rbluhm/conley` and fastconley before 0.9.0. |
-| `psd_fix = TRUE`      | Conley kernels do not formally guarantee a positive semi-definite matrix. The default clamps negative eigenvalues (same semantics as `fixest`’s `vcov_fix`); either way a warning reports a noticeably non-PSD result.                             |
+| Argument              | Practical meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+|-----------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `dist_cutoff`         | Spatial range, in kilometers. Observations farther apart do not contribute to each other’s Conley adjustment.                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `kernel = "uniform"`  | All observations inside the cutoff receive equal weight.                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `kernel = "bartlett"` | Observations inside the cutoff are downweighted with distance.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `lag_cutoff`          | Number of time lags for serial HAC in panel data. Use `0` for spatial-only inference.                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `ncores`              | Number of threads used for the covariance calculation. The default uses `getOption("fastconley.ncores")` when set, otherwise all detected logical cores; `_R_CHECK_LIMIT_CORES_=TRUE` caps it at two.                                                                                                                                                                                                                                                                                                         |
+| `pixel = 0`           | Exact deduplication of identical coordinates. Positive values trade a little spatial precision for more aggregation.                                                                                                                                                                                                                                                                                                                                                                                          |
+| `ssc = TRUE`          | Small-sample correction. The default scales the matrix by $n/(n - K)$, counting absorbed fixed-effect levels in $K$ — exactly `fixest`’s default Conley correction. $K$ is the fitting package’s own parameter count; with three or more absorbed fixed effects `lfe` and `fixest` can count the estimable levels differently, so their default-`ssc` results differ by that factor while `ssc = FALSE` results are identical. `FALSE` applies none, reproducing `rbluhm/conley` and fastconley before 0.9.0. |
+| `psd_fix = TRUE`      | Conley kernels do not formally guarantee a positive semi-definite matrix. The default clamps negative eigenvalues (same semantics as `fixest`’s `vcov_fix`); either way a warning reports a noticeably non-PSD result.                                                                                                                                                                                                                                                                                        |
 
 Two conveniences need no argument at all. Weighted regressions
 (`feols(..., weights = ~w)` or `felm(..., weights = w)`) are handled
@@ -291,13 +298,14 @@ application can tolerate approximation, try a positive `pixel` value
 that is much smaller than `dist_cutoff`, then compare the resulting
 standard errors on a representative subset.
 
-For `dist_fn`, the three options are all exact great-circle geometries
-that agree to within a fraction of a percent at sub-1000 km cutoffs:
-`haversine` is the numerically best-conditioned at short distances,
-`spherical` (arc-cosine) is the cheapest, and `chord` is the
-straight-line distance through the sphere. Any of them is fine; just
-report which one you used. `lag_cutoff` is in units of the time variable
-(periods, not years unless your time variable is years).
+For `dist_fn`, `haversine` and `spherical` are exact arc-distance
+formulations; `chord` is the straight-line distance through the sphere.
+They agree closely at sub-1000 km cutoffs but are not the same geometry,
+so report which one you used. `lag_cutoff` is in units of the numeric
+time variable (periods, not years unless the time variable is years).
+Numeric-looking character or factor labels are parsed without collapsing
+gaps (`"2000"`, `"2002"` stay two units apart); other labels are valid
+only when `lag_cutoff = 0`.
 
 ### Cutoff Sensitivity Is Cheap — Report It
 
@@ -342,7 +350,8 @@ expected.
 
 | Data layout                          | Recommended [`vcovSpHAC()`](https://rbluhm.github.io/fastconley/reference/vcovSpHAC.md) settings         | What it means                                                                                                                                                                          |
 |--------------------------------------|----------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Scattered cross-section              | Omit `unit` and `time`; use `lag_cutoff = 0`; leave `method = "auto"` or set `method = "pairwise"`.      | Exact spatial Conley for point locations. This is the default for ordinary latitude-longitude data.                                                                                    |
+| Scattered cross-section              | Omit `unit` and `time`; use `lag_cutoff = 0`; leave `method = "auto"` or set `method = "pairwise"`.      | Exact spatial Conley for point locations. Under `auto`, ordinary scattered data use the pairwise engine.                                                                               |
+| Repeated cross-sections              | Supply `time`, omit `unit`, and keep `lag_cutoff = 0`.                                                   | Spatial pairs are limited to each period; every row is its own unit.                                                                                                                   |
 | Repeated locations                   | Same as scattered data; start with `pixel = 0`.                                                          | Rows with identical coordinates are combined exactly before the covariance is computed.                                                                                                |
 | Approximate location snapping        | Set a positive `pixel`, such as `pixel = 5`, only after checking sensitivity.                            | Nearby locations are snapped to a kilometer grid. This can be faster, but it is an approximation.                                                                                      |
 | Regular raster or grid               | Use `method = "auto"`, or `method = "grid"` if you want to require a regular latitude-longitude lattice. | Exact Conley for complete or partly occupied regular rasters. If `method = "grid"` and the data are not a lattice, the call errors instead of falling back.                            |
@@ -424,8 +433,8 @@ For a cross-section, the Conley meat is
 
 $$\widehat{\Omega} = \sum\limits_{i = 1}^{n}\sum\limits_{j = 1}^{n}K\left( \frac{d_{ij}}{c} \right)1\{ d_{ij} \leq c\} s_{i}\prime s_{j},$$
 
-where $d_{ij}$ is the great-circle distance between observations $i$ and
-$j$, $c$ is `dist_cutoff`, and $K( \cdot )$ is the chosen kernel:
+where $d_{ij}$ is the selected spatial distance between observations $i$
+and $j$, $c$ is `dist_cutoff`, and $K( \cdot )$ is the chosen kernel:
 
 $$K_{\text{uniform}}(u) = 1,\qquad K_{\text{bartlett}}(u) = 1 - u,\qquad u = d_{ij}/c \leq 1.$$
 
@@ -459,8 +468,8 @@ cross-sectional Conley formula to the stacked rows.
 
 Two computational guarantees are worth stating precisely. First, the
 sums above are evaluated **exactly**: every pair with $d_{ij} \leq c$
-enters with its exact kernel weight, using true great-circle distances —
-there is no sampling, no tapering beyond the kernel itself, and no
+enters with its exact kernel weight under the selected distance geometry
+— there is no sampling, no tapering beyond the kernel itself, and no
 approximate distance formula. Second, the result is **deterministic**:
 summation is organized in fixed-size chunks, so the same data and
 settings produce a bit-identical matrix regardless of `ncores`. Both
@@ -491,8 +500,9 @@ affect the answer. It also uses three common data features directly:
   is done as a grid problem instead of a point-pair problem.
 
 You normally do not have to choose among these paths. The default
-settings are intended to do the right thing for ordinary point data,
-panel data, and regular rasters.
+`method = "auto"` chooses between the pairwise and grid engines;
+ordinary point data use pairwise while qualifying regular rasters can
+use grid.
 
 ## Benchmarks
 
@@ -642,6 +652,9 @@ floating-point summation order.
 Positive `pixel` values are optional. They can be useful for very large
 data sets with dense nearby coordinates, but they should be treated as
 an approximation and checked against `pixel = 0` on a smaller sample.
+Rounding the two coordinate axes can move one point by roughly
+`pixel / sqrt(2)` and can change a two-point distance by as much as
+roughly `sqrt(2) * pixel`.
 
 ### Dense Baseline
 

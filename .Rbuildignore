@@ -3,6 +3,7 @@
 ^\.claude$
 ^\.git$
 ^\.gitignore$
+^\.scratch$
 ^fastconley\.Rcheck$
 ^fastconley_.*\.tar\.gz$
 ^\.obsidian$
@@ -16,3 +17,4 @@
 ^CRAN-SUBMISSION$
 ^\.github$
 ^stata$
+^.*\.log$

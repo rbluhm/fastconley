@@ -1,4 +1,4 @@
 # License
 
-    YEAR: 2024
-    COPYRIGHT HOLDER: Richard Bluhm and contributors
+    YEAR: 2024-2026
+    COPYRIGHT HOLDER: Richard Bluhm

@@ -6,6 +6,25 @@
 args <- commandArgs(trailingOnly = TRUE)
 d <- if (length(args)) args[1] else stop("pass OUT_DIR")
 library(fastconley)
+dir.create(d, recursive = TRUE, showWarnings = FALSE)
+
+# Compile and run the same production header without R linkage. Current
+# RcppArmadillo headers require C++14 even though older releases accepted C++11.
+cxx <- Sys.which("g++")
+if (!nzchar(cxx)) stop("g++ not found")
+arma_inc <- system.file("include", package = "RcppArmadillo")
+src <- normalizePath("tests/manual/core_standalone_check.cpp")
+bin <- file.path(d, "core_standalone_check")
+cxx_args <- c(
+  "-std=c++14", "-O2", "-pthread",
+  "-DARMA_DONT_USE_WRAPPER", "-DARMA_DONT_USE_BLAS",
+  "-DARMA_DONT_USE_LAPACK", "-DARMA_DONT_USE_SUPERLU",
+  paste0("-I", arma_inc), "-Isrc", src, "-o", bin
+)
+cat("compiling standalone core with -std=c++14\n")
+if (system2(cxx, cxx_args) != 0L) stop("standalone core compilation failed")
+if (system2(bin, d) != 0L) stop("standalone core execution failed")
+
 rd <- function(f) unname(as.matrix(read.csv(file.path(d, f), header = FALSE)))
 FastSpatialMeat <- fastconley:::FastSpatialMeat
 FastSerialHacPanel <- fastconley:::FastSerialHacPanel

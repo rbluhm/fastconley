@@ -11,8 +11,8 @@
 <script src="deps/bootstrap-5.3.8/bootstrap.bundle.min.js"></script><link href="deps/font-awesome-6.5.2/css/all.min.css" rel="stylesheet">
 <link href="deps/font-awesome-6.5.2/css/v4-shims.min.css" rel="stylesheet">
 <script src="deps/headroom-0.11.0/headroom.min.js"></script><script src="deps/headroom-0.11.0/jQuery.headroom.min.js"></script><script src="deps/bootstrap-toc-1.0.1/bootstrap-toc.min.js"></script><script src="deps/clipboard.js-2.0.11/clipboard.min.js"></script><script src="deps/search-1.0.0/autocomplete.jquery.min.js"></script><script src="deps/search-1.0.0/fuse.min.js"></script><script src="deps/search-1.0.0/mark.min.js"></script><!-- pkgdown --><script src="pkgdown.js"></script><meta property="og:title" content="fastconley: Fast and exact Conley standard errors">
-<meta name="description" content="Conley (1999) spatial HAC standard errors for fixed effects panel and cross-sectional models estimated with lfe::felm() (OLS and IV/2SLS) or with fixest's feols() (OLS and IV), feglm(), and fepois(); GLM fits use the M-estimation sandwich built from the stored scores and inverse Hessian. The spatial path uses score accumulation, a 3D cell-grid neighbor search, and CSR neighbor lists instead of dense distance matrices, yielding large speedups over rbluhm/conley on big cross-sections and high-dimensional regressions.">
-<meta property="og:description" content="Conley (1999) spatial HAC standard errors for fixed effects panel and cross-sectional models estimated with lfe::felm() (OLS and IV/2SLS) or with fixest's feols() (OLS and IV), feglm(), and fepois(); GLM fits use the M-estimation sandwich built from the stored scores and inverse Hessian. The spatial path uses score accumulation, a 3D cell-grid neighbor search, and CSR neighbor lists instead of dense distance matrices, yielding large speedups over rbluhm/conley on big cross-sections and high-dimensional regressions.">
+<meta name="description" content="Conley (1999) &lt;doi:10.1016/S0304-4076(98)00084-0&gt; spatial heteroscedasticity and autocorrelation consistent (HAC) standard errors for fixed effects panel and cross-sectional models estimated with felm() from the lfe package (ordinary least squares and instrumental variables) or with feols(), feglm(), and fepois() from the fixest package. Instrumental-variable support is limited to ordinary two-stage least squares. Generalized linear model fits use the M-estimation sandwich built from the stored scores and inverse Hessian. The spatial path uses score accumulation, a three-dimensional cell-grid neighbour search, and compressed sparse row neighbour lists instead of dense distance matrices, yielding large speedups over the original conley package &lt;https://github.com/rbluhm/conley&gt; on big cross-sections and high-dimensional regressions.">
+<meta property="og:description" content="Conley (1999) &lt;doi:10.1016/S0304-4076(98)00084-0&gt; spatial heteroscedasticity and autocorrelation consistent (HAC) standard errors for fixed effects panel and cross-sectional models estimated with felm() from the lfe package (ordinary least squares and instrumental variables) or with feols(), feglm(), and fepois() from the fixest package. Instrumental-variable support is limited to ordinary two-stage least squares. Generalized linear model fits use the M-estimation sandwich built from the stored scores and inverse Hessian. The spatial path uses score accumulation, a three-dimensional cell-grid neighbour search, and compressed sparse row neighbour lists instead of dense distance matrices, yielding large speedups over the original conley package &lt;https://github.com/rbluhm/conley&gt; on big cross-sections and high-dimensional regressions.">
 </head>
 <body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
@@ -22,7 +22,7 @@
 
     <a class="navbar-brand me-2" href="index.html">fastconley</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.10.0</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -55,7 +55,7 @@
   <main id="main" class="col-md-9"><div class="section level1">
 <div class="page-header"><h1 id="fastconley">fastconley<a class="anchor" aria-label="anchor" href="#fastconley"></a>
 </h1></div>
-<p>Fast Conley (1997) spatial HAC standard errors for <code><a href="https://rdrr.io/pkg/lfe/man/felm.html" class="external-link">lfe::felm()</a></code> (OLS and IV/2SLS) and <code>fixest</code> models — <code><a href="https://lrberge.github.io/fixest/reference/feols.html" class="external-link">feols()</a></code> (OLS and IV), <code><a href="https://lrberge.github.io/fixest/reference/feglm.html" class="external-link">feglm()</a></code>, and <code><a href="https://rdrr.io/pkg/lfe/man/fepois.html" class="external-link">fepois()</a></code> — in R.</p>
+<p>Fast Conley (1999) spatial HAC standard errors for <code><a href="https://rdrr.io/pkg/lfe/man/felm.html" class="external-link">lfe::felm()</a></code> (OLS and IV/2SLS) and <code>fixest</code> models — <code><a href="https://lrberge.github.io/fixest/reference/feols.html" class="external-link">feols()</a></code> (OLS and IV), <code><a href="https://lrberge.github.io/fixest/reference/feglm.html" class="external-link">feglm()</a></code>, and <code><a href="https://rdrr.io/pkg/lfe/man/fepois.html" class="external-link">fepois()</a></code> — in R.</p>
 <p>Documentation site: <strong><a href="https://rbluhm.github.io/fastconley/" class="uri">https://rbluhm.github.io/fastconley/</a></strong> — function reference, changelog, and the <a href="https://rbluhm.github.io/fastconley/articles/fastconley-performance.html">performance vignette</a>.</p>
 <p><code>fastconley</code> is a drop-in replacement for the spatial path of <a href="https://github.com/rbluhm/conley" class="external-link"><code>rbluhm/conley</code></a> that scales to large cross-sections and high-dimensional regressions. <code><a href="reference/vcovSpHAC.html">vcovSpHAC()</a></code> still accepts <code>felm</code> fits with the same call signature it always did; numerical equivalence with upstream <code>conley</code> holds at machine precision for the three supported distance functions (the upstream-only <code>dist_fn = "flatearth"</code> option was dropped, and <code>pixel</code> was added as a new optional argument — see the <a href="#compatibility-with-rbluhmconley">Compatibility</a> section for the full diff). <code><a href="reference/vcovSpHAC.html">vcovSpHAC()</a></code> is also now an S3 generic with a <code>fixest</code> method.</p>
 <p>The original <code>conley</code> package was written by Richard Bluhm with contributions from <a href="https://github.com/darinchristensen/conley-se" class="external-link">Darin Christensen</a>. Some key speed up ideas (sorting on distances and pruning) are from <a href="https://github.com/lrberge/fixest" class="external-link">Laurent Berge</a> and <a href="https://github.com/cdueben/conleyreg" class="external-link">Christian Düben</a>.</p>
@@ -64,7 +64,7 @@
 </h2>
 <div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># install.packages("remotes")</span></span>
-<span><span class="fu">remotes</span><span class="fu">::</span><span class="fu">install_github</span><span class="op">(</span><span class="st">"rbluhm/fastconley"</span><span class="op">)</span></span></code></pre></div>
+<span><span class="fu">remotes</span><span class="fu">::</span><span class="fu"><a href="https://remotes.r-lib.org/reference/install_github.html" class="external-link">install_github</a></span><span class="op">(</span><span class="st">"rbluhm/fastconley"</span><span class="op">)</span></span></code></pre></div>
 <p><code>fastconley</code> installs alongside the original <code>conley</code> package (different <code>Package:</code> name), so you can keep both libraries loaded in different R sessions to compare results.</p>
 <div class="section level3">
 <h3 id="performance-build-optional">Performance build (optional)<a class="anchor" aria-label="anchor" href="#performance-build-optional"></a>
@@ -99,11 +99,12 @@
 <span>  dist_cutoff  <span class="op">=</span> <span class="fl">500</span>,            <span class="co"># km</span></span>
 <span>  lag_cutoff   <span class="op">=</span> <span class="fl">0</span>,              <span class="co"># serial-HAC lag (set &gt; 0 for both)</span></span>
 <span>  balanced_pnl <span class="op">=</span> <span class="cn">TRUE</span>,           <span class="co"># set TRUE only if every period has the same units in the same order, with time-invariant coordinates</span></span>
-<span>  ncores       <span class="op">=</span> <span class="cn">NA</span>,             <span class="co"># NA = use all cores via RcppParallel</span></span>
+<span>  ncores       <span class="op">=</span> <span class="cn">NULL</span>,           <span class="co"># NULL = option fastconley.ncores, then all detected cores</span></span>
 <span>  pixel        <span class="op">=</span> <span class="fl">0</span>               <span class="co"># score-pre-aggregation cell size in km; 0 = exact dedupe only</span></span>
 <span><span class="op">)</span></span></code></pre></div>
 <p><code><a href="https://rdrr.io/pkg/lfe/man/felm.html" class="external-link">lfe::felm()</a></code> must be called with <code>keepCX = TRUE</code> so <code>cY</code> and <code>cX</code> are populated; without it, both <code>conley</code> and <code>fastconley</code> will fail to extract the centered design matrix.</p>
-<p>IV/2SLS fits — the <code>felm</code> multi-part formula with <code>(endog ~ instruments)</code> — work out of the box and produce the correct 2SLS Conley sandwich: <code>lfe</code> stores the projected (second-stage) design in <code>cX</code> and the structural residuals in <code>residuals</code>, which is exactly what the score construction needs. Verified against the <code>fixest</code> IV path at machine precision (see <code>tests/manual/test-glm-iv-parity.R</code>).</p>
+<p>IV/2SLS fits — the <code>felm</code> multi-part formula with <code>(endog ~ instruments)</code> — work out of the box and produce the correct 2SLS Conley sandwich: <code>lfe</code> stores the projected (second-stage) design in <code>cX</code> and the structural residuals in <code>residuals</code>, which is exactly what the score construction needs. Other k-class estimators, including LIML, are rejected because their influence-function bread is different. Ordinary 2SLS is verified against the <code>fixest</code> IV path and an independent dense-R sandwich (see <code>tests/testthat/test-independent-references.R</code>).</p>
+<p>For <code>felm</code>, explicitly supplied <code>unit</code> and <code>time</code> names are matched to the corresponding absorbed effects; if a name is not absorbed, the aligned column is recovered from the model data. When both are omitted and the fit has at least two absorbed effects, the first two are used as unit and time. Supplying only <code>time</code> is also meaningful: it divides the spatial calculation into periods while treating each row as its own unit. Serial HAC (<code>lag_cutoff &gt; 0</code>) always requires an explicit or defaulted unit variable.</p>
 </div>
 <div class="section level3">
 <h3 id="with-fixestfeols">With <code>fixest::feols</code>
@@ -130,7 +131,7 @@
 <span>    dist_cutoff  <span class="op">=</span> <span class="fl">500</span>,</span>
 <span>    lag_cutoff   <span class="op">=</span> <span class="fl">1</span>,</span>
 <span>    balanced_pnl <span class="op">=</span> <span class="cn">TRUE</span>,</span>
-<span>    ncores       <span class="op">=</span> <span class="cn">NA</span>,</span>
+<span>    ncores       <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>    pixel        <span class="op">=</span> <span class="fl">0</span>,</span>
 <span>    data         <span class="op">=</span> <span class="va">panel</span></span>
 <span>  <span class="op">)</span></span>
@@ -168,6 +169,8 @@
 <span>  dist_cutoff <span class="op">=</span> <span class="fl">500</span>, lag_cutoff <span class="op">=</span> <span class="fl">2</span>, data <span class="op">=</span> <span class="va">panel</span></span>
 <span><span class="op">)</span></span></code></pre></div>
 <p>The variance is the M-estimation sandwich <code>H⁻¹ B H⁻¹</code>, built from the maximum-likelihood score matrix and inverse Hessian that <code>fixest</code> stores on every fit (<code>lean = TRUE</code> fits are rejected — they carry no scores). Weights, offsets, and the fixed-effect profiling are already folded into the stored scores, and the scores ride through every engine unchanged: pairwise, grid/FFT for rasters, <code>pixel</code> aggregation, and — beyond what <code><a href="https://lrberge.github.io/fixest/reference/vcov_conley.html" class="external-link">fixest::vcov_conley()</a></code> offers — the panel spatial <strong>+ serial</strong> HAC via <code>lag_cutoff</code>, now available for Poisson/GLM panels (count outcomes à la conflict or mortality, PPML gravity). Any <code>feglm</code> family works; <code><a href="https://lrberge.github.io/fixest/reference/femlm.html" class="external-link">femlm()</a></code>/<code><a href="https://lrberge.github.io/fixest/reference/feNmlm.html" class="external-link">feNmlm()</a></code> fits are not supported.</p>
+<p>Time values determine both spatial blocks and serial lags. Numeric-looking character or factor labels are parsed through <code>as.numeric(as.character(time))</code>, so <code>"2000"</code> and <code>"2002"</code> retain a gap of two. Arbitrary labels remain valid for spatial-only blocking, but <code>lag_cutoff &gt; 0</code> rejects them because serial weights require a numeric time scale.</p>
+<p>By default, <code>ncores = NULL</code> uses <code>getOption("fastconley.ncores")</code> when set and otherwise all detected logical cores. During checks, a true-ish <code>_R_CHECK_LIMIT_CORES_</code> caps the resolved value at two. Explicit values must be a single finite positive number and are rounded to an integer. The compatibility argument <code>maxobsmem</code> is deprecated and ignored (supplying it warns); <code>neighbor = "band"</code> is also deprecated but remains operational for comparisons with the older latitude-band search.</p>
 </div>
 <div class="section level3">
 <h3 id="matching-settings-to-your-data">Matching settings to your data<a class="anchor" aria-label="anchor" href="#matching-settings-to-your-data"></a>
@@ -191,26 +194,31 @@
 <td>Exact spatial Conley for ordinary point locations.</td>
 </tr>
 <tr class="even">
+<td>Repeated cross-sections</td>
+<td>Supply <code>time</code> but omit <code>unit</code>; keep <code>lag_cutoff = 0</code>.</td>
+<td>Spatial pairs are limited to the same period, with each row treated as its own unit.</td>
+</tr>
+<tr class="odd">
 <td>Repeated locations</td>
 <td>Same as scattered data; start with <code>pixel = 0</code>.</td>
 <td>Rows with identical coordinates are combined exactly before the covariance is computed.</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Approximate location snapping</td>
 <td>Set a positive <code>pixel</code>, such as <code>pixel = 5</code>, only after checking sensitivity.</td>
 <td>Nearby locations are snapped to a kilometer grid. This can be faster, but it is an approximation.</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Regular raster or grid</td>
 <td>Use <code>method = "auto"</code>, or <code>method = "grid"</code> if you want to require a regular latitude-longitude lattice.</td>
 <td>Exact Conley for complete or partly occupied regular rasters. If <code>method = "grid"</code> and the data are not a lattice, the call errors instead of falling back.</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Balanced panel with fixed locations</td>
 <td>Provide <code>unit</code> and <code>time</code>; set <code>lag_cutoff</code> as needed; set <code>balanced_pnl = TRUE</code>.</td>
 <td>Spatial correlation is computed within period; serial HAC is computed within unit. This is faster when every period has the same units and locations do not move.</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Unbalanced panel or moving locations</td>
 <td>Provide <code>unit</code> and <code>time</code>; set <code>lag_cutoff</code> as needed; leave <code>balanced_pnl = FALSE</code>.</td>
 <td>Uses the general panel route. This is safer when units enter, exit, duplicate within a period, or change coordinates.</td>
@@ -226,7 +234,7 @@
 <li>
 <code>pixel = 0</code> (default): exact-coordinate dedupe only. Two rows are collapsed iff their <code>(lat, lon)</code> match exactly. The answer is unchanged (machine precision); free win when units share coordinates (panels with time-invariant coords, point-aggregated data).</li>
 <li>
-<code>pixel &gt; 0</code>: snap <code>(lat, lon)</code> to a uniform <code>pixel</code>-km grid before the dedupe. Nearby points collapse to a common representative. The pair distance is approximate up to roughly <code>pixel / 2</code> km — this is a speed/accuracy trade-off; pick <code>pixel</code> an order of magnitude smaller than <code>dist_cutoff</code>.</li>
+<code>pixel &gt; 0</code>: snap <code>(lat, lon)</code> to a uniform <code>pixel</code>-km grid before the dedupe. Nearby points collapse to a common representative. Rounding each axis can move one point by as much as roughly <code>pixel / sqrt(2)</code>; moving both endpoints can change a pair distance by as much as roughly <code>sqrt(2) * pixel</code>. This is a speed/accuracy trade-off, so choose <code>pixel</code> well below <code>dist_cutoff</code> and check sensitivity.</li>
 </ul>
 </div>
 <div class="section level3">
@@ -268,19 +276,19 @@
 <li>
 <strong>Score accumulation.</strong> The meat is computed via <code>S_i = e_i X_i</code>, <code>C_i = 0.5 S_i + Σ_{j&gt;i, d_ij ≤ cutoff} w_ij S_j</code>, <code>meat = Σ_i S_i' C_i + transpose</code>. No <code>k × n</code> per-row temporaries.</li>
 <li>
-<strong>Lat/lon candidate pruning.</strong> Within each time block, observations are sorted by latitude. The pair loop breaks once latitude separation exceeds the cutoff and applies a conservative longitude screen before computing the exact distance.</li>
+<strong>3D cell-grid candidate pruning.</strong> The default <code>neighbor = "grid"</code> buckets unit-sphere coordinates into cubic cells and inspects only the current and forward-neighbour cells. Candidate work therefore tracks accepted pairs without pole or dateline special cases. The older latitude-band scan remains available as deprecated <code>neighbor = "band"</code> compatibility behavior.</li>
 <li>
-<strong>CSR neighbor lists.</strong> Pair weights are stored as <code>row_ptr</code> / <code>col_idx</code> / <code>weight</code>, not a dense matrix. With <code>balanced_pnl = TRUE</code> the CSR graph is built once from the first period and reused across all periods.</li>
+<strong>Balanced CSR, unbalanced streaming.</strong> Pair weights are stored as <code>row_ptr</code> / <code>col_idx</code> / <code>weight</code> only when <code>balanced_pnl = TRUE</code>, so the graph can be built from the first period and reused. The general/unbalanced path streams accepted pairs directly into score accumulators and does not retain a neighbor list.</li>
 <li>
 <strong>Serial HAC in C++.</strong> The per-unit serial-correlation loop now runs entirely in C++ as a single <code>FastSerialHacPanel</code> call, instead of an R <code>lapply</code> that called into C++ once per unit.</li>
 <li>
 <strong>Templated <code>(dist_fn, kernel)</code> dispatch.</strong> The per-pair screen + distance + kernel-weight stack is specialised at compile time for each of the six <code>(distance, kernel)</code> combinations, so the inner loop has no runtime branches.</li>
 <li>
-<strong>3D dot-product threshold for spherical/chord.</strong> With the unit-vector cache precomputed once, <code>(spherical, uniform)</code> pair inclusion is three multiplies + two adds + one compare, no trig at all. The <code>bartlett</code> variants only pay <code>acos</code> (spherical) or <code>sqrt</code> (chord) on accepted pairs.</li>
+<strong>Stable unit-vector distance tests.</strong> Uniform spherical/chord inclusion uses a dot-product threshold. Bartlett haversine and spherical arc distances use the stable half-chord form, while chord distance uses its straight-line square root; there is no <code>acos</code> in the pairwise path.</li>
 <li>
-<strong>Row-major scores + sorted-order layout.</strong> Scores <code>s_i = e_i · X_i</code> are stored row-major in a flat buffer, and both the coord cache and the scores are permuted into latitude-sorted order before the worker runs, so every read in the hot loop is sequential.</li>
+<strong>Row-major scores + cell-sorted layout.</strong> Scores <code>s_i = e_i · X_i</code> are stored row-major in a flat buffer, and the coordinate cache and scores are permuted into cell order before the worker runs, keeping hot-loop reads sequential.</li>
 </ol>
-<p>A <code>CoordCache</code> precomputes <code>cos(lat)</code>, <code>sin(lat)</code>, and (for <code>dist_fn ∈ {chord, spherical}</code>) the 3D unit-vector coordinates once per call. CSR construction and meat accumulation are parallelised with <code>RcppParallel</code>.</p>
+<p>A <code>CoordCache</code> precomputes angular coordinates and 3D unit-vector coordinates once per call. CSR construction and meat accumulation are parallelised with a small <code>std::thread</code> pool inside the engine header (<code>src/conley_core.h</code>, shared with the Stata port); the chunked reduction is deterministic, so results are bit-identical for any <code>ncores</code>.</p>
 </div>
 <div class="section level2">
 <h2 id="benchmarks">Benchmarks<a class="anchor" aria-label="anchor" href="#benchmarks"></a>
@@ -299,7 +307,7 @@
 <div class="section level3">
 <h3 id="v070-exact-grid-engine-for-rasters-method--autogrid">v0.7.0: exact grid engine for rasters (<code>method = "auto"/"grid"</code>)<a class="anchor" aria-label="anchor" href="#v070-exact-grid-engine-for-rasters-method--autogrid"></a>
 </h3>
-<p>For the uniform kernel on a regular lat/lon lattice (raster data), the meat reduces to exact sliding-window sums whose cost is independent of the pair count. On 2.25M cells at ~1.1 km with a 250 km cutoff (~1.8×10¹¹ pairs): <strong>0.81 s vs 244 s</strong> for the 16-core pairwise engine (302×, error 5e-15); a 9M-cell continental raster takes 3.5 s. <code>method = "auto"</code> (default) engages it only when a lattice is detected and the kernel is uniform — scattered data and bartlett stay on the pairwise engine. No approximation: natively gridded data gets the exact great-circle answer.</p>
+<p>For the uniform kernel on a regular lat/lon lattice (raster data), the meat reduces to exact sliding-window sums whose cost is independent of the pair count. On 2.25M cells at ~1.1 km with a 250 km cutoff (~1.8×10¹¹ pairs): <strong>0.81 s vs 244 s</strong> for the 16-core pairwise engine (302×, error 5e-15); a 9M-cell continental raster takes 3.5 s. <code>method = "auto"</code> (default) engages it only when a lattice is detected and the kernel is uniform — scattered data and bartlett stay on the pairwise engine. No approximation: natively gridded data gets the exact answer for the selected distance geometry.</p>
 </div>
 <div class="section level3">
 <h3 id="v080-bartlett-on-the-grid-engine-ring-fft--dateline-wrap">v0.8.0: bartlett on the grid engine (ring-FFT) + dateline wrap<a class="anchor" aria-label="anchor" href="#v080-bartlett-on-the-grid-engine-ring-fft--dateline-wrap"></a>
@@ -481,12 +489,12 @@
 </h2>
 <p>Numerical results match upstream to machine precision for <code>dist_fn ∈ {haversine, spherical, chord}</code> and both kernels.</p>
 <p><strong><code>dist_fn = "flatearth"</code> was removed.</strong> Upstream’s equirectangular formula is not symmetric in <code>(i, j)</code> and produces order-dependent results; <code>fastconley</code> no longer accepts it. Use <code>dist_fn = "spherical"</code> instead — with the 3D dot-product threshold it runs without trig in the inner loop and is now no slower than the old <code>flatearth</code> path was.</p>
-<p><strong><code>balanced_pnl = TRUE</code> is now stricter.</strong> Upstream silently produced wrong results when units had time-varying coordinates; <code>fastconley</code> errors with a clear message instead. Unequal block sizes still trigger a warning and fall back to the general path.</p>
+<p><strong><code>balanced_pnl = TRUE</code> is now stricter.</strong> Upstream silently produced wrong results when units had time-varying coordinates; <code>fastconley</code> errors with a clear message instead. It also errors on unequal period sizes, repeated unit-period rows, or changing unit membership. Use <code>balanced_pnl = FALSE</code> explicitly for those data.</p>
 </div>
 <div class="section level2">
 <h2 id="requirements">Requirements<a class="anchor" aria-label="anchor" href="#requirements"></a>
 </h2>
-<p>R ≥ 3.5 with a C++11 compiler and GNU make. Imports <code>data.table</code>, <code>Rcpp</code>, <code>RcppParallel</code> (and links against <code>RcppArmadillo</code>); <code>lfe</code> and <code>fixest</code> are suggested — you need whichever one fits your models.</p>
+<p>R ≥ 4.0 with R’s standard C++ toolchain (the engine uses <code>std::thread</code>; supported Windows Rtools releases provide the needed threading runtime). Imports <code>data.table</code> and <code>Rcpp</code> and links against <code>RcppArmadillo</code>; <code>lfe</code> and <code>fixest</code> are suggested — you need whichever one fits your models.</p>
 </div>
 <div class="section level2">
 <h2 id="citation">Citation<a class="anchor" aria-label="anchor" href="#citation"></a>
@@ -527,7 +535,7 @@
 <div class="developers">
 <h2 data-toc-skip>Developers</h2>
 <ul class="list-unstyled">
-<li>Richard Bluhm <br><small class="roles"> Author, maintainer </small>   </li>
+<li>Richard Bluhm <br><small class="roles"> Author, maintainer, copyright holder </small>   </li>
 </ul>
 </div>
 

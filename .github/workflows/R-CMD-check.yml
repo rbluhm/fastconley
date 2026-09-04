@@ -1,0 +1,76 @@
+name: R-CMD-check
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  _R_CHECK_LIMIT_CORES_: 'true'
+  GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+  R_KEEP_PKG_SOURCE: yes
+
+jobs:
+  check:
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - {os: ubuntu-latest, r: release}
+          - {os: macos-latest, r: release}
+          - {os: windows-latest, r: release}
+    runs-on: ${{ matrix.config.os }}
+    name: ${{ matrix.config.os }} (R ${{ matrix.config.r }})
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2.12.1
+        with:
+          r-version: ${{ matrix.config.r }}
+          use-public-rspm: true
+      - uses: r-lib/actions/setup-r-dependencies@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2.12.1
+        with:
+          extra-packages: any::rcmdcheck
+          needs: check
+      - uses: r-lib/actions/check-r-package@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2.12.1
+        with:
+          args: 'c("--as-cran", "--no-manual")'
+          upload-snapshots: true
+      - name: Install package for manual suites
+        if: matrix.config.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          manual_lib="$RUNNER_TEMP/fastconley-library"
+          mkdir -p "$manual_lib"
+          R CMD INSTALL --library="$manual_lib" .
+          echo "R_LIBS_USER=$manual_lib:$R_LIBS_USER" >> "$GITHUB_ENV"
+      - name: Run fast manual suites
+        if: matrix.config.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          Rscript tests/manual/test-grid-neighbor.R
+          Rscript tests/manual/test-grid-meat.R
+          Rscript tests/manual/test-phase2.R
+          Rscript tests/manual/test-minors.R
+          Rscript tests/manual/test-equiv-distances.R
+      - name: Compare standalone header with installed package
+        if: matrix.config.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          core_out="$RUNNER_TEMP/core-standalone-output"
+          core_exe="$RUNNER_TEMP/core-standalone-check"
+          arma_inc="$(Rscript -e 'cat(system.file("include", package="RcppArmadillo"))')"
+          mkdir -p "$core_out"
+          g++ -std=c++17 -O2 -pthread -DARMA_DONT_USE_WRAPPER \
+            -DARMA_DONT_USE_BLAS -DARMA_DONT_USE_LAPACK \
+            -Isrc -I"$arma_inc" tests/manual/core_standalone_check.cpp -o "$core_exe"
+          "$core_exe" "$core_out"
+          Rscript tests/manual/core_standalone_check.R "$core_out"

@@ -1,62 +1,120 @@
-# Proposal: `vce(conley ...)` for reghdfe
+# Proposal: native `vce(conley ...)` for reghdfe
 
-This directory holds a ready-to-review contribution that adds Conley (1999)
-spatial HAC standard errors to reghdfe as a native `vce()` type, using the
-pure-Mata engine of the `fastconley` Stata command. It has not been submitted
-yet; the files here are the patch and its test.
+This directory contains a reviewable proposal for Conley (1999) spatial HAC
+standard errors in reghdfe's native OLS estimator. It has not been submitted.
 
 ```stata
 reghdfe y x1 x2, absorb(region) vce(conley lat lon, cutoff(300))
-reghdfe y x1 x2, absorb(id year) vce(conley lat lon, cutoff(500) kernel(uniform) lag(2) unit(id) time(year))
+reghdfe y x1 x2, absorb(id year) ///
+    vce(conley lat lon, cutoff(500) kernel(uniform) lag(2) unit(id) time(year))
 ```
 
-Syntax: `vce(conley latvar lonvar, cutoff(#) [kernel(bartlett|uniform)
-dist(haversine|spherical|chord) lag(#) unit(varname) time(varname) pixel(#)
-nossc nopsdfix])`. Defaults: Bartlett kernel, haversine distance, no serial
-lags, the same `N/(N-K-df_a)` small-sample factor as `vce(robust)`, and the
-positive-semi-definite fix reghdfe already applies to cluster variances.
+The grammar is `vce(conley latvar lonvar, cutoff(#)
+[kernel(bartlett|uniform) distance(haversine|spherical|chord) lag(#)
+unit(varname) time(varname) pixel(#) balanced nossc nopsdfix])`. `con` and
+`conl` are accepted abbreviations. String suboption values are normalized to
+lower case. All Conley syntax-validation failures return `r(198)`.
 
-## Files
+Defaults are Bartlett weights, haversine distance, no serial lags, no pixel
+aggregation, robust-style `N/(N-df_m-df_a)` small-sample scaling, and PSD
+repair. The repair follows fastconley/fixest semantics: eigenvalues at or below
+zero are replaced by `1e-16`, with a note only when the matrix changes by more
+than `1e-8`; `nopsdfix` leaves it unchanged and reports a noticeable failure.
 
-- `Conley.mata`: new file for `current-code/`. `reghdfe_vce_conley(S, sol, D,
-  X, w, vce_mode)` follows `reghdfe_vce_dkraay()` line by line (scores as
-  residual times weights, sandwich `D M D q`, `reghdfe_fix_psd`), plus the
-  engine functions (cell-grid neighbour search with tiled dense blocks,
-  vectorised serial HAC, aggregation of coincident points), derived from
-  `stata/src/fastconley.mata` with a `reghdfe_conley_` prefix.
-- `reghdfe-vce-conley.patch` (against reghdfe 6.14.1 `current-code/`):
-  `reghdfe.ado` (a `ParseConley` subprogram, markout of the coordinate and
-  panel variables, filling the HDFE fields, `compact` keep list),
-  `FE.mata` (fields and defaults), `Regression.mata` (whitelist and dispatch),
-  `Solution.mata` (fields, `e(vcetype) = "Conley"`, `e(title3)`,
-  `e(conley_*)`), `reghdfe_header.ado` (cutoff line), `reghdfe.mata`
-  (include), `reghdfe.pkg`. `build.py` regenerates `src/` as usual.
-- `ftools-vce-conley.patch` (against ftools 2.50.0): `ms_parse_vce.ado`
-  accepts `conley` with two coordinate arguments and returns the sub-options
-  through `s(vceextra)` instead of rejecting them.
-- `test_upstream.do`: runs the patched reghdfe against `fastconley` (cross
-  section, uniform/chord, aweights with pixel aggregation, `noabsorb`, panel
-  with two serial lags, error paths); all agree to better than 1e-12.
+## Scope and limitations
 
-## How it was validated
+Native `vce(conley)` is OLS-only. ivreghdfe rejects VCE types other than
+unadjusted, robust, and cluster before calling reghdfe, so this patch does not
+make Conley reachable for IV. The standalone fastconley command is separately
+validated for IV and raster/FFT workloads; neither claim applies to this native
+integration, whose engine is pairwise pure Mata.
 
-The engine is the Mata engine of the `fastconley` Stata command, which
-matches the fastconley R package to about 1e-14 on 21 configurations
-(kernels, distances, weights, dateline and pole geometries, raster lattices,
-balanced and unbalanced panels with serial lags, IV) and reproduces
-`reghdfe, vce(robust)` exactly when the cutoff excludes every cross term.
+With `group()` or `individual()`, latitude, longitude, unit, and time variables
+are included in `ValidateGroups`; they must be constant within group. The
+`balanced` suboption validates equal period sizes, identical unit membership,
+and time-invariant coordinates, while using the same exact general covariance
+path. Numeric-looking string times keep their numeric spacing; other string
+keys are grouped in sorted-value order.
 
-## Notes for the maintainers
+For fweights, Conley treats an observation of weight `w` as `w` colocated,
+perfectly correlated observations. Consequently the negative-cutoff diagnostic
+used by standalone development tests is not equal to reghdfe's robust VCE for
+fweights. Unweighted, aweight, and pweight score construction follows
+reghdfe's normalized-weight conventions.
 
-- No compiled code, no new dependencies. Cost on 100,000 scattered points
-  with a 500 km cutoff is about 25 s (Bartlett) or 8 s (uniform) on a 4-core
-  Stata/MP laptop; `fastconley` additionally ships a compiled engine that
-  does the same in 1.6 s, which is why the standalone command exists.
-- With fweights an observation with weight w counts as w identical,
-  perfectly correlated observations at the same location (the Driscoll-Kraay
-  convention in reghdfe), so `vce(robust)` is reproduced only under aweights,
-  pweights, and unweighted fits.
-- `unit()`/`time()` are explicit rather than taken from `xtset`, because
-  the serial lag is measured in the units of the time variable and many
-  Conley applications are cross-sections or unbalanced panels; taking
-  `_dta[_TStvar]` as a default when set would be a one-line change.
+## Files and design
+
+- `make_conley_mata.py` embeds the reghdfe front end and discovers every
+  top-level `fastconley_*` function in `stata/src/fastconley.mata`. It applies
+  the `reghdfe_conley_` namespace, rewrites standalone-only diagnostics, and
+  deterministically generates `Conley.mata` without reading the old output.
+- `reghdfe-vce-conley.patch` adds `Conley.mata`, local pre-parsing before stock
+  `ms_parse_vce`, a generic `vce_extra_keepvars` field used by compact loading,
+  full `e(conley_*)` posting and replay display, help, version/date/changelog
+  updates, and `test/part1/conley.do` in the upstream certification layout.
+- `test_upstream.do` compares the patched command with standalone fastconley
+  and exercises parsing, replay/posting, compact and `poolsize(1)`, aweights,
+  fweights, native pweights, panel lags, stale `s()` state, PSD repair, and
+  group-coordinate validation.
+
+No ftools patch is needed. reghdfe recognizes `con`/`conl` before calling
+`ms_parse_vce`, parses the complete Conley clause locally, hands stock ftools a
+valid robust VCE, and then restores `vcetype="conley"`. The declared dependency
+therefore remains stock ftools 2.50.0.
+
+## Rebuild and validation
+
+The patches are pinned to:
+
+- reghdfe `29b2b203f534413369d675d0c0f674d61291f536` (tag 6.14.1 and the
+  verified current `master` at preparation time);
+- ftools `7b3663e49ea5c5b81638c55be29edf416e68e8b7` (`*! version 2.50.0
+  09jan2026`), unmodified.
+
+From the fastconley repository root, regenerate after every engine change:
+
+```bash
+python3 stata/upstream/make_conley_mata.py
+git diff --exit-code -- stata/upstream/Conley.mata
+```
+
+To validate the upstream patch, copy the pinned repositories to scratch, then:
+
+```bash
+git -C reghdfe apply --check /path/to/reghdfe-vce-conley.patch
+git -C reghdfe apply /path/to/reghdfe-vce-conley.patch
+cd reghdfe/current-code && python3 build.py
+```
+
+Install the resulting reghdfe `src/` and the unmodified pinned ftools `src/`
+into a scratch PLUS, add fastconley's `stata/src` to the adopath, set global
+`UPSTREAM_PLUS`, and run `stata-mp -b do stata/upstream/test_upstream.do` from
+the fastconley root. Stata batch can return shell status 0 after a do-file
+error, so the log must contain `test_upstream.do: all checks passed`.
+
+`test_upstream.do` primarily checks reghdfe integration because both commands
+use the same Mata engine. It does not independently validate the distance
+formula, compiled plugin, IV, raster/FFT dispatch, cross-platform numerics, or
+large-data performance. Those belong to fastconley's R/Stata parity and engine
+test suites. The upstream-native `test/part1/conley.do` has no fastconley
+dependency and independently reconstructs the PSD floor from the raw VCE.
+
+## Likely maintainer concerns
+
+The largest review question is ownership: this proposal adds a sizeable
+estimator-specific algorithm to reghdfe, including generated source and a new
+public option/result surface. Other concerns are the pure-Mata runtime,
+long-term synchronization with fastconley, the OLS-only boundary at ivreghdfe,
+the statistical assumptions behind cutoff/kernel choices, and whether a
+provider interface would be easier to maintain than native Conley code.
+
+An alternative is a generic external-VCE hook, for example
+`vce(external:<provider> ...)`. reghdfe would call the provider with `S`, `sol`,
+`D`, `X`, `w`, and `vce_mode`; the provider would update `sol.V` and declare the
+raw variables it needs through `vce_extra_keepvars` before partial-out. That
+keeps compact/team-FE preservation generic while leaving Conley parsing,
+documentation, algorithm ownership, IV/raster claims, and optional compiled
+acceleration in fastconley. A production hook would also need a stable callback
+contract, namespace/error rules, capability/version negotiation, posting and
+replay conventions, and tests showing that external providers cannot corrupt
+reghdfe state.

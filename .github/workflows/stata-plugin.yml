@@ -1,8 +1,6 @@
-# Builds the fastconley Stata plugin (stata/plugin/) from the engine header
-# shared with the R package (src/conley_core.h) for Linux, Windows, and
-# macOS (universal), and uploads the three binaries as artifacts. Download
-# them into stata/src/ before a release; fastconley.pkg installs the one
-# matching the user's platform as fastconley.plugin.
+# Build, strip, inspect, and numerically test all three Stata plugins. Release
+# artifacts retain the platform names expected by stata/src/fastconley.pkg;
+# unstripped companions are uploaded separately for debugging.
 name: stata-plugin
 
 on:
@@ -12,66 +10,185 @@ on:
     paths: ['src/conley_core.h', 'stata/plugin/**', '.github/workflows/stata-plugin.yml']
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
-  ARMA_VERSION: 12.8.x
+  ARMA_VERSION: 12.8.4
+  ARMA_SHA256: 21cf8aff9cace3db3ab5393b913a09a6013adaffde7a70a6e53f6ead6b78cf02
 
 jobs:
   linux:
-    runs-on: ubuntu-latest
-    # manylinux_2_28 = glibc 2.28 baseline (RHEL 8 / Ubuntu 18.10 and newer), the
-    # oldest image that can still run GitHub's Node-based actions.
-    container: quay.io/pypa/manylinux_2_28_x86_64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # manylinux_2_28, pinned rather than following the mutable tag.
+    container: quay.io/pypa/manylinux_2_28_x86_64@sha256:fdb9a9c223b215604dc7b6f7e8fff4b39bfea5fbaa7777a2e5544a60dfa437f8
     steps:
-      - uses: actions/checkout@v4
-      - name: Armadillo headers
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Log toolchain versions
         run: |
-          curl -sSL -o arma.tar.gz "https://gitlab.com/conradsnicta/armadillo-code/-/archive/${ARMA_VERSION}/armadillo-code-${ARMA_VERSION}.tar.gz"
-          tar xzf arma.tar.gz && mv armadillo-code-${ARMA_VERSION} arma
-      - name: Build
+          git config --global --add safe.directory '*'
+          uname -a
+          git --version
+          gcc --version | head -1
+          g++ --version | head -1
+          ld --version | head -1
+          strip --version | head -1
+          ldd --version | head -1
+      - name: Verify and unpack Armadillo headers
         run: |
-          cd stata/plugin
-          make linux ARMA_INC=$GITHUB_WORKSPACE/arma/include BUILD_ID=${GITHUB_SHA::7}
-          ldd ../src/fastconley_linux64.plugin
-          make smoke PLUGIN=../src/fastconley_linux64.plugin
-      - uses: actions/upload-artifact@v4
-        with: { name: fastconley_linux64.plugin, path: stata/src/fastconley_linux64.plugin }
+          archive="armadillo-code-${ARMA_VERSION}.tar.gz"
+          curl -fsSLo "$archive" "https://gitlab.com/conradsnicta/armadillo-code/-/archive/${ARMA_VERSION}/${archive}"
+          printf '%s  %s\n' "$ARMA_SHA256" "$archive" | sha256sum -c -
+          tar xzf "$archive"
+          mv "armadillo-code-${ARMA_VERSION}" arma
+      - name: Build, test, and inspect stripped Linux plugin
+        run: |
+          out="$GITHUB_WORKSPACE/artifacts/linux"
+          plugin="$out/fastconley_linux64.plugin"
+          mkdir -p "$out"
+          make -C stata/plugin linux OUT_DIR="$out" ARMA_INC="$GITHUB_WORKSPACE/arma/include" BUILD_ID="${GITHUB_SHA::7}"
+          make -C stata/plugin check OUT_DIR="$out" PLUGIN="$plugin" ARMA_INC="$GITHUB_WORKSPACE/arma/include"
+          stata/plugin/golden_check --strict stata/plugin/golden.txt
+          file "$plugin" "$plugin.debug"
+          ldd "$plugin"
+          nm -D --defined-only "$plugin"
+          test "$(nm -D --defined-only "$plugin" | wc -l)" -eq 2
+          test "$(nm -D --defined-only "$plugin" | awk '{print $3}' | sort)" = "$(printf 'pginit\nstata_call')"
+          objdump -T "$plugin" | grep 'GLIBC_' | sort -u
+          glibc_max="$(objdump -T "$plugin" | sed -n 's/.*(GLIBC_\([^)]*\)).*/\1/p' | sort -V | tail -1)"
+          printf 'maximum required GLIBC version: %s\n' "$glibc_max"
+          test "$(printf '2.25\n%s\n' "$glibc_max" | sort -V | tail -1)" = 2.25
+          stat --printf='%n %s bytes\n' "$plugin" "$plugin.debug"
+          sha256sum "$plugin" "$plugin.debug"
+      - name: Upload stripped Linux plugin
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fastconley_linux64.plugin
+          path: artifacts/linux/fastconley_linux64.plugin
+      - name: Upload unstripped Linux debug file
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fastconley_linux64.plugin.debug
+          path: artifacts/linux/fastconley_linux64.plugin.debug
 
   windows:
-    runs-on: windows-latest
+    runs-on: windows-2025
+    timeout-minutes: 30
     defaults:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v4
-      - uses: msys2/setup-msys2@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2.32.0
         with:
           msystem: MINGW64
           install: mingw-w64-x86_64-gcc make curl tar
-      - name: Armadillo headers
+      - name: Log toolchain versions
         run: |
-          curl -sSL -o arma.tar.gz "https://gitlab.com/conradsnicta/armadillo-code/-/archive/${ARMA_VERSION}/armadillo-code-${ARMA_VERSION}.tar.gz"
-          tar xzf arma.tar.gz && mv armadillo-code-${ARMA_VERSION} arma
-      - name: Build
+          uname -a
+          git --version
+          gcc --version | head -1
+          g++ --version | head -1
+          ld --version | head -1
+          strip --version | head -1
+      - name: Verify and unpack Armadillo headers
         run: |
-          cd stata/plugin
-          make windows WIN_CC=gcc WIN_CXX=g++ ARMA_INC=$(pwd)/../../arma/include BUILD_ID=${GITHUB_SHA::7}
-          make smoke PLUGIN=../src/fastconley_win64.plugin SMOKE_SYSTEM=STWIN32 SMOKE_LIBS= EXE=.exe
-      - uses: actions/upload-artifact@v4
-        with: { name: fastconley_win64.plugin, path: stata/src/fastconley_win64.plugin }
+          archive="armadillo-code-${ARMA_VERSION}.tar.gz"
+          curl -fsSLo "$archive" "https://gitlab.com/conradsnicta/armadillo-code/-/archive/${ARMA_VERSION}/${archive}"
+          printf '%s  %s\n' "$ARMA_SHA256" "$archive" | sha256sum -c -
+          tar xzf "$archive"
+          mv "armadillo-code-${ARMA_VERSION}" arma
+      - name: Build, test, and inspect stripped Windows plugin
+        run: |
+          out="$GITHUB_WORKSPACE/artifacts/windows"
+          plugin="$out/fastconley_win64.plugin"
+          mkdir -p "$out"
+          make -C stata/plugin windows OUT_DIR="$out" ARMA_INC="$GITHUB_WORKSPACE/arma/include" \
+            WIN_CC=gcc WIN_CXX=g++ WIN_STRIP=strip BUILD_ID="${GITHUB_SHA::7}"
+          make -C stata/plugin check OUT_DIR="$out" PLUGIN="$plugin" \
+            ARMA_INC="$GITHUB_WORKSPACE/arma/include" GOLDEN_CXX=g++ CC=gcc \
+            SMOKE_SYSTEM=STWIN32 SMOKE_LIBS= EXE=.exe
+          file "$plugin" "$plugin.debug"
+          objdump -p "$plugin" > "$out/objdump.txt"
+          exports="$(sed -n '/\[Ordinal\/Name Pointer\] Table/,/The Function Table/p' "$out/objdump.txt" | \
+            sed -n 's/^[[:space:]]*\[[[:space:]]*[0-9][^]]*\][[:space:]]*//p' | sort -u)"
+          imports="$(sed -n 's/^[[:space:]]*DLL Name: //p' "$out/objdump.txt" | tr '[:lower:]' '[:upper:]' | sort -u)"
+          printf 'exports:\n%s\nimports:\n%s\n' "$exports" "$imports"
+          test "$exports" = "$(printf 'pginit\nstata_call')"
+          test "$imports" = "$(printf 'KERNEL32.DLL\nMSVCRT.DLL')"
+          if objdump -h "$plugin" | grep -q '\.debug_'; then
+            echo 'release plugin still contains .debug_* sections' >&2
+            exit 1
+          fi
+          stat --printf='%n %s bytes\n' "$plugin" "$plugin.debug"
+          sha256sum "$plugin" "$plugin.debug"
+      - name: Upload stripped Windows plugin
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fastconley_win64.plugin
+          path: artifacts/windows/fastconley_win64.plugin
+      - name: Upload unstripped Windows debug file
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fastconley_win64.plugin.debug
+          path: artifacts/windows/fastconley_win64.plugin.debug
 
   macos:
     runs-on: macos-14
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - name: Armadillo headers
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Log toolchain versions
         run: |
-          curl -sSL -o arma.tar.gz "https://gitlab.com/conradsnicta/armadillo-code/-/archive/${ARMA_VERSION}/armadillo-code-${ARMA_VERSION}.tar.gz"
-          tar xzf arma.tar.gz && mv armadillo-code-${ARMA_VERSION} arma
-      - name: Build (universal)
+          uname -a
+          git --version
+          xcodebuild -version
+          clang --version | head -1
+          ld -v
+          strip -V || true
+          lipo -version || true
+          codesign -h 2>&1 | head -1
+      - name: Verify and unpack Armadillo headers
         run: |
-          cd stata/plugin
-          make macos ARMA_INC=$GITHUB_WORKSPACE/arma/include BUILD_ID=${GITHUB_SHA::7}
-          lipo -info ../src/fastconley_macosx.plugin
-          make smoke PLUGIN=../src/fastconley_macosx.plugin SMOKE_SYSTEM=APPLEMAC SMOKE_LIBS=
-      - uses: actions/upload-artifact@v4
-        with: { name: fastconley_macosx.plugin, path: stata/src/fastconley_macosx.plugin }
+          archive="armadillo-code-${ARMA_VERSION}.tar.gz"
+          curl -fsSLo "$archive" "https://gitlab.com/conradsnicta/armadillo-code/-/archive/${ARMA_VERSION}/${archive}"
+          printf '%s  %s\n' "$ARMA_SHA256" "$archive" | shasum -a 256 -c -
+          tar xzf "$archive"
+          mv "armadillo-code-${ARMA_VERSION}" arma
+      - name: Build, test, and inspect stripped universal macOS plugin
+        run: |
+          out="$GITHUB_WORKSPACE/artifacts/macos"
+          plugin="$out/fastconley_macosx.plugin"
+          mkdir -p "$out"
+          make -C stata/plugin macos OUT_DIR="$out" ARMA_INC="$GITHUB_WORKSPACE/arma/include" BUILD_ID="${GITHUB_SHA::7}"
+          make -C stata/plugin check OUT_DIR="$out" PLUGIN="$plugin" \
+            ARMA_INC="$GITHUB_WORKSPACE/arma/include" GOLDEN_CXX=clang++ CC=clang \
+            SMOKE_SYSTEM=APPLEMAC SMOKE_LIBS=
+          file "$plugin" "$plugin.debug"
+          lipo -info "$plugin" "$plugin.debug"
+          codesign --verify --strict --verbose=2 "$plugin"
+          codesign -dv --verbose=4 "$plugin"
+          for arch in arm64 x86_64; do
+            thin="$RUNNER_TEMP/fastconley-$arch.plugin"
+            lipo "$plugin" -thin "$arch" -output "$thin"
+            symbols="$(nm -gU "$thin" | awk '{print $NF}' | sort -u)"
+            printf '%s exports:\n%s\n' "$arch" "$symbols"
+            test "$symbols" = "$(printf '_pginit\n_stata_call')"
+          done
+          stat -f '%N %z bytes' "$plugin" "$plugin.debug"
+          shasum -a 256 "$plugin" "$plugin.debug"
+      - name: Upload stripped macOS plugin
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fastconley_macosx.plugin
+          path: artifacts/macos/fastconley_macosx.plugin
+      - name: Upload unstripped macOS debug file
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fastconley_macosx.plugin.debug
+          path: artifacts/macos/fastconley_macosx.plugin.debug

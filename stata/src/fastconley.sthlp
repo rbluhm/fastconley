@@ -1,5 +1,5 @@
 {smcl}
-{* *! version 0.1.0 03sep2026}{...}
+{* *! version 0.2.0 04sep2026}{...}
 {vieweralsosee "reghdfe" "help reghdfe"}{...}
 {vieweralsosee "" "--"}{...}
 {vieweralsosee "ivreghdfe" "help ivreghdfe"}{...}
@@ -32,6 +32,8 @@
 {{opth a:bsorb(varlist)}|{opt noa:bsorb}}
 [{it:options}]
 
+{p 8 15 2}{cmd:fastconley, version}
+
 {synoptset 22 tabbed}{...}
 {synopthdr}
 {synoptline}
@@ -62,12 +64,12 @@
 {synopt :{opt thr:eads(#)}}threads for the plugin engine; default {cmd:c(processors_mach)}{p_end}
 {synopt :{opt neigh:bor(string)}}{opt grid} (default) or {opt band} candidate search (plugin only){p_end}
 {synopt :{opt csr:weight(string)}}{opt double} (default) or {opt float} neighbour-weight storage on the balanced path (plugin only){p_end}
-{synopt :{opt tile(#)}}tile size for the Mata engine's dense blocks; default 1024{p_end}
+{synopt :{opt tile(#)}}Mata dense-block tile size; default 1024, hard cap 8192 and 1-GiB workspace guard{p_end}
 {synopt :{opt v:erbose}}report engine progress{p_end}
 
 {syntab:Other}
 {synopt :{opth res:iduals(newvar)}}save residuals{p_end}
-{synopt :{it:reghdfe options}}any other option is passed to {help reghdfe} (e.g. {opt tol:erance()}, {opt keepsin:gletons}){p_end}
+{synopt :{it:reghdfe options}}other options are passed to {help reghdfe} (e.g. {opt tol:erance()}, {opt keepsin:gletons}); {opt vce()} and {opt cluster()} are rejected{p_end}
 {synopt :{it:display options}}{opt nohead:er}, {opt notable}, {opt nofoot:note}, and {help estimation options##display_options:display options}{p_end}
 {synoptline}
 {p2colreset}{...}
@@ -95,9 +97,11 @@ distances, panel semantics, aggregation of coincident points, and small-sample
 convention.
 
 {pstd}
-The estimation output, {cmd:e()} results, {cmd:predict}, and the absorbed-FE
-footnote are those of {cmd:reghdfe}; only the variance matrix, {cmd:e(F)},
-and {cmd:e(vcetype)} differ.
+For OLS, the estimation output, {cmd:e()} results, {cmd:predict}, and the
+absorbed-FE footnote are those of {cmd:reghdfe}; only the variance matrix,
+{cmd:e(F)}, and VCE metadata differ. The Stata port is linear-model only:
+the R package's GLM support, including {cmd:feglm}/{cmd:fepois}, has no Stata
+analogue here.
 
 {pstd}
 With {cmd:(}{it:endogvars} {cmd:=} {it:instruments}{cmd:)} the model is
@@ -105,10 +109,11 @@ estimated by two-stage least squares on the partialled-out variables
 (the same 2SLS sandwich the R package applies to {cmd:lfe} and {cmd:fixest} IV
 fits): the bread is the inverse cross-product of the projected regressors and
 the scores are the structural residuals times the projected regressors.
-Point estimates equal those of {help ivreghdfe} and {cmd:ivreg2}, and with a
-negative cutoff the variance equals their {cmd:robust} variance. Factor-variable
-terms are not allowed in the IV lists (absorb them or use indicators), no
-constant is reported, and {cmd:predict} is not available after IV fits.
+Point estimates equal those of {help ivreghdfe} and {cmd:ivreg2}. With
+{opt noabsorb}, an intercept is included unless {opt noconstant} is specified.
+Factor-variable terms are not allowed in the IV lists (absorb them or use
+indicators). After IV fits, {cmd:predict ..., xb} is available; residual
+prediction requires {opt residuals(newvar)} on the estimation command.
 
 
 {marker options}{...}
@@ -124,7 +129,10 @@ aggregated before the spatial sum, which is exact.
 {phang}
 {opt cutoff(#)} is the distance in kilometres beyond which the spatial kernel
 is zero. As an undocumented convenience for testing, a negative cutoff drops
-every cross-observation term and reproduces {cmd:reghdfe, vce(robust)}.
+every cross-observation term. This reproduces {cmd:reghdfe, vce(robust)} for
+unweighted, aweighted, and pweighted fits. With fweights, Conley uses
+({it:w e x})({it:w e x})' because the {it:w} copies share one location;
+robust instead uses {it:w}({it:e x})({it:e x})'.
 
 {phang}
 {opt kernel(bartlett)} weights a pair at distance {it:d} by 1 - {it:d}/cutoff;
@@ -136,11 +144,13 @@ every cross-observation term and reproduces {cmd:reghdfe, vce(robust)}.
 sphere), all with Earth radius 6371 km.
 
 {phang}
-{opth unit(varname)} and {opth time(varname)} define the panel. Spatial
-correlation is allowed within each period; with {opt lag(#)} > 0, serial
-correlation within each unit is also allowed for time differences up to #
-(in the units of {it:time}, so {it:time} should be numeric and evenly spaced;
-string identifiers are accepted for {it:unit}).
+{opth unit(varname)} and {opth time(varname)} define the panel. {opt time()}
+without {opt unit()} is allowed and blocks the spatial covariance by time;
+serial HAC still requires both. With {opt lag(#)} > 0, serial correlation
+within each unit is allowed for numeric time differences up to #. A string
+time variable whose every value parses as a number retains those numeric
+values (so "2000" and "2002" keep their gap). Other string time values are
+equality-grouped for spatial blocks and are rejected with a positive lag.
 
 {phang}
 {opt balanced} asserts that every period contains the same units with
@@ -158,8 +168,10 @@ distances by up to about #/2 km.
 {phang}
 {opt nossc} disables the small-sample factor {it:N}/({it:N}-{it:K}-{it:df_a}),
 where {it:df_a} counts the absorbed fixed effects as {cmd:reghdfe} does. The
-default matches {cmd:reghdfe, vce(robust)} and the R package's
-{cmd:ssc = TRUE}; {opt nossc} matches {cmd:ssc = FALSE}.
+default matches {cmd:reghdfe, vce(robust)}. It matches the R package's
+{cmd:ssc = TRUE} when both backends count absorbed parameters alike; with
+three or more fixed effects those counts can differ. {opt nossc} matches
+{cmd:ssc = FALSE} independently of that convention.
 
 {phang}
 {opt nopsdfix} disables the positive-semi-definite fix. Spatial kernels do not
@@ -167,13 +179,20 @@ guarantee a positive-semi-definite variance; by default negative eigenvalues
 are clamped to 1e-16 and a note is printed when that changes the matrix
 noticeably.
 
+{pstd}
+The model Wald {cmd:e(F)} is computed from the unmodified slope covariance,
+before PSD clamping. If that slope block is rank deficient, {cmd:e(F)} is left
+missing rather than allowing the artificial 1e-16 eigenvalue floor to produce
+an enormous statistic.
+
 {dlgtab:Engine}
 
 {phang}
 {opt engine()} selects the computational engine. {opt plugin} is the compiled
 engine shared with the R package (multithreaded, streaming, and the only one
-with the raster engine); it is installed automatically on Linux, Windows, and
-macOS and loaded once per session. {opt mata} is the pure-Mata implementation,
+with the raster engine); it is installed as {cmd:fastconley_linux64.plugin},
+{cmd:fastconley_win64.plugin}, or the universal
+{cmd:fastconley_macosx.plugin}, and loaded once per session. {opt mata} is the pure-Mata implementation,
 always available. {opt auto} (the default) uses the plugin when it loads and
 its engine version matches, and Mata otherwise. Both engines give the same
 answer to floating-point summation order; {cmd:e(engine)} records which ran.
@@ -201,10 +220,16 @@ strategy and neighbour-weight precision, mirroring the R package's
 {phang}
 {opt tile(#)} sets the dense block size the Mata engine uses inside each pair
 of neighbouring cells; larger tiles are faster but use more memory
-(about 5 x #^2 x 8 bytes). Both engines compute Bartlett distances from the
-chord between unit vectors, accurate to better than 1e-12 relative at any
-cutoff; the Mata engine builds the chord from coordinate differences below
-200 km, where the dot-product form would lose precision.
+(estimated as 5 x #^2 x 8 bytes). Values above 8192 are rejected, as are
+values whose estimate exceeds 1 GiB. The Mata engine builds squared chords
+from coordinate differences below 200 km. At the 200-km switch, the measured
+dot-form error is at most 5e-12 relative in squared chord and 5e-10 km in
+distance.
+
+{phang}
+{cmd:fastconley, version} reports the ado version, expected engine version,
+loaded platform file and build, loader status, and every attempted plugin
+filename with its return code.
 
 
 {marker remarks}{...}
@@ -247,7 +272,7 @@ Correspondence with the R package ({cmd:vcovSpHAC()} arguments):
 {title:Stored results}
 
 {pstd}
-{cmd:fastconley} stores everything {help reghdfe##results:reghdfe} stores, with
+For OLS, {cmd:fastconley} stores everything {help reghdfe##results:reghdfe} stores. With
 {cmd:e(cmd)} = {cmd:fastconley}, {cmd:e(vcetype)} = {cmd:Conley}, {cmd:e(vce)} = {cmd:conley}, and in addition:
 
 {synoptset 22 tabbed}{...}
@@ -271,6 +296,16 @@ Correspondence with the R package ({cmd:vcovSpHAC()} arguments):
 {synopt:{cmd:e(latvar)}}, {cmd:e(lonvar)}, {cmd:e(unitvar)}, {cmd:e(timevar)}}variables used{p_end}
 {synopt:{cmd:e(instd)}}, {cmd:e(insts)}}instrumented regressors and instruments (IV fits; {cmd:e(title)} is "HDFE 2SLS regression"){p_end}
 {p2colreset}{...}
+
+{pstd}
+IV fits post {cmd:e(b)}, {cmd:e(V)}, {cmd:e(N)}, {cmd:e(df_m)},
+{cmd:e(df_r)}, {cmd:e(rank)}, {cmd:e(rss)}, {cmd:e(tss)},
+{cmd:e(tss_within)}, {cmd:e(mss)}, {cmd:e(r2)},
+{cmd:e(r2_within)}, {cmd:e(rmse)}, {cmd:e(F)}, {cmd:e(instd)},
+{cmd:e(insts)}, {cmd:e(exogr)}, {cmd:e(cmdline)}, and
+{cmd:e(predict)} = {cmd:fastconley_p}, plus the Conley results above and
+absorbed-FE footnote results. First-stage and identification statistics are
+not computed.
 
 
 {marker references}{...}

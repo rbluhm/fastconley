@@ -6,7 +6,8 @@ multi-part formula with `(endog ~ instruments)`) work out of the box:
 `lfe` stores the projected (second-stage) design in `cX` and the
 structural residuals in `residuals`, which is exactly the 2SLS sandwich.
 Weighted fits are supported (the scores carry the weights and the bread
-uses \\X'WX\\).
+uses \\X'WX\\). Other k-class estimators, including LIML, are not
+supported.
 
 ## Usage
 
@@ -24,7 +25,7 @@ vcovSpHAC(
   lag_cutoff = 0,
   verbose = FALSE,
   balanced_pnl = FALSE,
-  ncores = NA,
+  ncores = NULL,
   pixel = 0,
   neighbor = c("grid", "band"),
   csr_weight = c("double", "float"),
@@ -45,11 +46,17 @@ vcovSpHAC(
 
 - unit:
 
-  Optional name of the panel unit variable.
+  Optional name of the panel unit variable. When both `unit` and `time`
+  are omitted, the first two absorbed fixed effects are used when
+  available; otherwise each row is its own unit.
 
 - time:
 
-  Optional name of the time variable.
+  Optional name of the time variable. A supplied `time` is honoured even
+  when `unit` is omitted (each row is then its own unit), but
+  `lag_cutoff > 0` requires `unit`. Character/factor times are parsed as
+  their numeric labels when possible; serial HAC rejects labels that are
+  not numeric-parsable because time gaps determine lag weights.
 
 - lat:
 
@@ -89,22 +96,27 @@ vcovSpHAC(
 
 - ncores:
 
-  Number of cores for the C++/RcppParallel spatial and serial routines.
+  Number of threads for the C++ spatial and serial routines (results do
+  not depend on it). The default uses `getOption("fastconley.ncores")`
+  when set, otherwise all detected logical cores. Under a true-ish
+  `_R_CHECK_LIMIT_CORES_`, the resolved value is capped at two. Values
+  are rounded to a positive integer.
 
 - pixel:
 
   Score-pre-aggregation cell size, in kilometres. Default 0
   (exact-coordinate dedupe only). If \`pixel \> 0\`, points are snapped
   to a uniform \`pixel\`-km grid before the dedupe — a speed/accuracy
-  trade-off that approximates the distance up to roughly \`pixel / 2\`.
+  trade-off that can move a point by up to roughly `pixel / sqrt(2)` and
+  can change a pair distance by up to roughly `sqrt(2) * pixel`.
 
 - neighbor:
 
   Neighbor-search strategy for the spatial meat: "grid" (default; 3D
-  cell grid, output-sensitive candidate enumeration) or "band" (latitude
-  band scan, the pre-0.5.0 behavior). Both are exact and use identical
-  per-pair accept tests; results agree to floating-point summation
-  order.
+  cell grid, output-sensitive candidate enumeration) or "band"
+  (deprecated; latitude band scan, the pre-0.5.0 behavior). Both are
+  exact and use identical per-pair accept tests; results agree to
+  floating-point summation order.
 
 - csr_weight:
 
@@ -115,11 +127,11 @@ vcovSpHAC(
 
 - method:
 
-  Spatial meat engine. "pairwise" enumerates neighbor pairs (the default
-  engine; works for any data). "grid" uses the exact grid-native meat —
-  requires observations on a regular lat/lon lattice (e.g. raster data);
-  cost is independent of the pair count, so it is dramatically faster on
-  dense grids with large cutoffs. The uniform kernel uses sliding-window
+  Spatial meat engine. "pairwise" enumerates neighbor pairs and works
+  for any data. "grid" uses the exact grid-native meat — requires
+  observations on a regular lat/lon lattice (e.g. raster data); cost is
+  independent of the pair count, so it is dramatically faster on dense
+  grids with large cutoffs. The uniform kernel uses sliding-window
   prefix sums; the bartlett kernel uses per-ring-pair FFT convolutions.
   Lattices spanning the full longitude circle wrap correctly across the
   dateline. "auto" (default) picks "grid" when it detects a lattice and
@@ -135,11 +147,16 @@ vcovSpHAC(
 
   Small-sample correction. If `TRUE` (default), the variance matrix is
   scaled by `n / (n - K)` where `K` counts all estimated parameters
-  including absorbed fixed-effect levels (taken from the fit's residual
-  degrees of freedom). This matches `fixest`'s default Conley correction
-  (its cluster adjustment is a no-op for Conley vcovs). Pass `FALSE` for
-  no correction — that reproduces `rbluhm/conley`, fastconley versions
-  before 0.9.0, and `fixest` with
+  including absorbed fixed-effect levels (taken from the regression's
+  parameter count, independent of any clustering used when fitting).
+  This matches `fixest`'s default Conley correction (its cluster
+  adjustment is a no-op for Conley vcovs). Note that `K` is the fitting
+  package's own count: with three or more absorbed fixed effects `lfe`
+  and `fixest` can count the estimable levels differently (e.g. 30
+  versus 33 for the same model), so the two methods then differ by
+  exactly that factor while their `ssc = FALSE` results are identical.
+  Pass `FALSE` for no correction — that reproduces `rbluhm/conley`,
+  fastconley versions before 0.9.0, and `fixest` with
   `ssc(adj = FALSE, cluster.adj = FALSE)`.
 
 - psd_fix:
@@ -152,7 +169,8 @@ vcovSpHAC(
 
 - maxobsmem:
 
-  Ignored by the fast spatial path. Kept for backward compatibility.
+  Deprecated and ignored by the fast spatial path. Supplying it produces
+  a warning; the argument remains for backward compatibility.
 
 - data:
 
@@ -165,7 +183,7 @@ vcovSpHAC(
 
 - ...:
 
-  Currently unused.
+  Must be empty; unknown arguments are rejected.
 
 ## Value
 

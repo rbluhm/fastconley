@@ -1,6 +1,6 @@
 # fastconley
 
-Fast Conley (1997) spatial HAC standard errors for `lfe::felm()` (OLS and IV/2SLS) and `fixest` models — `feols()` (OLS and IV), `feglm()`, and `fepois()` — in R.
+Fast Conley (1999) spatial HAC standard errors for `lfe::felm()` (OLS and IV/2SLS) and `fixest` models — `feols()` (OLS and IV), `feglm()`, and `fepois()` — in R.
 
 Documentation site: **<https://rbluhm.github.io/fastconley/>** — function reference, changelog, and the [performance vignette](https://rbluhm.github.io/fastconley/articles/fastconley-performance.html).
 
@@ -52,14 +52,16 @@ V <- vcovSpHAC(
   dist_cutoff  = 500,            # km
   lag_cutoff   = 0,              # serial-HAC lag (set > 0 for both)
   balanced_pnl = TRUE,           # set TRUE only if every period has the same units in the same order, with time-invariant coordinates
-  ncores       = NA,             # NA = use all cores (std::thread pool in C++)
+  ncores       = NULL,           # NULL = option fastconley.ncores, then all detected cores
   pixel        = 0               # score-pre-aggregation cell size in km; 0 = exact dedupe only
 )
 ```
 
 `lfe::felm()` must be called with `keepCX = TRUE` so `cY` and `cX` are populated; without it, both `conley` and `fastconley` will fail to extract the centered design matrix.
 
-IV/2SLS fits — the `felm` multi-part formula with `(endog ~ instruments)` — work out of the box and produce the correct 2SLS Conley sandwich: `lfe` stores the projected (second-stage) design in `cX` and the structural residuals in `residuals`, which is exactly what the score construction needs. Verified against the `fixest` IV path at machine precision (see `tests/manual/test-glm-iv-parity.R`).
+IV/2SLS fits — the `felm` multi-part formula with `(endog ~ instruments)` — work out of the box and produce the correct 2SLS Conley sandwich: `lfe` stores the projected (second-stage) design in `cX` and the structural residuals in `residuals`, which is exactly what the score construction needs. Other k-class estimators, including LIML, are rejected because their influence-function bread is different. Ordinary 2SLS is verified against the `fixest` IV path and an independent dense-R sandwich (see `tests/testthat/test-independent-references.R`).
+
+For `felm`, explicitly supplied `unit` and `time` names are matched to the corresponding absorbed effects; if a name is not absorbed, the aligned column is recovered from the model data. When both are omitted and the fit has at least two absorbed effects, the first two are used as unit and time. Supplying only `time` is also meaningful: it divides the spatial calculation into periods while treating each row as its own unit. Serial HAC (`lag_cutoff > 0`) always requires an explicit or defaulted unit variable.
 
 ### With `fixest::feols`
 
@@ -89,7 +91,7 @@ vcov_fastconley <- function(x) {
     dist_cutoff  = 500,
     lag_cutoff   = 1,
     balanced_pnl = TRUE,
-    ncores       = NA,
+    ncores       = NULL,
     pixel        = 0,
     data         = panel
   )
@@ -139,6 +141,10 @@ V <- vcovSpHAC(
 
 The variance is the M-estimation sandwich `H⁻¹ B H⁻¹`, built from the maximum-likelihood score matrix and inverse Hessian that `fixest` stores on every fit (`lean = TRUE` fits are rejected — they carry no scores). Weights, offsets, and the fixed-effect profiling are already folded into the stored scores, and the scores ride through every engine unchanged: pairwise, grid/FFT for rasters, `pixel` aggregation, and — beyond what `fixest::vcov_conley()` offers — the panel spatial **+ serial** HAC via `lag_cutoff`, now available for Poisson/GLM panels (count outcomes à la conflict or mortality, PPML gravity). Any `feglm` family works; `femlm()`/`feNmlm()` fits are not supported.
 
+Time values determine both spatial blocks and serial lags. Numeric-looking character or factor labels are parsed through `as.numeric(as.character(time))`, so `"2000"` and `"2002"` retain a gap of two. Arbitrary labels remain valid for spatial-only blocking, but `lag_cutoff > 0` rejects them because serial weights require a numeric time scale.
+
+By default, `ncores = NULL` uses `getOption("fastconley.ncores")` when set and otherwise all detected logical cores. During checks, a true-ish `_R_CHECK_LIMIT_CORES_` caps the resolved value at two. Explicit values must be a single finite positive number and are rounded to an integer. The compatibility argument `maxobsmem` is deprecated and ignored (supplying it warns); `neighbor = "band"` is also deprecated but remains operational for comparisons with the older latitude-band search.
+
 ### Matching settings to your data
 
 Most users can leave `method = "auto"`. The explicit settings below are useful when you want the call to document the intended data layout, or when you want an early error if the data do not have the structure you expected.
@@ -146,6 +152,7 @@ Most users can leave `method = "auto"`. The explicit settings below are useful w
 | Data layout | Recommended `vcovSpHAC()` settings | Meaning |
 |---|---|---|
 | Scattered cross-section | Omit `unit` and `time`; use `lag_cutoff = 0`; leave `method = "auto"` or set `method = "pairwise"`. | Exact spatial Conley for ordinary point locations. |
+| Repeated cross-sections | Supply `time` but omit `unit`; keep `lag_cutoff = 0`. | Spatial pairs are limited to the same period, with each row treated as its own unit. |
 | Repeated locations | Same as scattered data; start with `pixel = 0`. | Rows with identical coordinates are combined exactly before the covariance is computed. |
 | Approximate location snapping | Set a positive `pixel`, such as `pixel = 5`, only after checking sensitivity. | Nearby locations are snapped to a kilometer grid. This can be faster, but it is an approximation. |
 | Regular raster or grid | Use `method = "auto"`, or `method = "grid"` if you want to require a regular latitude-longitude lattice. | Exact Conley for complete or partly occupied regular rasters. If `method = "grid"` and the data are not a lattice, the call errors instead of falling back. |
@@ -157,7 +164,7 @@ Most users can leave `method = "auto"`. The explicit settings below are useful w
 `pixel` controls score pre-aggregation, inspired by the same argument in `fixest::vcov_conley`. Before the pair loop runs, observations that share a (possibly pixelated) location within a time period are collapsed into a single aggregated score, so the pair loop runs on `n_cases` rows instead of all `n`.
 
 - `pixel = 0` (default): exact-coordinate dedupe only. Two rows are collapsed iff their `(lat, lon)` match exactly. The answer is unchanged (machine precision); free win when units share coordinates (panels with time-invariant coords, point-aggregated data).
-- `pixel > 0`: snap `(lat, lon)` to a uniform `pixel`-km grid before the dedupe. Nearby points collapse to a common representative. The pair distance is approximate up to roughly `pixel / 2` km — this is a speed/accuracy trade-off; pick `pixel` an order of magnitude smaller than `dist_cutoff`.
+- `pixel > 0`: snap `(lat, lon)` to a uniform `pixel`-km grid before the dedupe. Nearby points collapse to a common representative. Rounding each axis can move one point by as much as roughly `pixel / sqrt(2)`; moving both endpoints can change a pair distance by as much as roughly `sqrt(2) * pixel`. This is a speed/accuracy trade-off, so choose `pixel` well below `dist_cutoff` and check sensitivity.
 
 ### Raster / gridded data: the grid engine
 
@@ -223,14 +230,14 @@ degenerate lattice, or a dateline-wrap incompatibility).
 The spatial meat used to be assembled by repeatedly building dense `n × n` distance matrices and doing a row-by-row sandwich update. `fastconley` replaces that with:
 
 1. **Score accumulation.** The meat is computed via `S_i = e_i X_i`, `C_i = 0.5 S_i + Σ_{j>i, d_ij ≤ cutoff} w_ij S_j`, `meat = Σ_i S_i' C_i + transpose`. No `k × n` per-row temporaries.
-2. **Lat/lon candidate pruning.** Within each time block, observations are sorted by latitude. The pair loop breaks once latitude separation exceeds the cutoff and applies a conservative longitude screen before computing the exact distance.
-3. **CSR neighbor lists.** Pair weights are stored as `row_ptr` / `col_idx` / `weight`, not a dense matrix. With `balanced_pnl = TRUE` the CSR graph is built once from the first period and reused across all periods.
+2. **3D cell-grid candidate pruning.** The default `neighbor = "grid"` buckets unit-sphere coordinates into cubic cells and inspects only the current and forward-neighbour cells. Candidate work therefore tracks accepted pairs without pole or dateline special cases. The older latitude-band scan remains available as deprecated `neighbor = "band"` compatibility behavior.
+3. **Balanced CSR, unbalanced streaming.** Pair weights are stored as `row_ptr` / `col_idx` / `weight` only when `balanced_pnl = TRUE`, so the graph can be built from the first period and reused. The general/unbalanced path streams accepted pairs directly into score accumulators and does not retain a neighbor list.
 4. **Serial HAC in C++.** The per-unit serial-correlation loop now runs entirely in C++ as a single `FastSerialHacPanel` call, instead of an R `lapply` that called into C++ once per unit.
 5. **Templated `(dist_fn, kernel)` dispatch.** The per-pair screen + distance + kernel-weight stack is specialised at compile time for each of the six `(distance, kernel)` combinations, so the inner loop has no runtime branches.
-6. **3D dot-product threshold for spherical/chord.** With the unit-vector cache precomputed once, `(spherical, uniform)` pair inclusion is three multiplies + two adds + one compare, no trig at all. The `bartlett` variants only pay `acos` (spherical) or `sqrt` (chord) on accepted pairs.
-7. **Row-major scores + sorted-order layout.** Scores `s_i = e_i · X_i` are stored row-major in a flat buffer, and both the coord cache and the scores are permuted into latitude-sorted order before the worker runs, so every read in the hot loop is sequential.
+6. **Stable unit-vector distance tests.** Uniform spherical/chord inclusion uses a dot-product threshold. Bartlett haversine and spherical arc distances use the stable half-chord form, while chord distance uses its straight-line square root; there is no `acos` in the pairwise path.
+7. **Row-major scores + cell-sorted layout.** Scores `s_i = e_i · X_i` are stored row-major in a flat buffer, and the coordinate cache and scores are permuted into cell order before the worker runs, keeping hot-loop reads sequential.
 
-A `CoordCache` precomputes `cos(lat)`, `sin(lat)`, and (for `dist_fn ∈ {chord, spherical}`) the 3D unit-vector coordinates once per call. CSR construction and meat accumulation are parallelised with a small `std::thread` pool inside the engine header (`src/conley_core.h`, shared with the Stata port); the chunked reduction is deterministic, so results are bit-identical for any `ncores`.
+A `CoordCache` precomputes angular coordinates and 3D unit-vector coordinates once per call. CSR construction and meat accumulation are parallelised with a small `std::thread` pool inside the engine header (`src/conley_core.h`, shared with the Stata port); the chunked reduction is deterministic, so results are bit-identical for any `ncores`.
 
 ## Benchmarks
 
@@ -253,7 +260,7 @@ count. On 2.25M cells at ~1.1 km with a 250 km cutoff (~1.8×10¹¹ pairs):
 9M-cell continental raster takes 3.5 s. `method = "auto"` (default) engages
 it only when a lattice is detected and the kernel is uniform — scattered
 data and bartlett stay on the pairwise engine. No approximation: natively
-gridded data gets the exact great-circle answer.
+gridded data gets the exact answer for the selected distance geometry.
 
 ### v0.8.0: bartlett on the grid engine (ring-FFT) + dateline wrap
 
@@ -343,11 +350,11 @@ Numerical results match upstream to machine precision for `dist_fn ∈ {haversin
 
 **`dist_fn = "flatearth"` was removed.** Upstream's equirectangular formula is not symmetric in `(i, j)` and produces order-dependent results; `fastconley` no longer accepts it. Use `dist_fn = "spherical"` instead — with the 3D dot-product threshold it runs without trig in the inner loop and is now no slower than the old `flatearth` path was.
 
-**`balanced_pnl = TRUE` is now stricter.** Upstream silently produced wrong results when units had time-varying coordinates; `fastconley` errors with a clear message instead. Unequal block sizes still trigger a warning and fall back to the general path.
+**`balanced_pnl = TRUE` is now stricter.** Upstream silently produced wrong results when units had time-varying coordinates; `fastconley` errors with a clear message instead. It also errors on unequal period sizes, repeated unit-period rows, or changing unit membership. Use `balanced_pnl = FALSE` explicitly for those data.
 
 ## Requirements
 
-R ≥ 4.0 with a C++11 compiler (the engine uses `std::thread`, which on Windows needs the posix-threads Rtools that ship with R 4.0+). Imports `data.table` and `Rcpp` (and links against `RcppArmadillo`); `lfe` and `fixest` are suggested — you need whichever one fits your models.
+R ≥ 4.0 with R's standard C++ toolchain (the engine uses `std::thread`; supported Windows Rtools releases provide the needed threading runtime). Imports `data.table` and `Rcpp` and links against `RcppArmadillo`; `lfe` and `fixest` are suggested — you need whichever one fits your models.
 
 ## Citation
 

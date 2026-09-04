@@ -1,37 +1,131 @@
-# fastconley (development version)
+# fastconley 0.11.0
 
-Engine extraction (phase P0 of the Stata port, `notes/STATA_PORT_PLAN.md`)
-and a numerically neutral change to the Bartlett pair weights.
+Engine extraction, a Stata port sharing the same C++ engine, and a review
+round (six independent code reviews of the engine, the R layer, the Stata
+command, the plugin build, the reghdfe proposal, and the validation
+coverage) whose findings are fixed below.
 
-- Haversine weights are now computed from the cached 3D unit vectors
+## Corrections that change numbers
+
+- **Clustered `felm` fits got the wrong default `ssc`.** `lfe` stores the
+  cluster-adjusted degrees of freedom (number of clusters minus one) in
+  `df.residual` when a fit carries a cluster specification, and the
+  small-sample scale `n / df.residual` inherited that value: on a 20-row
+  fixture the covariance was five times too large. The scale now uses the
+  regression's own residual degrees of freedom (`N - p`), so clustered and
+  unclustered fits of the same model give identical Conley covariances.
+- **`vcovSpHAC.felm` ignored the `unit` and `time` arguments** and always
+  used the first two absorbed fixed effects. The names are now matched
+  against `names(reg$fe)` (with the model data as a fallback), a missing
+  name is an error, and the first-two-FE default applies only when nothing
+  was passed. A model with `| region + unit + time` used the wrong keys
+  before.
+- **Non-numeric time collapsed gaps in the serial HAC.** Character or factor
+  time values were recoded to consecutive integers, so "2000", "2002" became
+  lag 1. Values that parse as numbers now keep their numeric spacing (both
+  methods, including the absorbed-FE factor in `felm` fits); a time key that
+  does not parse is accepted for spatial blocking only and is an error when
+  `lag_cutoff > 0`.
+- **`time` without `unit` is honoured.** The fixest method silently dropped
+  the time blocking when no unit was given; it now blocks by time with each
+  row as its own unit, matching the Stata command. `lag_cutoff > 0` without
+  a unit is an error.
+- **fixest observation selection uses `fixest::obs()`**, so models extracted
+  from `split =` estimations and fits with several stacked selections align
+  their coordinates correctly. `fixest_multi` objects, `lean = TRUE` `feols`
+  fits, and fixed-effects-only models now fail with clear messages instead
+  of misleading ones.
+- **Grid engine Bartlett weights use the same chord form as the pairwise
+  engine** (haversine and spherical). Four raster/grid Bartlett battery
+  configurations move by at most 3.3e-14 relative; everything else is
+  bit-identical to 0.10.0 apart from the Bartlett haversine/spherical
+  pairwise change described under "Engine".
+- Edge cases that were silently wrong: exact duplicates at a zero cutoff keep
+  their cross terms, antipodal points with a cutoff above the maximum
+  distance are accepted, Bartlett boundary weights can no longer come out
+  as -2e-16, and a raster lattice at a tiny or zero cutoff keeps its self
+  terms.
+
+## New validation and errors
+
+- Non-finite or missing `lat`, `lon`, `unit`, `time` values, latitudes
+  outside [-90, 90], and longitudes outside [-180, 360] are rejected in R
+  before anything reaches C++; the engine repeats the checks (including
+  scores and cutoff) for its other front-ends. A `NA` time used to split
+  co-located observations into separate blocks.
+- Both `lat` and `latitude` (or any two aliases) present in the data is now
+  an auto-detection error, as documented.
+- Unknown arguments in `...` are errors (typos such as `psd_fxi =` were
+  swallowed). `maxobsmem` warns once that it is ignored; `neighbor = "band"`
+  is documented as deprecated but still works.
+- `lfe` k-class / LIML fits are rejected; only OLS and ordinary 2SLS are
+  supported.
+- `ncores` must be a single finite positive integer. The default remains all
+  logical cores, but `getOption("fastconley.ncores")` overrides it and a
+  true-ish `_R_CHECK_LIMIT_CORES_` (CRAN's check convention) caps it at 2.
+- Long computations can be interrupted: the engine polls a front-end hook on
+  the calling thread once per block (`Rcpp::checkUserInterrupt()` in R,
+  `SF_poll` in the Stata plugin) and joins its workers before raising.
+- Thread-pool construction is exception-safe (a failed `std::thread`
+  constructor used to terminate the process), `ncores` is capped at 1024,
+  and the sub-metre-cutoff cell cap no longer collapses all points into one
+  cell.
+- Raster geometry is validated (`dlat`, `dlon` finite and positive, finite
+  `lat0` in range): a zero longitude step used to spin forever.
+
+## Engine
+
+- Haversine weights are computed from the cached 3D unit vectors
   (`sin^2(theta/2) = |u_i - u_j|^2 / 4`, distance `2R asin(sqrt a)`), and the
   spherical Bartlett weight uses the same asin form instead of `acos(dot)`,
   which is ill-conditioned at small angles. No per-pair `sin`/`atan2` calls
   remain, which speeds up the pairwise engine everywhere (about 2x on Linux,
   6x on mingw-built Windows binaries, whose libm implements those functions
   in x87 microcode). Results move at the 1e-14 relative level versus 0.10.0
-  (asin/acos rounding); everything else in the package is bit-identical.
-  Found by the Windows test session of the Stata port.
-
-- The C++ engine now lives in a front-end-agnostic header,
-  `src/conley_core.h` (namespace `conley`), shared between this package
-  and the forthcoming Stata plugin. `src/cpp-functions.cpp` is a thin Rcpp
-  front-end. The header compiles without R against plain Armadillo
+  on Bartlett haversine/spherical configurations.
+- The C++ engine lives in a front-end-agnostic header, `src/conley_core.h`
+  (namespace `conley`, `CONLEY_CORE_VERSION` 0.11.1, bumped on every change
+  that alters results or entry points), shared with the Stata plugin. It
+  compiles without R against plain Armadillo under C++14
   (`tests/manual/core_standalone_check.cpp` + `.R` verify bit-identity).
 - RcppParallel dependency dropped: threading is a `std::thread` pool inside
   the engine with the same deterministic chunked reduction, so `ncores`
-  still never affects results. `RcppParallel::setThreadOptions()` is no
-  longer touched, `SystemRequirements: GNU make` is gone, and
-  `src/Makevars` needs only `-pthread`.
-- `Depends: R (>= 4.0)` declared: `std::thread` on Windows needs the
-  posix-threads Rtools toolchain that ships with R 4.0 and later.
+  still never affects results. `Depends: R (>= 4.0)` declared for the
+  posix-threads Rtools toolchain on Windows.
+- Dead code from the pre-chord screens removed; the balanced path builds its
+  coordinate cache from the first period only.
+
+## Tests and tooling
+
+- testthat grew from 48 to 106 expectations: independent dense references
+  for `fepois`/`feglm`, felm and fixest IV, the serial HAC, and pixel
+  aggregation; 1-vs-2-core `identical()` checks for every engine path; and
+  regression tests for each item above.
+- `tests/manual/bitwise-battery.R` gained `write-ref`/`check` modes with a
+  committed reference (`bitwise-battery-reference.txt`), and
+  `tests/manual/core_edge_probes.cpp` exercises the edge cases in C++.
+- A GitHub Actions `R CMD check --as-cran` workflow runs on Linux, macOS,
+  and Windows.
+- Documentation reconciled with the code: Conley (1999) throughout,
+  `method = "auto"` as the default, chord versus great-circle wording, the
+  balanced-panel error (not a fallback), and the pixel-aggregation distance
+  bound (`sqrt(2) * pixel` for a pair, not `pixel / 2`).
+
+## Stata port
+
+- `stata/` holds `fastconley`, a reghdfe-family command with a pure-Mata
+  engine and a compiled plugin built from `src/conley_core.h` for Linux,
+  Windows, and macOS (see `stata/README.md` and `stata/CHANGELOG.md`), and
+  `stata/upstream/` a self-contained proposal adding `vce(conley ...)` to
+  reghdfe.
 
 CRAN preparation.
 
 - `DESCRIPTION`: package names quoted, Conley (1999) DOI added, copyright
   holder role declared; `LICENSE` updated to match.
-- `.Rbuildignore` keeps `CLAUDE.md`, `notes/`, `tests/manual/`, and
-  `cran-comments.md` out of the source tarball.
+- `.Rbuildignore` keeps development-only files (the agent instructions,
+  `notes/`, `tests/manual/`, `stata/`, `.github/`, and `cran-comments.md`)
+  out of the source tarball.
 - Tests: the tiny `felm` fixture in the balanced-panel validation test no
   longer emits "NaNs produced" warnings.
 

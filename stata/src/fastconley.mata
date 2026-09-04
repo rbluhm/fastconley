@@ -16,6 +16,21 @@ mata set matastrict on
 // ---------------------------------------------------------------------------
 real colvector fastconley_group(transmorphic colvector x)
 {
+	real colvector numeric_values
+	// Numeric-looking string time values retain their scale, so "2000" and
+	// "2002" remain two units apart for the serial HAC. Other strings are
+	// equality-grouped; the ado rejects them when lag() is positive.
+	if (eltype(x) == "string") {
+		numeric_values = strtoreal(x)
+		if (!any(missing(numeric_values))) return(numeric_values)
+	}
+	return(fastconley_group_codes(x))
+}
+
+// Unit identifiers always retain string identity: for example, "01" and "1"
+// are distinct units even though both can be parsed as the number one.
+real colvector fastconley_group_codes(transmorphic colvector x)
+{
 	real colvector p, codes, chg
 	transmorphic colvector xs
 	real scalar n
@@ -28,6 +43,11 @@ real colvector fastconley_group(transmorphic colvector x)
 	codes = J(n, 1, .)
 	codes[p] = runningsum(chg)
 	return(codes)
+}
+
+real scalar fastconley_numeric_string(string colvector x)
+{
+	return(!any(missing(strtoreal(x))))
 }
 
 // ---------------------------------------------------------------------------
@@ -108,7 +128,13 @@ real matrix fastconley_spatial_meat(real colvector lat, real colvector lon,
 	edge = 2 * sin(ang / 2)
 	if (edge <= 0) _error(3498, "fastconley: cutoff must be positive (or negative for the no-pairs sentinel)")
 	G = ceil(2 / edge) + 1
-	if (G^3 >= 2^53) _error(3498, "fastconley: cutoff too small for the Mata engine's cell grid; use engine(plugin)")
+	// A Mata real scalar represents every integer key exactly only below 2^53.
+	// Cap G at the largest safe integer and enlarge the cell accordingly. The
+	// larger edge admits extra candidates but cannot drop an accepted pair.
+	if (G > 208063) {
+		G = 208063
+		edge = 2 / G
+	}
 
 	latr = lat :* (pi() / 180)
 	lonr = lon :* (pi() / 180)
@@ -188,26 +214,24 @@ real scalar fastconley_cell_pair(real matrix M, real matrix U, real matrix S,
 			tj2 = min((jb, tj + tile - 1))
 			Ub = U[|tj, 1 \ tj2, 3|]
 			Dot = Ua * Ub'
-			if (max(Dot) < coscut) {
-				// No pair within the cutoff; only a self tile still needs its diagonal.
-				if (!(self & tj == ti)) continue
-			}
 			if (kernel == "uniform") {
-				// Every supported distance is monotone in the chord, so the
-				// accept test is the dot threshold alone (the C++ pair_weight
-				// uniform specializations use the same criterion). The dot
-				// product's rounding only matters exactly at the boundary.
-				acc = (Dot :>= coscut)
+				// Use squared coordinate differences rather than 1-Dot so
+				// near-cutoff accept/reject decisions retain full precision.
+				ea = J(rows(Ua), 1, 1)
+				eb = J(rows(Ub), 1, 1)
+				a = (Ua[., 1] * eb' - ea * Ub[., 1]') :^ 2 + (Ua[., 2] * eb' - ea * Ub[., 2]') :^ 2 + (Ua[., 3] * eb' - ea * Ub[., 3]') :^ 2
+				if (dist == "chord") acc = (a :<= min((4, (cutoff / 6371)^2)))
+				else acc = (a :<= 4 * sin(min((pi(), cutoff / 6371)) / 2)^2)
 				W = acc
 			}
 			else {
 				// Bartlett needs distances. The squared chord |u_i - u_j|^2 equals
 				// 2 - 2 Dot, but that difference cancels at small angles: its
-				// relative error is ~2e-16 / (theta^2 / 2), i.e. 1e-12 at 200 km
+				// relative error is about 5e-12 in squared chord at 200 km
 				// and 1e-8 at 1 km. Below 200 km the chord is therefore built
 				// from coordinate differences (full precision, eight extra
-				// passes per tile); above, the dot form is exact to 1e-12 and
-				// ~40% cheaper. (Outer products with ones vectors: Mata's colon
+				// passes per tile); above, its distance error is below 5e-10 km
+				// and it is ~40% cheaper. (Outer products with ones vectors: Mata's colon
 				// operators do not broadcast a column against a row.)
 				if (cutoff < 200) {
 					ea = J(rows(Ua), 1, 1)
@@ -523,47 +547,83 @@ void fastconley_iv_prepare(real matrix data, string rowvector names,
                            string rowvector exog, string rowvector endog,
                            string rowvector inst, real colvector w, real scalar verbose)
 {
-	real colvector y, e
-	real matrix X, Z, ZZ, iZZ, Xhat, XhX, iXhX
-	real rowvector xi, zi, keepz
-	real scalar j, k
+	real colvector y, e, beta
+	real matrix X0, X, Z, XX, iXX, alt_iXX, ZZ, iZZ, Xhat, XhX, iXhX
+	real rowvector xsrc, xpost, xtype, keepx, keepz, zsrc, dropped, means_x, side
+	real scalar j, k, corner, b0
 	string scalar v
+	string rowvector postnames
 	external real matrix fc_D, fc_S
 	external real colvector fc_b, fc_resid
-	external real scalar fc_kk, fc_rss, fc_tss_within
+	external real rowvector fc_iv_post_keep, fc_iv_means
+	external real scalar fc_kk, fc_df_m, fc_rss, fc_tss_within
+	external real scalar fc_iv_noabsorb, fc_iv_report_constant, fc_iv_tmp_N
 	external string rowvector fc_xnames
 
+	// reghdfe's noabsorb hook returns centered columns even with noconstant.
+	// Restore the raw variables for regression through the origin; the
+	// intercept case deliberately stays centered and is extended below.
+	if (fc_iv_noabsorb & !fc_iv_report_constant) data = data :+ fc_iv_means
 	y = data[., 1]
-	xi = J(1, 0, .)
-	zi = J(1, 0, .)
-	fc_xnames = J(1, 0, "")
+	xsrc = J(1, 0, .)
+	xpost = J(1, 0, .)
+	xtype = J(1, 0, .)
+	postnames = J(1, 0, "")
 	for (j = 1; j <= cols(exog); j++) {
 		v = exog[j]
+		postnames = (postnames, v)
 		k = fastconley_findname(names, v)
 		if (k) {
-			xi = (xi, k)
-			zi = (zi, k)
-			fc_xnames = (fc_xnames, v)
+			xsrc = (xsrc, k)
+			xpost = (xpost, cols(postnames))
+			xtype = (xtype, 1)
 		}
-		else if (verbose) printf("{txt}   - exogenous regressor %s dropped (collinear with the fixed effects)\n", v)
+		else {
+			postnames[cols(postnames)] = "o." + v
+			if (verbose) printf("{txt}   - exogenous regressor %s dropped (collinear with the fixed effects)\n", v)
+		}
 	}
 	for (j = 1; j <= cols(endog); j++) {
 		v = endog[j]
+		postnames = (postnames, v)
 		k = fastconley_findname(names, v)
 		if (!k) _error(3498, "endogenous regressor " + v + " is collinear with the fixed effects")
-		xi = (xi, k)
-		fc_xnames = (fc_xnames, v)
+		xsrc = (xsrc, k)
+		xpost = (xpost, cols(postnames))
+		xtype = (xtype, 0)
 	}
+	if (!cols(xsrc)) _error(3498, "no regressors left")
+
+	// Rank-trim X before constructing Z/Xhat. The preset sweep order mirrors
+	// reghdfe_rmcoll; a no-order retry protects extreme-weight cases.
+	X0 = data[., xsrc]
+	XX = rows(w) ? quadcross(X0, w, X0) : quadcross(X0, X0)
+	iXX = invsym(XX, 1..cols(X0))
+	if (diag0cnt(iXX)) {
+		alt_iXX = invsym(XX)
+		if (diag0cnt(alt_iXX) != diag0cnt(iXX)) iXX = alt_iXX
+	}
+	keepx = selectindex(diagonal(iXX)' :!= 0)
+	dropped = selectindex(diagonal(iXX)' :== 0)
+	for (j = 1; j <= cols(dropped); j++) {
+		v = postnames[xpost[dropped[j]]]
+		postnames[xpost[dropped[j]]] = "o." + v
+		if (verbose) printf("{txt}note: %s omitted because of collinearity\n", v)
+	}
+	if (!cols(keepx)) _error(3498, "no regressors left after removing collinearity")
+	xsrc = xsrc[keepx]
+	xpost = xpost[keepx]
+	xtype = xtype[keepx]
+	X = X0[., keepx]
+	zsrc = select(xsrc, xtype :== 1)
 	for (j = 1; j <= cols(inst); j++) {
 		v = inst[j]
 		k = fastconley_findname(names, v)
-		if (k) zi = (zi, k)
+		if (k) zsrc = (zsrc, k)
 		else if (verbose) printf("{txt}   - instrument %s dropped (collinear with the fixed effects)\n", v)
 	}
-	if (!cols(xi)) _error(3498, "no regressors left")
-	if (cols(zi) < cols(xi)) _error(3498, "underidentified: fewer instruments than regressors")
-	X = data[., xi]
-	Z = data[., zi]
+	if (cols(zsrc) < cols(X)) _error(3498, "underidentified: fewer instruments than regressors")
+	Z = data[., zsrc]
 
 	ZZ = rows(w) ? quadcross(Z, w, Z) : quadcross(Z, Z)
 	iZZ = invsym(ZZ)
@@ -580,14 +640,45 @@ void fastconley_iv_prepare(real matrix data, string rowvector names,
 	XhX = rows(w) ? quadcross(Xhat, w, X) : quadcross(Xhat, X)
 	iXhX = invsym(XhX)
 	if (diag0cnt(iXhX)) _error(3498, "collinear regressors or weak identification; cannot invert Xhat'X")
-	fc_b = iXhX * (rows(w) ? quadcross(Xhat, w, y) : quadcross(Xhat, y))
-	fc_resid = y - X * fc_b
+	beta = iXhX * (rows(w) ? quadcross(Xhat, w, y) : quadcross(Xhat, y))
+	fc_resid = y - X * beta
 	fc_D = (iXhX + iXhX') / 2
+	fc_b = beta
+	fc_iv_post_keep = xpost
+	fc_xnames = postnames
+	fc_df_m = cols(X)
+	if (fc_iv_report_constant) {
+		means_x = fc_iv_means[xsrc]
+		b0 = fc_iv_means[1] - means_x * beta
+		corner = (1 / fc_iv_tmp_N) + means_x * fc_D * means_x'
+		side = -means_x * fc_D
+		fc_D = (fc_D, side' \ side, corner)
+		Xhat = (Xhat :+ means_x), J(rows(Xhat), 1, 1)
+		fc_b = beta \ b0
+		fc_xnames = (fc_xnames, "_cons")
+		fc_iv_post_keep = (fc_iv_post_keep, cols(fc_xnames))
+	}
 	e = rows(w) ? fc_resid :* w : fc_resid
 	fc_S = Xhat :* e
-	fc_kk = cols(X)
+	fc_kk = cols(Xhat)
 	fc_rss = rows(w) ? quadcross(fc_resid, w, fc_resid) : quadcross(fc_resid, fc_resid)
 	fc_tss_within = rows(w) ? quadcross(y, w, y) : quadcross(y, y)
+}
+
+// Expand IV b/V to include regressors omitted for collinearity, in the same
+// zero-row/zero-column form used by reghdfe's Solution::expand_results().
+void fastconley_iv_expand(real colvector b, real matrix V)
+{
+	real colvector full_b
+	real matrix full_V
+	external real rowvector fc_iv_post_keep
+	external string rowvector fc_xnames
+	full_b = J(cols(fc_xnames), 1, 0)
+	full_V = J(cols(fc_xnames), cols(fc_xnames), 0)
+	full_b[fc_iv_post_keep] = b
+	full_V[fc_iv_post_keep, fc_iv_post_keep] = V
+	b = full_b
+	V = full_V
 }
 
 real scalar fastconley_findname(string rowvector names, string scalar v)
@@ -628,8 +719,10 @@ real matrix fastconley_assemble(real matrix D, real matrix meat, real scalar dof
 {
 	real matrix V
 	real scalar fixed
+	external real matrix fc_V_unfixed
 	V = D * meat * D * dof_adj
 	V = (V + V') / 2
+	fc_V_unfixed = V
 	fixed = fastconley_psd_fix(V, psdfix)
 	st_local("fc_psd_noticeable", strofreal(fixed))
 	return(V)

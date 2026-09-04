@@ -16,15 +16,21 @@ d KW: reghdfe
 d
 d Requires: Stata version 14.1, reghdfe 6.12.5+, ftools, require (needed by reghdfe 6.13+)
 d
-d Distribution-Date: 20260903
+d Distribution-Date: 20260904
 d
 d Author: Richard Bluhm
 d Support: https://github.com/rbluhm/fastconley/issues
 d
 f fastconley.ado
 f fastconley.mata
+f fastconley_p.ado
 f fastconley.sthlp
-g LINUX64 fastconley_linux64.plugin fastconley.plugin
-g WIN64 fastconley_win64.plugin fastconley.plugin
-g MACARM64 fastconley_macosx.plugin fastconley.plugin
-g MACINTEL64 fastconley_macosx.plugin fastconley.plugin
+f LICENSE_fastconley.txt
+f LICENSE_armadillo.txt
+f NOTICE.txt
+g LINUX64 fastconley_linux64.plugin
+g WIN64 fastconley_win64.plugin
+g MACARM64 fastconley_macosx.plugin
+g OSX.ARM64 fastconley_macosx.plugin
+g MACINTEL64 fastconley_macosx.plugin
+g OSX.X8664 fastconley_macosx.plugin

@@ -16,7 +16,7 @@
   lag_cutoff = 0,
   verbose = FALSE,
   balanced_pnl = FALSE,
-  ncores = NA,
+  ncores = NULL,
   pixel = 0,
   neighbor = c("grid", "band"),
   csr_weight = c("double", "float"),
@@ -33,11 +33,14 @@
 \code{fepois()} fit (any family; \code{lean = TRUE} fits are rejected
 because they carry no score matrix).}
 
-\item{unit}{Optional name of the panel unit variable. If \code{NULL} the
-call is treated as a cross-section (each row is its own unit, all rows
-share a single period — no serial HAC).}
+\item{unit}{Optional name of the panel unit variable. If \code{NULL}, each
+row is its own unit. A positive \code{lag_cutoff} requires \code{unit}.}
 
-\item{time}{Optional name of the time variable. Ignored when \code{unit} is NULL.}
+\item{time}{Optional name of the time variable. It is honoured even when
+\code{unit} is \code{NULL}, so it still defines the spatial time blocks.
+Character/factor times are parsed as their numeric labels when possible;
+serial HAC rejects labels that are not numeric-parsable because time gaps
+determine lag weights.}
 
 \item{lat}{Name of the latitude variable. If \code{NULL} (default),
 auto-detected from the data's column names. See \code{\link{vcovSpHAC.felm}}.}
@@ -58,12 +61,15 @@ auto-detected. See \code{\link{vcovSpHAC.felm}}.}
 \item{balanced_pnl}{Whether the panel is balanced and unit locations are time-invariant.}
 
 \item{ncores}{Number of threads for the C++ spatial and serial routines
-(results do not depend on it).}
+(results do not depend on it). The default uses
+\code{getOption("fastconley.ncores")} when set, otherwise all detected
+logical cores, capped at two under a true-ish
+\code{_R_CHECK_LIMIT_CORES_}. Values are rounded to a positive integer.}
 
 \item{pixel}{Score-pre-aggregation cell size, in kilometres.}
 
-\item{neighbor}{Neighbor-search strategy: "grid" (default) or "band".
-See \code{\link{vcovSpHAC.felm}}.}
+\item{neighbor}{Neighbor-search strategy: "grid" (default) or the deprecated
+"band" compatibility path. See \code{\link{vcovSpHAC.felm}}.}
 
 \item{csr_weight}{Balanced-path bartlett weight storage: "double"
 (default) or "float". See \code{\link{vcovSpHAC.felm}}.}
@@ -82,7 +88,7 @@ default). See \code{\link{vcovSpHAC.felm}}.}
 recovered from the fit's call. Pass it explicitly if the original data
 has gone out of scope, or if you want to override.}
 
-\item{...}{Currently unused.}
+\item{...}{Must be empty; unknown arguments are rejected.}
 }
 \value{
 A variance-covariance matrix.
@@ -107,8 +113,8 @@ the maximum-likelihood score matrix and inverse Hessian that
 \code{fixest} stores on every (non-\code{lean}) fit. Weights, offsets,
 and the fixed-effect profiling are already folded into the stored
 scores. This is the same construction \code{fixest}'s own
-\code{vcov_conley()} uses for GLMs — but with exact great-circle
-distances, and with the serial-HAC panel extension available via
+\code{vcov_conley()} uses for GLMs — but with exact supported distance
+calculations, and with the serial-HAC panel extension available via
 \code{lag_cutoff} (which \code{fixest} does not offer for Conley vcovs).
 
 The returned matrix can be passed to \code{fixest}'s \code{vcov} argument.

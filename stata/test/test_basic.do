@@ -1,8 +1,11 @@
-* Smoke + consistency tests for the Stata fastconley command (Mata engine).
+* Smoke + consistency tests for the Stata fastconley command (Mata and plugin).
 * Run from the repository root:  stata-mp -b do stata/test/test_basic.do
 clear all
 adopath ++ "stata/src"
 set seed 20260903
+
+which fastconley
+fastconley, version
 
 * ---- cross-section with one absorbed FE ------------------------------------
 set obs 3000
@@ -12,6 +15,8 @@ gen region = ceil(runiform() * 5)
 gen x1 = rnormal()
 gen x2 = rnormal()
 gen w = runiform(0.5, 2)
+gen fw = ceil(3 * w)
+gen pw = w
 gen y = 0.5 * x1 - 0.3 * x2 + rnormal()
 
 fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300)
@@ -50,6 +55,9 @@ rcof "fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300) engine(no
 
 * uniform kernel, spherical distance, verbose
 fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300) kernel(uniform) dist(spherical) verbose
+matrix Vverbose = e(V)
+fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300) kernel(uniform) dist(spherical) engine(mata)
+assert mreldif(e(V), Vverbose) < 1e-12
 
 * ---- cutoff(-1) = heteroskedasticity-only meat: must equal reghdfe vce(robust)
 fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(-1) nopsdfix
@@ -77,6 +85,20 @@ matrix Vr = e(V)
 di "aweight: mreldif = " mreldif(Vc, Vr)
 assert mreldif(Vc, Vr) < 1e-10
 
+* fweights run (the Conley duplicate-location semantics intentionally differ
+* from robust); pweights both run and reproduce robust at cutoff(-1)
+quietly summarize fw, meanonly
+local fN = r(sum)
+fastconley y x1 x2 [fw = fw], absorb(region) lat(lat) lon(lon) cutoff(-1) nopsdfix
+assert e(N) == `fN'
+assert !missing(_se[x1])
+fastconley y x1 x2 [pw = pw], absorb(region) lat(lat) lon(lon) cutoff(-1) nopsdfix
+matrix Vc = e(V)
+reghdfe y x1 x2 [pw = pw], absorb(region) vce(robust)
+matrix Vr = e(V)
+di "pweight: mreldif = " mreldif(Vc, Vr)
+assert mreldif(Vc, Vr) < 1e-10
+
 * nossc: dof_adj must be 1 and V scaled by (N - df_m - df_a)/N
 fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300) nossc
 assert e(dof_adj) == 1
@@ -88,7 +110,7 @@ assert mreldif(V1, V2) < 1e-12
 fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300) pixel(25)
 matrix Vp = e(V)
 di "pixel(25) vs exact: " mreldif(Vp, V1)
-assert mreldif(Vp, V1) < 0.05
+assert mreldif(Vp, V1) < 1e-4
 
 * factor variables, collinear regressor, residuals()
 gen x3 = 2 * x1
@@ -98,11 +120,44 @@ assert !missing(_se[x1]) & _se[x1] > 0
 qui sum res
 assert abs(r(mean)) < 1e-6
 
+* grouped time-series/factor expressions are not mistaken for IV clauses
+gen t = _n
+gen region2 = mod(region, 3) + 1
+tsset t
+fastconley y L(1/2).x1, noabsorb lat(lat) lon(lon) cutoff(300)
+assert e(N) == 2998
+fastconley y c.(x1 x2) i.(region region2), noabsorb lat(lat) lon(lon) cutoff(300)
+assert e(N) == 3000
+
+* absorb(..., savefe) follows reghdfe's store_alphas flow
+capture drop __hdfe1__
+fastconley y x1 x2, absorb(region, savefe) lat(lat) lon(lon) cutoff(300)
+confirm numeric variable __hdfe1__, exact
+drop __hdfe1__
+
 * string lat/lon rejected, missing option rejected
 rcof "fastconley y x1 x2, absorb(region) lat(lat) lon(lon)" == 198
 rcof "fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300) kernel(gaussian)" == 198
 rcof "fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300) lag(2)" == 198
 rcof "fastconley y x1 x2, lat(lat) lon(lon) cutoff(300)" == 198
+rcof "fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(.)" == 198
+rcof "fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300) lag(.)" == 198
+rcof "fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300) pixel(.)" == 198
+rcof "fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300) tile(.)" == 198
+rcof "fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300) threads(.)" == 198
+rcof "fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300) lag(1.5)" == 198
+rcof "fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300) threads(1.5)" == 198
+rcof "fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300) tile(8193)" == 198
+rcof "fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300) tile(6000)" == 198
+rcof "fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300) vce(robust)" == 198
+rcof "fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300) cluster(region)" == 198
+
+* The un-clamped slope covariance is rank zero when every point is mutually
+* correlated under a uniform kernel, so PSD flooring must not manufacture F.
+replace lat = 40
+replace lon = -90
+fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300) kernel(uniform) engine(mata)
+assert missing(e(F))
 
 * ---- raster lattice: grid engine (plugin) must equal pairwise -------------
 if (`have_plugin') {
@@ -145,6 +200,22 @@ if (`have_plugin') {
 	rcof "fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(250) method(grid) engine(plugin)" == 3498
 	fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(250) engine(plugin)
 	assert e(method) == "pairwise"
+	* A regular 7-degree longitude lattice cannot tile 360 degrees. The forced
+	* plugin failure must print fc_plugin_error before returning 198.
+	preserve
+	clear
+	set obs 204
+	gen ring = mod(_n - 1, 4)
+	gen col = floor((_n - 1) / 4)
+	gen double lat = -10 + 7 * ring
+	gen double lon = -175 + 7 * col
+	gen region = mod(_n, 3) + 1
+	gen x1 = rnormal()
+	gen y = x1 + rnormal()
+	cap noi fastconley y x1, absorb(region) lat(lat) lon(lon) cutoff(1500) method(grid) engine(plugin)
+	local grid_fail_rc = _rc
+	assert `grid_fail_rc' == 198
+	restore
 }
 
 * ---- small cutoff: the Mata engine must keep full precision (chord form) ----
@@ -159,6 +230,8 @@ gen x2 = rnormal()
 gen y = 0.5 * x1 - 0.3 * x2 + rnormal()
 fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(1) engine(mata) verbose
 matrix Vsm = e(V)
+fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(.01) engine(mata)
+assert e(N) == 3000 & !missing(_se[x1])
 if (`have_plugin') {
 	fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(1) engine(plugin)
 	di "1 km cutoff, plugin vs mata: " mreldif(e(V), Vsm)
@@ -168,6 +241,23 @@ if (`have_plugin') {
 	fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(1) dist(spherical) engine(plugin)
 	di "1 km cutoff spherical, plugin vs mata: " mreldif(e(V), Vsm)
 	assert mreldif(e(V), Vsm) < 1e-12
+}
+
+* ---- near-cutoff uniform acceptance: stable squared-coordinate test --------
+clear
+set obs 4000
+gen block = ceil(_n / 2)
+gen byte second = mod(_n, 2) == 0
+gen double lat = 0
+gen double lon = second * ((100 + cond(mod(block, 2), -1e-9, 1e-9)) / 6371) * 180 / _pi
+gen x1 = rnormal()
+gen y = .4 * x1 + rnormal()
+fastconley y x1, noabsorb lat(lat) lon(lon) cutoff(100) kernel(uniform) time(block) engine(mata)
+matrix Vboundary = e(V)
+if (`have_plugin') {
+	fastconley y x1, noabsorb lat(lat) lon(lon) cutoff(100) kernel(uniform) time(block) engine(plugin)
+	di "near-cutoff uniform plugin vs mata: " mreldif(e(V), Vboundary)
+	assert mreldif(e(V), Vboundary) < 1e-12
 }
 
 * ---- IV / 2SLS -------------------------------------------------------------
@@ -184,10 +274,18 @@ gen x2 = 0.7 * z1 - 0.4 * z2 + 0.5 * u + rnormal()
 gen y = 0.5 * x1 - 0.3 * x2 + u + rnormal()
 gen w = runiform(0.5, 2)
 * cutoff(-1) must reproduce ivreghdfe's robust 2SLS variance (same N/(N-K-df_a) factor)
-fastconley y x1 (x2 = z1 z2), absorb(region) lat(lat) lon(lon) cutoff(-1) nopsdfix
+fastconley y x1 (x2 = z1 z2), absorb(region) lat(lat) lon(lon) cutoff(-1) nopsdfix residuals(ivres0)
 assert e(iv) == 1
 assert e(N) == 4000 & e(df_m) == 2
 assert "`e(instd)'" == "x2" & "`e(inexog)'" == "x1"
+assert "`e(insts)'" == "x1 z1 z2" & "`e(exogr)'" == "x1"
+assert "`e(predict)'" == "fastconley_p"
+assert e(df_r) < e(N) & e(rank) == 2 & e(rmse) > 0
+assert strpos(`"`e(cmdline)'"', "cutoff(-1)") > 0
+assert strpos(`"`e(cmdline)'"', "residuals(ivres0)") > 0
+predict double ivxb0, xb
+predict double ivrp0, residuals
+assert reldif(ivrp0, ivres0) < 1e-15 if e(sample)
 matrix Vf = e(V)
 local bx1 = _b[x1]
 local bx2 = _b[x2]
@@ -203,6 +301,63 @@ if (`have_ivreghdfe') {
 	assert reldif(Vf[1,2], Vi["x1","x2"]) < 1e-10
 }
 else di as text "ivreghdfe not installed; skipping the 2SLS cross-check"
+
+* Regressor collinearity is removed before instrument construction and posted
+* as an omitted coefficient with a zero V row/column.
+gen x3 = 2 * x1
+fastconley y x1 x3 (x2 = z1 z2), absorb(region) lat(lat) lon(lon) cutoff(-1) nopsdfix
+assert _b[x3] == 0 & _se[x3] == 0
+local iv_colnames : colfullnames e(b)
+assert strpos("`iv_colnames'", "o.x3") > 0
+matrix Vfcoll = e(V)
+if (`have_ivreghdfe') {
+	ivreghdfe y x1 x3 (x2 = z1 z2), absorb(region) robust
+	assert _b[x3] == 0
+	assert reldif(Vfcoll["x1","x1"], e(V)["x1","x1"]) < 1e-10
+	assert reldif(Vfcoll["x2","x2"], e(V)["x2","x2"]) < 1e-10
+}
+drop x3
+
+* noabsorb IV includes _cons and matches ivregress 2sls, including robust V;
+* noconstant removes it and matches the corresponding no-constant model.
+fastconley y x1 (x2 = z1 z2), noabsorb lat(lat) lon(lon) cutoff(-1) nossc nopsdfix residuals(ivres_na)
+matrix bfn = e(b)
+matrix Vfn = e(V)
+assert colsof(bfn) == 3 & !missing(_b[_cons]) & e(rank) == 3
+predict double ivxb_na, xb
+predict double ivrp_na, residuals
+assert reldif(ivrp_na, ivres_na) < 1e-15 if e(sample)
+ivregress 2sls y x1 (x2 = z1 z2), vce(robust)
+matrix Viv = e(V)
+assert reldif(bfn[1,"x1"], _b[x1]) < 1e-12
+assert reldif(bfn[1,"x2"], _b[x2]) < 1e-12
+assert reldif(bfn[1,"_cons"], _b[_cons]) < 1e-12
+di "noabsorb IV vs ivregress robust V (nossc): " reldif(Vfn["x1","x1"], Viv["x1","x1"])
+foreach a in x1 x2 _cons {
+	foreach b in x1 x2 _cons {
+		assert reldif(Vfn["`a'","`b'"], Viv["`a'","`b'"]) < 1e-10
+	}
+}
+fastconley y x1 (x2 = z1 z2), noabsorb noconstant lat(lat) lon(lon) cutoff(-1) nossc nopsdfix
+matrix bfn = e(b)
+matrix Vfn = e(V)
+assert colsof(bfn) == 2 & e(rank) == 2
+ivregress 2sls y x1 (x2 = z1 z2), noconstant vce(robust)
+matrix Viv = e(V)
+assert reldif(bfn[1,"x1"], _b[x1]) < 1e-12
+assert reldif(bfn[1,"x2"], _b[x2]) < 1e-12
+foreach a in x1 x2 {
+	foreach b in x1 x2 {
+		assert reldif(Vfn["`a'","`b'"], Viv["`a'","`b'"]) < 1e-10
+	}
+}
+
+* IV savefe uses the same reghdfe store_alphas flow as OLS.
+capture drop __hdfe1__
+fastconley y x1 (x2 = z1 z2), absorb(region, savefe) lat(lat) lon(lon) cutoff(300)
+confirm numeric variable __hdfe1__, exact
+drop __hdfe1__
+
 * weighted
 fastconley y x1 (x2 = z1 z2) [aw = w], absorb(region) lat(lat) lon(lon) cutoff(-1) nopsdfix
 matrix Vf = e(V)
@@ -228,7 +383,7 @@ fastconley y (x1 x2 = z1 z2), absorb(region) lat(lat) lon(lon) cutoff(300)
 assert e(df_m) == 2
 * errors: syntax, underidentified, factor variables in IV lists
 rcof "fastconley y x1 (x2 = z1 z2" == 198
-rcof "fastconley y x1 (x2 x1 = z1), absorb(region) lat(lat) lon(lon) cutoff(300)" == 3498
+rcof "fastconley y x1 (x2 u = z1), absorb(region) lat(lat) lon(lon) cutoff(300)" == 3498
 rcof "fastconley y i.region (x2 = z1 z2), absorb(region) lat(lat) lon(lon) cutoff(300)" == 198
 
 * ---- panel: spatial + serial HAC, balanced vs general path ----------------
@@ -243,6 +398,22 @@ gen x1 = rnormal()
 gen x2 = rnormal()
 gen y = 0.5 * x1 - 0.3 * x2 + rnormal()
 gen str8 sunit = "u" + string(unit)
+gen double timegap = 2000 + 2 * (time - 1)
+gen str8 stimegap = string(timegap, "%9.0f")
+gen str8 stimelabel = "t" + string(time)
+
+* time() alone blocks the spatial covariance; it is not ignored
+fastconley y x1 x2, absorb(unit time) lat(ulat) lon(ulon) cutoff(300) time(time)
+matrix Vtimeonly = e(V)
+fastconley y x1 x2, absorb(unit time) lat(ulat) lon(ulon) cutoff(300)
+assert mreldif(e(V), Vtimeonly) > 1e-6
+
+* numeric-looking string time keeps gaps; arbitrary labels cannot drive lags
+fastconley y x1 x2, absorb(unit time) lat(ulat) lon(ulon) cutoff(300) unit(unit) time(timegap) lag(2)
+matrix Vgap = e(V)
+fastconley y x1 x2, absorb(unit time) lat(ulat) lon(ulon) cutoff(300) unit(unit) time(stimegap) lag(2)
+assert mreldif(e(V), Vgap) < 1e-12
+rcof "fastconley y x1 x2, absorb(unit time) lat(ulat) lon(ulon) cutoff(300) unit(unit) time(stimelabel) lag(2)" == 198
 
 fastconley y x1 x2, absorb(unit time) lat(ulat) lon(ulon) cutoff(300) unit(unit) time(time) lag(2) engine(mata)
 matrix Vg = e(V)
@@ -281,7 +452,15 @@ assert mreldif(V0, Vg) > 1e-4
 * unbalanced: drop rows; balanced must error, general must run
 drop if runiform() < 0.2
 rcof "fastconley y x1 x2, absorb(unit time) lat(ulat) lon(ulon) cutoff(300) unit(unit) time(time) lag(2) balanced" == 3498
-fastconley y x1 x2, absorb(unit time) lat(ulat) lon(ulon) cutoff(300) unit(unit) time(time) lag(2)
-assert e(N) < 2000
+quietly count
+local unbal_N = r(N)
+fastconley y x1 x2, absorb(unit time) lat(ulat) lon(ulon) cutoff(300) unit(unit) time(time) lag(2) keepsingletons
+matrix Vunbal = e(V)
+di "final unbalanced N/V11/V22: " e(N) " " Vunbal[1,1] " " Vunbal[2,2]
+di %21.17g Vunbal[1,1] " " %21.17g Vunbal[2,2]
+assert e(N) == 1612 & `unbal_N' == 1614
+assert reldif(Vunbal[1,1], .0008537077846446459) < 1e-12
+assert reldif(Vunbal[2,2], .0007224009295529158) < 1e-12
+assert !missing(e(F))
 
 di as result _n "test_basic.do: all checks passed"

@@ -1,0 +1,4 @@
+{
+  global: stata_call; pginit;
+  local: *;
+};

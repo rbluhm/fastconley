@@ -5,13 +5,15 @@ felm multi-part formula with (endog ~ instruments)) work
 out of the box: lfe stores the projected (second-stage) design in
 cX and the structural residuals in residuals, which is
 exactly the 2SLS sandwich. Weighted fits are supported (the scores carry
-the weights and the bread uses \(X'WX\))."><meta property="og:description" content="The fit must have been called with felm(..., keepCX = TRUE) so the
+the weights and the bread uses \(X'WX\)). Other k-class estimators,
+including LIML, are not supported."><meta property="og:description" content="The fit must have been called with felm(..., keepCX = TRUE) so the
 centered design matrix is stored on the object. IV/2SLS fits (the
 felm multi-part formula with (endog ~ instruments)) work
 out of the box: lfe stores the projected (second-stage) design in
 cX and the structural residuals in residuals, which is
 exactly the 2SLS sandwich. Weighted fits are supported (the scores carry
-the weights and the bread uses \(X'WX\))."></head><body>
+the weights and the bread uses \(X'WX\)). Other k-class estimators,
+including LIML, are not supported."></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -19,7 +21,7 @@ the weights and the bread uses \(X'WX\))."></head><body>
 
     <a class="navbar-brand me-2" href="../index.html">fastconley</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.10.0</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -56,7 +58,8 @@ centered design matrix is stored on the object. IV/2SLS fits (the
 out of the box: <code>lfe</code> stores the projected (second-stage) design in
 <code>cX</code> and the structural residuals in <code>residuals</code>, which is
 exactly the 2SLS sandwich. Weighted fits are supported (the scores carry
-the weights and the bread uses \(X'WX\)).</p>
+the weights and the bread uses \(X'WX\)). Other k-class estimators,
+including LIML, are not supported.</p>
     </div>
 
     <div class="section level2">
@@ -74,7 +77,7 @@ the weights and the bread uses \(X'WX\)).</p>
 <span>  lag_cutoff <span class="op">=</span> <span class="fl">0</span>,</span>
 <span>  verbose <span class="op">=</span> <span class="cn">FALSE</span>,</span>
 <span>  balanced_pnl <span class="op">=</span> <span class="cn">FALSE</span>,</span>
-<span>  ncores <span class="op">=</span> <span class="cn">NA</span>,</span>
+<span>  ncores <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  pixel <span class="op">=</span> <span class="fl">0</span>,</span>
 <span>  neighbor <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"grid"</span>, <span class="st">"band"</span><span class="op">)</span>,</span>
 <span>  csr_weight <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"double"</span>, <span class="st">"float"</span><span class="op">)</span>,</span>
@@ -96,11 +99,17 @@ the weights and the bread uses \(X'WX\)).</p>
 
 
 <dt id="arg-unit">unit<a class="anchor" aria-label="anchor" href="#arg-unit"></a></dt>
-<dd><p>Optional name of the panel unit variable.</p></dd>
+<dd><p>Optional name of the panel unit variable. When both <code>unit</code>
+and <code>time</code> are omitted, the first two absorbed fixed effects are used
+when available; otherwise each row is its own unit.</p></dd>
 
 
 <dt id="arg-time">time<a class="anchor" aria-label="anchor" href="#arg-time"></a></dt>
-<dd><p>Optional name of the time variable.</p></dd>
+<dd><p>Optional name of the time variable. A supplied <code>time</code> is
+honoured even when <code>unit</code> is omitted (each row is then its own unit),
+but <code>lag_cutoff &gt; 0</code> requires <code>unit</code>. Character/factor times are
+parsed as their numeric labels when possible; serial HAC rejects labels
+that are not numeric-parsable because time gaps determine lag weights.</p></dd>
 
 
 <dt id="arg-lat">lat<a class="anchor" aria-label="anchor" href="#arg-lat"></a></dt>
@@ -140,22 +149,27 @@ auto-detected (<code>"lon"</code>, <code>"long"</code>, <code>"longitude"</code>
 
 
 <dt id="arg-ncores">ncores<a class="anchor" aria-label="anchor" href="#arg-ncores"></a></dt>
-<dd><p>Number of cores for the C++/RcppParallel spatial and serial routines.</p></dd>
+<dd><p>Number of threads for the C++ spatial and serial routines
+(results do not depend on it). The default uses
+<code>getOption("fastconley.ncores")</code> when set, otherwise all detected
+logical cores. Under a true-ish <code>_R_CHECK_LIMIT_CORES_</code>, the resolved
+value is capped at two. Values are rounded to a positive integer.</p></dd>
 
 
 <dt id="arg-pixel">pixel<a class="anchor" aria-label="anchor" href="#arg-pixel"></a></dt>
 <dd><p>Score-pre-aggregation cell size, in kilometres. Default 0
 (exact-coordinate dedupe only). If `pixel &gt; 0`, points are snapped to a
 uniform `pixel`-km grid before the dedupe — a speed/accuracy trade-off
-that approximates the distance up to roughly `pixel / 2`.</p></dd>
+that can move a point by up to roughly <code>pixel / sqrt(2)</code> and can
+change a pair distance by up to roughly <code>sqrt(2) * pixel</code>.</p></dd>
 
 
 <dt id="arg-neighbor">neighbor<a class="anchor" aria-label="anchor" href="#arg-neighbor"></a></dt>
 <dd><p>Neighbor-search strategy for the spatial meat: "grid"
 (default; 3D cell grid, output-sensitive candidate enumeration) or
-"band" (latitude band scan, the pre-0.5.0 behavior). Both are exact and
-use identical per-pair accept tests; results agree to floating-point
-summation order.</p></dd>
+"band" (deprecated; latitude band scan, the pre-0.5.0 behavior). Both are
+exact and use identical per-pair accept tests; results agree to
+floating-point summation order.</p></dd>
 
 
 <dt id="arg-csr-weight">csr_weight<a class="anchor" aria-label="anchor" href="#arg-csr-weight"></a></dt>
@@ -167,7 +181,7 @@ Ignored for <code>kernel = "uniform"</code>, which stores no weights.</p></dd>
 
 <dt id="arg-method">method<a class="anchor" aria-label="anchor" href="#arg-method"></a></dt>
 <dd><p>Spatial meat engine. "pairwise" enumerates neighbor pairs
-(the default engine; works for any data). "grid" uses the exact
+and works for any data. "grid" uses the exact
 grid-native meat — requires observations on a regular lat/lon lattice
 (e.g. raster data); cost is independent of the pair count, so it is
 dramatically faster on dense grids with large cutoffs. The uniform
@@ -187,9 +201,15 @@ errors with the specific reason instead of falling back.</p></dd>
 <dd><p>Small-sample correction. If <code>TRUE</code> (default), the variance
 matrix is scaled by <code>n / (n - K)</code> where <code>K</code> counts all
 estimated parameters including absorbed fixed-effect levels (taken from
-the fit's residual degrees of freedom). This matches <code>fixest</code>'s
+the regression's parameter count, independent of any clustering used when
+fitting). This matches <code>fixest</code>'s
 default Conley correction (its cluster adjustment is a no-op for Conley
-vcovs). Pass <code>FALSE</code> for no correction — that reproduces
+vcovs). Note that <code>K</code> is the fitting package's own count: with three
+or more absorbed fixed effects <code>lfe</code> and <code>fixest</code> can count the
+estimable levels differently (e.g. 30 versus 33 for the same model), so
+the two methods then differ by exactly that factor while their
+<code>ssc = FALSE</code> results are identical. Pass <code>FALSE</code> for no
+correction — that reproduces
 <code>rbluhm/conley</code>, fastconley versions before 0.9.0, and
 <code>fixest</code> with <code>ssc(adj = FALSE, cluster.adj = FALSE)</code>.</p></dd>
 
@@ -204,7 +224,8 @@ when it is not positive semi-definite.</p></dd>
 
 
 <dt id="arg-maxobsmem">maxobsmem<a class="anchor" aria-label="anchor" href="#arg-maxobsmem"></a></dt>
-<dd><p>Ignored by the fast spatial path. Kept for backward compatibility.</p></dd>
+<dd><p>Deprecated and ignored by the fast spatial path. Supplying
+it produces a warning; the argument remains for backward compatibility.</p></dd>
 
 
 <dt id="arg-data">data<a class="anchor" aria-label="anchor" href="#arg-data"></a></dt>
@@ -217,7 +238,7 @@ direct column access with no model-frame rebuild at all.</p></dd>
 
 
 <dt id="arg--">...<a class="anchor" aria-label="anchor" href="#arg--"></a></dt>
-<dd><p>Currently unused.</p></dd>
+<dd><p>Must be empty; unknown arguments are rejected.</p></dd>
 
 </dl></div>
     <div class="section level2">

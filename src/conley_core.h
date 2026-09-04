@@ -1,10 +1,11 @@
 // conley_core.h -- the fastconley spatial / serial HAC engine, front-end
 // agnostic. Included by the Rcpp front-end (src/cpp-functions.cpp) and by
-// the Stata plugin (stata/plugin/). Depends only on the C++11 standard
+// the Stata plugin (stata/plugin/). Depends only on the C++14 standard
 // library and on Armadillo used header-only (arma::mat accumulators and
 // arma::fft; no BLAS/LAPACK calls), so a standalone build needs just
-// -std=c++11 -pthread and the Armadillo headers (with
-// -DARMA_DONT_USE_WRAPPER -DARMA_DONT_USE_BLAS -DARMA_DONT_USE_LAPACK).
+// -std=c++14 -pthread and the Armadillo headers (with
+// -DARMA_DONT_USE_WRAPPER -DARMA_DONT_USE_BLAS -DARMA_DONT_USE_LAPACK
+// -DARMA_DONT_USE_SUPERLU).
 //
 // Errors are reported by throwing conley::Error; each front-end catches
 // and translates it (Rcpp's BEGIN_RCPP/END_RCPP turns it into an R error,
@@ -15,9 +16,9 @@
 #define FASTCONLEY_CONLEY_CORE_H
 
 // Engine version, reported by the Stata plugin's "check" subcommand and
-// compared against the ado's expectation. Bump with the package version
-// whenever the numerics or the entry-point signatures change.
-#define CONLEY_CORE_VERSION "0.11.0"
+// compared against the ado's expectation. Bump on every change that alters
+// numerical results or the front-end entry points.
+#define CONLEY_CORE_VERSION "0.11.1"
 
 #ifndef ARMA_64BIT_WORD
 #define ARMA_64BIT_WORD 1
@@ -57,24 +58,31 @@ constexpr double PI = 3.141592653589793238462643383279502884;
 constexpr double TWO_PI = 2.0 * PI;
 constexpr double DE2RA = PI / 180.0;
 constexpr double AVG_ERAD = 6371.0;
-constexpr double EPS = 1e-14;
 
 enum DistId { DIST_HAVERSINE = 1, DIST_SPHERICAL = 2, DIST_CHORD = 3 };
 enum KernelId { KERNEL_BARTLETT = 1, KERNEL_UNIFORM = 2 };
-
-inline double safe_acos(double x) {
-  if (x < -1.0) return PI;
-  if (x > 1.0) return 0.0;
-  return std::acos(x);
-}
 
 inline double sq(double x) {
   return x * x;
 }
 
-inline double lon_abs_wrapped(double x, double y) {
-  double diff = std::fabs(x - y);
-  return diff < PI ? diff : TWO_PI - diff;
+inline double clamp01(double x) {
+  if (x < 0.0) return 0.0;
+  if (x > 1.0) return 1.0;
+  return x;
+}
+
+typedef bool (*InterruptHook)();
+
+inline InterruptHook& interrupt_hook_slot() {
+  static InterruptHook hook = nullptr;
+  return hook;
+}
+
+// Front-ends may install a main-thread-only cooperative interrupt poll.
+// Workers never invoke this hook.
+inline void set_interrupt_hook(InterruptHook fn) {
+  interrupt_hook_slot() = fn;
 }
 
 // ------------------------------------------------------------------
@@ -92,20 +100,35 @@ void parallel_blocks(std::size_t n, int ncores, std::size_t grain, F&& fn) {
   if (n == 0) return;
   if (grain == 0) grain = 1;
   const std::size_t nblocks = (n + grain - 1) / grain;
+  const int capped_ncores = std::min(1024, std::max(1, ncores));
   const std::size_t nthreads = std::min<std::size_t>(
-      static_cast<std::size_t>(std::max(1, ncores)), nblocks);
+      static_cast<std::size_t>(capped_ncores), nblocks);
   if (nthreads <= 1) {
-    fn(static_cast<std::size_t>(0), n);
+    for (std::size_t b = 0; b < nblocks; ++b) {
+      const InterruptHook hook = interrupt_hook_slot();
+      if (hook && hook()) fail("interrupted");
+      const std::size_t lo = b * grain;
+      fn(lo, std::min(n, lo + grain));
+    }
     return;
   }
   std::atomic<std::size_t> next(0);
   std::atomic<bool> failed(false);
+  std::atomic<bool> interrupted(false);
   std::exception_ptr err;
   std::mutex err_mutex;
-  auto work = [&]() {
+  auto work = [&](bool calling_thread) {
     try {
       for (;;) {
         if (failed.load(std::memory_order_relaxed)) break;
+        if (calling_thread) {
+          const InterruptHook hook = interrupt_hook_slot();
+          if (hook && hook()) {
+            interrupted.store(true, std::memory_order_relaxed);
+            failed.store(true, std::memory_order_relaxed);
+            break;
+          }
+        }
         const std::size_t b = next.fetch_add(1, std::memory_order_relaxed);
         if (b >= nblocks) break;
         const std::size_t lo = b * grain;
@@ -119,10 +142,24 @@ void parallel_blocks(std::size_t n, int ncores, std::size_t grain, F&& fn) {
     }
   };
   std::vector<std::thread> pool;
-  pool.reserve(nthreads - 1);
-  for (std::size_t t = 1; t < nthreads; ++t) pool.emplace_back(work);
-  work();
-  for (std::size_t t = 0; t < pool.size(); ++t) pool[t].join();
+  const auto join_all = [&]() {
+    for (std::size_t t = 0; t < pool.size(); ++t) {
+      if (pool[t].joinable()) pool[t].join();
+    }
+  };
+  try {
+    pool.reserve(nthreads - 1);
+    for (std::size_t t = 1; t < nthreads; ++t) {
+      pool.emplace_back([&]() { work(false); });
+    }
+  } catch (...) {
+    failed.store(true, std::memory_order_relaxed);
+    join_all();
+    fail("could not create worker threads");
+  }
+  work(true);
+  join_all();
+  if (interrupted.load(std::memory_order_relaxed)) fail("interrupted");
   if (err) std::rethrow_exception(err);
 }
 
@@ -167,10 +204,8 @@ void sort_maybe_parallel(It first, It last, Cmp cmp, int ncores) {
 struct CoordCache {
   std::vector<double> lat_rad;
   std::vector<double> lon_rad;
-  std::vector<double> cos_lat;
-  std::vector<double> sin_lat;
-  // 3D unit vectors; always built. The cell grid bins on them and every
-  // pair_weight specialization screens with them.
+  // 3D unit vectors are always built: the cell grid bins on them and every
+  // pair_weight specialization uses their half-chord.
   std::vector<double> x3;
   std::vector<double> y3;
   std::vector<double> z3;
@@ -191,11 +226,7 @@ inline int parse_kernel_id(const std::string& kernel) {
 
 struct ScreenParams {
   double lat_cutoff_rad;
-  double angular_cutoff_rad;
   double sin2_half_angular_cutoff;
-  // cos(cutoff / R): dot(u_i, u_j) >= cos_cutoff iff angular distance <= cutoff/R.
-  // Used by SPHERICAL specializations to skip the per-pair acos/cos entirely.
-  double cos_cutoff;
   // (cutoff / R)^2, capped at 4. Used by CHORD specializations to compare
   // squared Euclidean distance between unit vectors against the threshold.
   double chord_cutoff_sq;
@@ -205,13 +236,14 @@ struct ScreenParams {
   double chord_cell;
 };
 
+// Non-positive cutoff contract: a negative cutoff is the no-cross-pair
+// sentinel (observation diagonals only); cutoff zero admits only exact
+// zero-distance pairs, including distinct observations at one location.
 inline ScreenParams make_screen_params(double cutoff, int dist_id) {
   ScreenParams p;
   if (cutoff < 0.0) {
     p.lat_cutoff_rad = -1.0;
-    p.angular_cutoff_rad = -1.0;
     p.sin2_half_angular_cutoff = 0.0;
-    p.cos_cutoff = 1.0;
     p.chord_cutoff_sq = 0.0;
     p.chord_cell = 0.0;
     return p;
@@ -219,20 +251,18 @@ inline ScreenParams make_screen_params(double cutoff, int dist_id) {
 
   if (dist_id == DIST_CHORD) {
     const double ratio = std::min(1.0, cutoff / (2.0 * AVG_ERAD));
-    p.angular_cutoff_rad = 2.0 * std::asin(ratio);
+    p.lat_cutoff_rad = 2.0 * std::asin(ratio);
   } else {
-    p.angular_cutoff_rad = cutoff / AVG_ERAD;
+    p.lat_cutoff_rad = cutoff / AVG_ERAD;
   }
 
-  if (p.angular_cutoff_rad > PI) p.angular_cutoff_rad = PI;
-  p.lat_cutoff_rad = p.angular_cutoff_rad;
-  p.sin2_half_angular_cutoff = sq(std::sin(p.angular_cutoff_rad / 2.0));
-  p.cos_cutoff = std::cos(p.angular_cutoff_rad);
+  if (p.lat_cutoff_rad > PI) p.lat_cutoff_rad = PI;
+  p.sin2_half_angular_cutoff = sq(std::sin(p.lat_cutoff_rad / 2.0));
   // CHORD threshold on unit-vector squared distance: chord_km = R*|u_i - u_j|,
   // so chord_km <= cutoff iff |u_i - u_j|^2 <= (cutoff/R)^2. Cap at 4 (the
   // maximum possible squared distance between unit vectors, antipodal case).
   p.chord_cutoff_sq = std::min(4.0, sq(cutoff / AVG_ERAD));
-  p.chord_cell = 2.0 * std::sin(0.5 * p.angular_cutoff_rad);
+  p.chord_cell = 2.0 * std::sin(0.5 * p.lat_cutoff_rad);
   return p;
 }
 
@@ -248,8 +278,28 @@ template<int D, int K>
 inline double pair_weight(const CoordCache& c, std::size_t i, std::size_t j,
                           double cutoff, const ScreenParams& screen);
 
-// HAVERSINE × UNIFORM: dot screen + longitude screen, then haversine
-// 'a'-threshold (no atan2).
+inline double pair_half_chord_sq(const CoordCache& c, std::size_t i,
+                                 std::size_t j) {
+  const double dx = c.x3[i] - c.x3[j];
+  const double dy = c.y3[i] - c.y3[j];
+  const double dz = c.z3[i] - c.z3[j];
+  return clamp01(0.25 * (dx * dx + dy * dy + dz * dz));
+}
+
+inline double great_circle_distance_from_a(double a) {
+  const double root_a = std::sqrt(a);
+  const double half_angle = a <= 0.5
+      ? std::asin(root_a)
+      : std::atan2(root_a, std::sqrt(1.0 - a));
+  return 2.0 * AVG_ERAD * half_angle;
+}
+
+inline double bartlett_weight(double distance, double cutoff) {
+  if (cutoff <= 0.0) return distance <= 0.0 ? 1.0 : 0.0;
+  return clamp01(1.0 - distance / cutoff);
+}
+
+// HAVERSINE × UNIFORM: stable half-chord threshold, no inverse trig.
 template<>
 inline double pair_weight<DIST_HAVERSINE, KERNEL_UNIFORM>(
     const CoordCache& c, std::size_t i, std::size_t j,
@@ -262,15 +312,12 @@ inline double pair_weight<DIST_HAVERSINE, KERNEL_UNIFORM>(
   // same a-test as before. (Per-pair sin/atan2 were also the reason the
   // mingw-w64 build was 5x slower than MSVC: its libm implements them in
   // x87 microcode.)
-  const double dx = c.x3[i] - c.x3[j];
-  const double dy = c.y3[i] - c.y3[j];
-  const double dz = c.z3[i] - c.z3[j];
-  const double a = 0.25 * (dx * dx + dy * dy + dz * dz);
+  const double a = pair_half_chord_sq(c, i, j);
   if (a > screen.sin2_half_angular_cutoff) return 0.0;
   return 1.0;
 }
 
-// HAVERSINE × BARTLETT: same screens, plus the real distance via atan2.
+// HAVERSINE × BARTLETT: the same stable screen and distance as spherical.
 template<>
 inline double pair_weight<DIST_HAVERSINE, KERNEL_BARTLETT>(
     const CoordCache& c, std::size_t i, std::size_t j,
@@ -278,48 +325,30 @@ inline double pair_weight<DIST_HAVERSINE, KERNEL_BARTLETT>(
   // See the UNIFORM specialization for the chord form of 'a'. Accepted
   // pairs get the distance 2R asin(sqrt a), which is well conditioned for
   // a <= 0.5 (angles up to 90 degrees); the atan2 form covers the rest.
-  const double dx = c.x3[i] - c.x3[j];
-  const double dy = c.y3[i] - c.y3[j];
-  const double dz = c.z3[i] - c.z3[j];
-  double a = 0.25 * (dx * dx + dy * dy + dz * dz);
+  const double a = pair_half_chord_sq(c, i, j);
   if (a > screen.sin2_half_angular_cutoff) return 0.0;
-  if (a < 0.0) a = 0.0;
-  if (a > 1.0) a = 1.0;
-  const double d = AVG_ERAD * 2.0 *
-      (a <= 0.5 ? std::asin(std::sqrt(a)) : std::atan2(std::sqrt(a), std::sqrt(1.0 - a)));
-  if (cutoff <= 0.0) return d <= 0.0 ? 1.0 : 0.0;
-  return 1.0 - d / cutoff;
+  return bartlett_weight(great_circle_distance_from_a(a), cutoff);
 }
 
-// SPHERICAL × UNIFORM: 3D dot product threshold. No trig in the hot path.
+// SPHERICAL × UNIFORM: the stable half-chord threshold avoids endpoint
+// roundoff at exact duplicates and antipodes.
 template<>
 inline double pair_weight<DIST_SPHERICAL, KERNEL_UNIFORM>(
     const CoordCache& c, std::size_t i, std::size_t j,
     double cutoff, const ScreenParams& screen) {
   (void)cutoff;
-  const double dot = c.x3[i] * c.x3[j] + c.y3[i] * c.y3[j] + c.z3[i] * c.z3[j];
-  return dot >= screen.cos_cutoff ? 1.0 : 0.0;
+  const double a = pair_half_chord_sq(c, i, j);
+  return a <= screen.sin2_half_angular_cutoff ? 1.0 : 0.0;
 }
 
-// SPHERICAL × BARTLETT: dot threshold first, then acos only for accepts.
+// SPHERICAL × BARTLETT: stable half-chord screen and distance.
 template<>
 inline double pair_weight<DIST_SPHERICAL, KERNEL_BARTLETT>(
     const CoordCache& c, std::size_t i, std::size_t j,
     double cutoff, const ScreenParams& screen) {
-  const double dot = c.x3[i] * c.x3[j] + c.y3[i] * c.y3[j] + c.z3[i] * c.z3[j];
-  if (dot < screen.cos_cutoff) return 0.0;
-  // Great-circle angle from the half chord, 2 asin(|u_i - u_j| / 2): acos(dot)
-  // loses ~half its digits at small angles (acos is ill-conditioned near 1),
-  // the asin form loses none; both are the same distance in exact arithmetic.
-  const double dx = c.x3[i] - c.x3[j];
-  const double dy = c.y3[i] - c.y3[j];
-  const double dz = c.z3[i] - c.z3[j];
-  double a = 0.25 * (dx * dx + dy * dy + dz * dz);
-  if (a > 1.0) a = 1.0;
-  const double d = AVG_ERAD * 2.0 *
-      (a <= 0.5 ? std::asin(std::sqrt(a)) : std::atan2(std::sqrt(a), std::sqrt(1.0 - a)));
-  if (cutoff <= 0.0) return d <= 0.0 ? 1.0 : 0.0;
-  return 1.0 - d / cutoff;
+  const double a = pair_half_chord_sq(c, i, j);
+  if (a > screen.sin2_half_angular_cutoff) return 0.0;
+  return bartlett_weight(great_circle_distance_from_a(a), cutoff);
 }
 
 // CHORD × UNIFORM: squared Euclidean threshold on unit vectors, no sqrt.
@@ -331,7 +360,7 @@ inline double pair_weight<DIST_CHORD, KERNEL_UNIFORM>(
   const double dx = c.x3[i] - c.x3[j];
   const double dy = c.y3[i] - c.y3[j];
   const double dz = c.z3[i] - c.z3[j];
-  const double d2 = dx * dx + dy * dy + dz * dz;
+  const double d2 = 4.0 * clamp01(0.25 * (dx * dx + dy * dy + dz * dz));
   return d2 <= screen.chord_cutoff_sq ? 1.0 : 0.0;
 }
 
@@ -343,31 +372,19 @@ inline double pair_weight<DIST_CHORD, KERNEL_BARTLETT>(
   const double dx = c.x3[i] - c.x3[j];
   const double dy = c.y3[i] - c.y3[j];
   const double dz = c.z3[i] - c.z3[j];
-  const double d2 = dx * dx + dy * dy + dz * dz;
+  const double d2 = 4.0 * clamp01(0.25 * (dx * dx + dy * dy + dz * dz));
   if (d2 > screen.chord_cutoff_sq) return 0.0;
-  const double d = AVG_ERAD * std::sqrt(d2);
-  if (cutoff <= 0.0) return d <= 0.0 ? 1.0 : 0.0;
-  return 1.0 - d / cutoff;
+  return bartlett_weight(AVG_ERAD * std::sqrt(d2), cutoff);
 }
 
 inline CoordCache make_coord_cache(const arma::vec& lat, const arma::vec& lon,
-                            int dist_id, int ncores) {
-  const std::size_t n = lat.n_elem;
-  // Validate serially first so the error surfaces before any threads spawn.
-  for (std::size_t i = 0; i < n; ++i) {
-    if (!std::isfinite(lat[i]) || !std::isfinite(lon[i])) {
-      fail("lat/lon contain non-finite values.");
-    }
-  }
-
+                                   bool need_band_coords, int ncores,
+                                   std::size_t n) {
   CoordCache c;
-  c.lat_rad.resize(n);
-  c.lon_rad.resize(n);
-  c.cos_lat.resize(n);
-  c.sin_lat.resize(n);
-  // The cell-grid neighbor search bins every distance function by its 3D
-  // unit vector, and all pair_weight screens read it — always built.
-  (void)dist_id;
+  if (need_band_coords) {
+    c.lat_rad.resize(n);
+    c.lon_rad.resize(n);
+  }
   c.x3.resize(n);
   c.y3.resize(n);
   c.z3.resize(n);
@@ -375,13 +392,14 @@ inline CoordCache make_coord_cache(const arma::vec& lat, const arma::vec& lon,
     for (std::size_t i = lo_i; i < hi_i; ++i) {
       const double la = lat[i] * DE2RA;
       const double lo = lon[i] * DE2RA;
-      c.lat_rad[i] = la;
-      c.lon_rad[i] = lo;
-      c.cos_lat[i] = std::cos(la);
-      c.sin_lat[i] = std::sin(la);
-      c.x3[i] = c.cos_lat[i] * std::cos(lo);
-      c.y3[i] = c.cos_lat[i] * std::sin(lo);
-      c.z3[i] = c.sin_lat[i];
+      if (need_band_coords) {
+        c.lat_rad[i] = la;
+        c.lon_rad[i] = lo;
+      }
+      const double cos_lat = std::cos(la);
+      c.x3[i] = cos_lat * std::cos(lo);
+      c.y3[i] = cos_lat * std::sin(lo);
+      c.z3[i] = std::sin(la);
     }
   });
   return c;
@@ -466,37 +484,31 @@ arma::mat reduce_deterministic(std::size_t n, std::size_t k, std::size_t chunk,
 constexpr std::size_t ROW_CHUNK = 1024;
 constexpr std::size_t BLOCK_CHUNK = 128;
 
-// Reorder a CoordCache by an index permutation. The output is the same length
-// as `perm` and contains `src` values at positions `perm[pos]`. Empty xyz
-// vectors in `src` (i.e., dist_id not in {SPHERICAL, CHORD}) are preserved as
-// empty in the output.
+// Reorder a CoordCache by an index permutation. Band-only latitude/longitude
+// arrays remain absent on the cell-grid path.
 inline CoordCache permute_coord_cache(const CoordCache& src,
                                const std::vector<std::size_t>& perm,
                                int ncores) {
   const std::size_t n = perm.size();
   CoordCache out;
-  out.lat_rad.resize(n);
-  out.lon_rad.resize(n);
-  out.cos_lat.resize(n);
-  out.sin_lat.resize(n);
-  const bool has_xyz = !src.x3.empty();
-  if (has_xyz) {
-    out.x3.resize(n);
-    out.y3.resize(n);
-    out.z3.resize(n);
+  const bool has_band_coords = !src.lat_rad.empty();
+  if (has_band_coords) {
+    out.lat_rad.resize(n);
+    out.lon_rad.resize(n);
   }
+  out.x3.resize(n);
+  out.y3.resize(n);
+  out.z3.resize(n);
   parallel_range(n, ncores, [&](std::size_t lo, std::size_t hi) {
     for (std::size_t pos = lo; pos < hi; ++pos) {
       const std::size_t i = perm[pos];
-      out.lat_rad[pos] = src.lat_rad[i];
-      out.lon_rad[pos] = src.lon_rad[i];
-      out.cos_lat[pos] = src.cos_lat[i];
-      out.sin_lat[pos] = src.sin_lat[i];
-      if (has_xyz) {
-        out.x3[pos] = src.x3[i];
-        out.y3[pos] = src.y3[i];
-        out.z3[pos] = src.z3[i];
+      if (has_band_coords) {
+        out.lat_rad[pos] = src.lat_rad[i];
+        out.lon_rad[pos] = src.lon_rad[i];
       }
+      out.x3[pos] = src.x3[i];
+      out.y3[pos] = src.y3[i];
+      out.z3[pos] = src.z3[i];
     }
   });
   return out;
@@ -539,7 +551,10 @@ inline void sort_block_indices(const std::vector<double>& lat_rad,
   out.resize(end - begin);
   std::iota(out.begin(), out.end(), begin);
   std::sort(out.begin(), out.end(), [&](std::size_t a, std::size_t b) {
-    if (lat_rad[a] == lat_rad[b]) return lon_rad[a] < lon_rad[b];
+    if (lat_rad[a] == lat_rad[b]) {
+      if (lon_rad[a] == lon_rad[b]) return a < b;
+      return lon_rad[a] < lon_rad[b];
+    }
     return lat_rad[a] < lat_rad[b];
   });
 }
@@ -727,7 +742,10 @@ inline GridSpec make_grid_spec(const ScreenParams& screen) {
   // binds for sub-metre cutoffs, where cells merely become larger than
   // strictly needed -- still exact, just more candidates.
   const std::int64_t G_MAX = 2097152;  // 2^21
-  if (G > G_MAX) G = G_MAX;
+  if (G > G_MAX) {
+    G = G_MAX;
+    spec.cell = 2.0 / static_cast<double>(G);
+  }
   spec.G = G;
   return spec;
 }
@@ -1123,7 +1141,7 @@ arma::mat fast_spatial_general(const arma::vec& lat, const arma::vec& lon,
                                const arma::vec& time, const arma::mat& S_col,
                                double cutoff, int ncores) {
   const std::size_t n = S_col.n_rows;
-  const CoordCache c = make_coord_cache(lat, lon, D, ncores);
+  const CoordCache c = make_coord_cache(lat, lon, true, ncores, n);
 
   const TimeBlocks blocks = make_time_blocks(time);
   std::vector<std::size_t> sorted_idx;
@@ -1155,7 +1173,9 @@ arma::mat fast_spatial_balanced(const arma::vec& lat, const arma::vec& lon,
   const TimeBlocks blocks = make_time_blocks(time);
   const std::size_t n_per = blocks.end[0] - blocks.start[0];
   const std::size_t T = blocks.start.size();
-  const CoordCache c = make_coord_cache(lat, lon, D, ncores);
+  // The balanced graph depends only on block 0; all rows were validated by
+  // spatial_meat before dispatch.
+  const CoordCache c = make_coord_cache(lat, lon, true, ncores, n_per);
 
   // Sort block 0 once. Because coordinates are time-invariant in the balanced
   // path, this same permutation applies to every block.
@@ -1198,7 +1218,7 @@ arma::mat fast_spatial_general_grid(const arma::vec& lat, const arma::vec& lon,
     fail("The grid neighbor path supports at most 2^32 - 1 rows; "
          "use neighbor = \"band\".");
   }
-  const CoordCache c = make_coord_cache(lat, lon, D, ncores);
+  const CoordCache c = make_coord_cache(lat, lon, false, ncores, n);
   const ScreenParams screen = make_screen_params(cutoff, D);
   const GridSpec spec = make_grid_spec(screen);
 
@@ -1227,7 +1247,9 @@ arma::mat fast_spatial_balanced_grid(const arma::vec& lat, const arma::vec& lon,
   const TimeBlocks blocks = make_time_blocks(time);
   const std::size_t n_per = blocks.end[0] - blocks.start[0];
   const std::size_t T = blocks.start.size();
-  const CoordCache c = make_coord_cache(lat, lon, D, ncores);
+  // The balanced graph depends only on block 0; all rows were validated by
+  // spatial_meat before dispatch.
+  const CoordCache c = make_coord_cache(lat, lon, false, ncores, n_per);
   const ScreenParams screen = make_screen_params(cutoff, D);
   const GridSpec spec = make_grid_spec(screen);
 
@@ -1404,11 +1426,8 @@ inline arma::mat serial_hac_panel(const arma::vec& times, double cutoff,
 // count. For the BARTLETT kernel the weight varies with the lon offset,
 // so the inner sum is a true 1D convolution per ring pair, computed via
 // FFT (arma::fft) with per-ring score spectra cached in a sliding
-// latitude band. Both are exact: the dot-product accept threshold is the
-// same constant the pairwise engine uses, and the bartlett weights use
-// the same per-distance arithmetic as pair_weight, so answers agree to
-// FP summation order (plus the inherent acos conditioning for
-// spherical x bartlett).
+// latitude band. Both are exact: the stable half-chord accept threshold
+// and Bartlett distances match pair_weight, up to FP summation order.
 //
 // If the lattice wraps the full longitude circle (n_col_full > 0 and the
 // accept window reaches across the dateline gap), windows become
@@ -1427,7 +1446,7 @@ struct GridGeom {
   std::size_t n_ring;
   std::size_t n_col;
   double dlam_rad;
-  double dlat_rad;           // |lat step| (bartlett haversine weights)
+  double dlat_rad;           // positive latitude step (Bartlett weights)
   std::vector<double> sphi;  // sin(lat) per ring
   std::vector<double> cphi;  // cos(lat) per ring
   // Per-offset trig tables, delta = 0..cap (shared by every ring pair):
@@ -1435,12 +1454,11 @@ struct GridGeom {
   std::vector<double> s2h_dl;  // sin^2(delta * dlam / 2)
 };
 
-// Accept window between rings r1 and r2 against the dot threshold,
-// matching the pairwise accept "dot >= coscut" with a boundary fix-up in
-// the same arithmetic. ds: largest accepted lon-index offset, capped at
+// Accept window between rings r1 and r2 against the stable half-chord
+// threshold used by pair_weight. ds: largest accepted lon-index offset, capped at
 // `cap` (-1 = none). full: every lon offset on the circle is accepted
 // (polar / antipodal-in-lon cases; the window is the whole ring).
-// dstar_rad: the acos accept boundary in lon radians for interval pairs
+// dstar_rad: the accept boundary in lon radians for interval pairs
 // (0 when full/none) -- drives the dateline-wrap feasibility check.
 struct RingPairWin {
   long ds;
@@ -1449,34 +1467,40 @@ struct RingPairWin {
 };
 
 inline RingPairWin grid_ring_window(const GridGeom& gg, std::size_t r1,
-                                    std::size_t r2, double coscut, long cap) {
-  const double base = gg.sphi[r1] * gg.sphi[r2];
+                                    std::size_t r2, double a_cutoff, long cap) {
+  const double dphi =
+      (static_cast<double>(r2) - static_cast<double>(r1)) * gg.dlat_rad;
+  const double base_a = sq(std::sin(dphi / 2.0));
   const double cc12 = gg.cphi[r1] * gg.cphi[r2];
   RingPairWin out;
   out.dstar_rad = 0.0;
   if (cc12 < 1e-300) {
-    out.full = base >= coscut;
+    out.full = base_a <= a_cutoff;
     out.ds = out.full ? cap : -1;
     return out;
   }
-  const double rhs = (coscut - base) / cc12;
-  if (rhs > 1.0) {
+  const double rhs = (a_cutoff - base_a) / cc12;
+  if (rhs < 0.0) {
     out.full = false;
     out.ds = -1;
     return out;
   }
-  if (rhs <= -1.0) {
+  if (rhs >= 1.0) {
     out.full = true;
     out.ds = cap;
     return out;
   }
   out.full = false;
-  out.dstar_rad = std::acos(rhs);
-  long ds = static_cast<long>(out.dstar_rad / gg.dlam_rad) + 1;
-  if (ds > cap) ds = cap;
-  while (ds >= 0 && base + cc12 * std::cos(ds * gg.dlam_rad) < coscut) --ds;
-  while (ds + 1 <= cap &&
-         base + cc12 * std::cos((ds + 1) * gg.dlam_rad) >= coscut) ++ds;
+  out.dstar_rad = 2.0 * std::asin(std::sqrt(clamp01(rhs)));
+  const double q = out.dstar_rad / gg.dlam_rad;
+  long ds = q >= static_cast<double>(cap) ? cap : static_cast<long>(q) + 1;
+  const auto accepted = [&](long d) {
+    const double dl = static_cast<double>(d) * gg.dlam_rad;
+    const double a = clamp01(base_a + cc12 * sq(std::sin(dl / 2.0)));
+    return a <= a_cutoff;
+  };
+  while (ds >= 0 && !accepted(ds)) --ds;
+  while (ds + 1 <= cap && accepted(ds + 1)) ++ds;
   out.ds = ds;
   return out;
 }
@@ -1489,41 +1513,26 @@ inline RingPairWin grid_ring_window(const GridGeom& gg, std::size_t r1,
 inline void grid_bartlett_weights(const GridGeom& gg, std::size_t r1,
                                   std::size_t r2, int dist_id, double cutoff,
                                   long ds, double* w) {
-  const double base = gg.sphi[r1] * gg.sphi[r2];
   const double cc12 = gg.cphi[r1] * gg.cphi[r2];
-  // The same-cell distance is exactly 0, but acos/sqrt of the FP dot
-  // (sin^2 + cos^2 = 1 +/- eps) would inflate it to ~R*sqrt(2*eps). The
-  // pairwise engine weights self-pairs exactly 1 (its 0.5*S_i diagonal),
-  // so fix the d = 0 weight after the loop below.
+  // The same-cell distance is exactly zero and must retain weight one even
+  // when a zero/tiny cutoff rounds its accept boundary to an endpoint.
   const bool self_ring = (r1 == r2);
-  if (dist_id == DIST_HAVERSINE) {
+  if (dist_id == DIST_HAVERSINE || dist_id == DIST_SPHERICAL) {
     const double dphi =
         (static_cast<double>(r2) - static_cast<double>(r1)) * gg.dlat_rad;
     const double s2_dphi = sq(std::sin(dphi / 2.0));
     for (long d = 0; d <= ds; ++d) {
-      double a = s2_dphi + cc12 * gg.s2h_dl[d];
-      if (a < 0.0) a = 0.0;
-      if (a > 1.0) a = 1.0;
-      const double dist =
-          AVG_ERAD * 2.0 * std::atan2(std::sqrt(a), std::sqrt(1.0 - a));
-      const double wt = 1.0 - dist / cutoff;
-      w[d] = wt > 0.0 ? wt : 0.0;
-    }
-  } else if (dist_id == DIST_SPHERICAL) {
-    for (long d = 0; d <= ds; ++d) {
-      const double dot = base + cc12 * gg.cos_dl[d];
-      const double dist = AVG_ERAD * safe_acos(dot);
-      const double wt = 1.0 - dist / cutoff;
-      w[d] = wt > 0.0 ? wt : 0.0;
+      const double a = clamp01(s2_dphi + cc12 * gg.s2h_dl[d]);
+      w[d] = bartlett_weight(great_circle_distance_from_a(a), cutoff);
     }
   } else {  // DIST_CHORD: chord^2 = 2 - 2*dot in exact arithmetic.
+    const double base = gg.sphi[r1] * gg.sphi[r2];
     for (long d = 0; d <= ds; ++d) {
       const double dot = base + cc12 * gg.cos_dl[d];
       double c2 = 2.0 - 2.0 * dot;
       if (c2 < 0.0) c2 = 0.0;
-      const double dist = AVG_ERAD * std::sqrt(c2);
-      const double wt = 1.0 - dist / cutoff;
-      w[d] = wt > 0.0 ? wt : 0.0;
+      if (c2 > 4.0) c2 = 4.0;
+      w[d] = bartlett_weight(AVG_ERAD * std::sqrt(c2), cutoff);
     }
   }
   if (self_ring) w[0] = 1.0;
@@ -1535,13 +1544,47 @@ inline std::size_t next_pow2(std::size_t n) {
   return p;
 }
 
+inline int normalize_ncores(int ncores) {
+  return std::min(1024, std::max(1, ncores));
+}
+
+inline void validate_scores(const arma::mat& scores) {
+  const double* p = scores.memptr();
+  for (std::size_t i = 0; i < scores.n_elem; ++i) {
+    if (!std::isfinite(p[i])) fail("scores contain non-finite values");
+  }
+}
+
+inline void validate_time(const arma::vec& time, std::size_t n) {
+  if (time.n_elem != n) fail("time and scores have incompatible lengths");
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!std::isfinite(time[i])) fail("time contains non-finite values");
+  }
+}
+
+inline arma::mat self_only_meat(const arma::mat& scores, int ncores) {
+  const RowMajorScores S(scores, ncores);
+  const std::size_t k = S.k;
+  auto body = [&](std::size_t lo, std::size_t hi, arma::mat& meat) {
+    for (std::size_t i = lo; i < hi; ++i) {
+      const double* si = S.row(i);
+      for (std::size_t k1 = 0; k1 < k; ++k1) {
+        for (std::size_t k2 = 0; k2 < k; ++k2) {
+          meat(k1, k2) += 0.5 * si[k1] * si[k2];
+        }
+      }
+    }
+  };
+  arma::mat half = reduce_deterministic(S.n, k, ROW_CHUNK, ncores, body);
+  return half + half.t();
+}
+
 
 // ------------------------------------------------------------------
 // Entry points shared by the front-ends. `scores` is the column-major
 // score matrix (scores = e * X, possibly pre-aggregated by the caller);
-// lat / lon / time / unit have one entry per score row. Callers validate
-// lengths; the strings are parsed here so both front-ends accept exactly
-// the same vocabulary.
+// lat / lon / time / unit have one entry per score row. Shared validation
+// and string parsing here keep both front-ends on the same contract.
 // ------------------------------------------------------------------
 
 // Spatial meat. Rows must be sorted so each time block is contiguous
@@ -1558,7 +1601,7 @@ inline arma::mat spatial_meat(const arma::vec& lat, const arma::vec& lon,
                               bool* unbalanced_fallback = nullptr) {
   const std::size_t n = scores.n_rows;
   const std::size_t k = scores.n_cols;
-  ncores = std::max(1, ncores);
+  ncores = normalize_ncores(ncores);
   const int kernel_id = parse_kernel_id(kernel);
   const int dist_id = parse_dist_id(dist_fn);
 
@@ -1576,6 +1619,19 @@ inline arma::mat spatial_meat(const arma::vec& lat, const arma::vec& lon,
   else fail("Unknown csr_weight: " + csr_weight + " (use \"double\" or \"float\")");
 
   if (unbalanced_fallback) *unbalanced_fallback = false;
+  if (!std::isfinite(cutoff)) fail("cutoff must be finite");
+  if (lat.n_elem != n || lon.n_elem != n || time.n_elem != n) {
+    fail("lat, lon, time, and scores have incompatible lengths");
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!std::isfinite(lat[i])) fail("latitude contains non-finite values");
+    if (lat[i] < -90.0 || lat[i] > 90.0) {
+      fail("latitude must be in [-90, 90]");
+    }
+    if (!std::isfinite(lon[i])) fail("longitude contains non-finite values");
+  }
+  validate_time(time, n);
+  validate_scores(scores);
   if (n == 0) {
     return arma::mat(k, k, arma::fill::zeros);
   }
@@ -1595,11 +1651,21 @@ inline arma::mat spatial_meat(const arma::vec& lat, const arma::vec& lon,
 inline arma::mat serial_hac_meat(const arma::vec& unit, const arma::vec& time,
                                  double cutoff, const arma::mat& scores,
                                  int ncores) {
+  const std::size_t n = scores.n_rows;
   const std::size_t k = scores.n_cols;
-  if (scores.n_rows == 0) {
+  ncores = normalize_ncores(ncores);
+  if (!std::isfinite(cutoff)) fail("cutoff must be finite");
+  if (unit.n_elem != n || time.n_elem != n) {
+    fail("unit, time, and scores have incompatible lengths");
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!std::isfinite(unit[i])) fail("unit contains non-finite values");
+  }
+  validate_time(time, n);
+  validate_scores(scores);
+  if (n == 0) {
     return arma::mat(k, k, arma::fill::zeros);
   }
-  ncores = std::max(1, ncores);
   const UnitBlocks blocks = make_unit_blocks(unit);
   const RowMajorScores S(scores, ncores);
   return serial_hac_panel(time, cutoff, S, blocks, ncores);
@@ -1616,29 +1682,53 @@ inline arma::mat grid_meat(const int* ring, const int* col,
                            const std::string& kernel, int ncores) {
   const std::size_t n = scores.n_rows;
   const std::size_t k = scores.n_cols;
-  if (cutoff < 0.0) fail("FastGridMeat requires a non-negative cutoff.");
+  ncores = normalize_ncores(ncores);
+  const int kernel_id = parse_kernel_id(kernel);
+  const int dist_id = parse_dist_id(dist_fn);
+  if (!std::isfinite(cutoff)) fail("cutoff must be finite");
+  if (!std::isfinite(lat0) || lat0 < -90.0 || lat0 > 90.0) {
+    fail("lat0 must be finite and in [-90, 90]");
+  }
+  if (!std::isfinite(dlat) || dlat <= 0.0) {
+    fail("dlat must be finite and > 0");
+  }
+  if (!std::isfinite(dlon) || dlon <= 0.0) {
+    fail("dlon must be finite and > 0");
+  }
   if (n_ring < 1 || n_col < 1) fail("n_ring and n_col must be >= 1.");
   if (n_col_full < 0 || (n_col_full > 0 && n_col_full < n_col)) {
     fail("n_col_full must be 0 (no wrap) or >= n_col.");
   }
-  ncores = std::max(1, ncores);
-
-  const int kernel_id = parse_kernel_id(kernel);
-  if (kernel_id == KERNEL_BARTLETT && cutoff <= 0.0) {
-    fail("FastGridMeat requires cutoff > 0 for kernel = 'bartlett'.");
+  const double lat_last = lat0 + static_cast<double>(n_ring - 1) * dlat;
+  if (!std::isfinite(lat_last) || lat_last > 90.0) {
+    fail("grid latitudes must be finite and in [-90, 90]");
+  }
+  if (n_col_full > 0) {
+    const double full_span = static_cast<double>(n_col_full) * dlon;
+    if (!std::isfinite(full_span) ||
+        std::fabs(full_span - 360.0) > 1e-6 * std::max(360.0, std::fabs(full_span))) {
+      fail("n_col_full * dlon must tile 360 degrees");
+    }
+  }
+  validate_time(time, n);
+  validate_scores(scores);
+  if (n > 0 && (!ring || !col)) fail("ring/col pointers must not be null");
+  for (std::size_t i = 0; i < n; ++i) {
+    if (ring[i] < 0 || ring[i] >= n_ring || col[i] < 0 || col[i] >= n_col) {
+      fail("ring/col indices out of range");
+    }
   }
 
   arma::mat meat_total(k, k, arma::fill::zeros);
   if (n == 0) return meat_total;
+  // A negative cutoff is the heteroskedasticity-only sentinel. At cutoff
+  // zero, exact co-locations (including duplicate observations) retain unit
+  // weight, but no positive-distance pair is admitted.
+  if (cutoff < 0.0) return self_only_meat(scores, ncores);
 
-  const int dist_id = parse_dist_id(dist_fn);
   const ScreenParams screen = make_screen_params(cutoff, dist_id);
-  // Accept threshold on the unit-vector dot product. All three distances
-  // are monotone in the chord, so each maps to a dot threshold:
-  // haversine/spherical use cos(angular); chord uses 1 - chord_sq/2.
-  const double coscut = (dist_id == DIST_CHORD)
-      ? 1.0 - screen.chord_cutoff_sq / 2.0
-      : screen.cos_cutoff;
+  // All supported distances are monotone in the unit-sphere half chord.
+  const double a_cutoff = screen.sin2_half_angular_cutoff;
 
   const std::size_t R = static_cast<std::size_t>(n_ring);
   const std::size_t C = static_cast<std::size_t>(n_col);
@@ -1646,7 +1736,7 @@ inline arma::mat grid_meat(const int* ring, const int* col,
   gg.n_ring = R;
   gg.n_col = C;
   gg.dlam_rad = dlon * DE2RA;
-  gg.dlat_rad = std::fabs(dlat) * DE2RA;
+  gg.dlat_rad = dlat * DE2RA;
   gg.sphi.resize(R);
   gg.cphi.resize(R);
   for (std::size_t r = 0; r < R; ++r) {
@@ -1654,15 +1744,10 @@ inline arma::mat grid_meat(const int* ring, const int* col,
     gg.sphi[r] = std::sin(la);
     gg.cphi[r] = std::cos(la);
   }
-  const std::size_t rho =
-      std::min(R, static_cast<std::size_t>(screen.angular_cutoff_rad /
-                                           std::max(gg.dlat_rad, 1e-300)) + 2);
-
-  for (std::size_t i = 0; i < n; ++i) {
-    if (ring[i] < 0 || ring[i] >= n_ring || col[i] < 0 || col[i] >= n_col) {
-      fail("ring/col indices out of range.");
-    }
-  }
+  const double rho_raw = screen.lat_cutoff_rad / gg.dlat_rad;
+  const std::size_t rho = rho_raw >= static_cast<double>(R)
+      ? R
+      : std::min(R, static_cast<std::size_t>(rho_raw) + 2);
 
   // ---- Dateline-wrap feasibility (geometry only, block-independent). ----
   // A pair of columns can be physically within the cutoff "the short way
@@ -1680,7 +1765,7 @@ inline arma::mat grid_meat(const int* ring, const int* col,
       for (std::size_t r1 = lo; r1 < hi; ++r1) {
         const std::size_t r2_hi = std::min(R - 1, r1 + rho);
         for (std::size_t r2 = r1; r2 <= r2_hi; ++r2) {
-          const RingPairWin win = grid_ring_window(gg, r1, r2, coscut, cap_lin);
+          const RingPairWin win = grid_ring_window(gg, r1, r2, a_cutoff, cap_lin);
           if (win.ds < 0) continue;
           if (win.ds > perds[r1]) perds[r1] = win.ds;
           if (!win.full && win.dstar_rad > permax[r1]) {
@@ -1758,7 +1843,7 @@ inline arma::mat grid_meat(const int* ring, const int* col,
           const std::size_t r2_hi = std::min(R - 1, r1 + rho);
           for (std::size_t r2 = r2_lo; r2 <= r2_hi; ++r2) {
             if (ring_count[r2] == 0) continue;
-            const long ds = grid_ring_window(gg, r1, r2, coscut, cap).ds;
+            const long ds = grid_ring_window(gg, r1, r2, a_cutoff, cap).ds;
             if (ds < 0) continue;
             any = true;
             const double* Pr2 = P.data() + r2 * rowlen;
@@ -1907,7 +1992,7 @@ inline arma::mat grid_meat(const int* ring, const int* col,
           const std::size_t r2_hi = std::min(R - 1, r1 + rho);
           for (std::size_t r2 = r1; r2 <= r2_hi; ++r2) {
             if (ring_count[r2] == 0) continue;
-            const RingPairWin win = grid_ring_window(gg, r1, r2, coscut, cap);
+            const RingPairWin win = grid_ring_window(gg, r1, r2, a_cutoff, cap);
             if (win.ds < 0) continue;
             const long ds = win.ds;
             grid_bartlett_weights(gg, r1, r2, dist_id, cutoff, ds,

@@ -10,8 +10,6 @@ R package and reproduces `vcovSpHAC()` on the same fit (validated by
 ssc install ftools
 ssc install reghdfe     // >= 6.12.5; reghdfe 6.13+ also needs: ssc install require
 ssc install require
-net install fastconley, from("https://raw.githubusercontent.com/rbluhm/fastconley/main/stata/src/")
-* until the dev branch is merged into main, install from it instead:
 net install fastconley, from("https://raw.githubusercontent.com/rbluhm/fastconley/dev/stata/src/")
 
 fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300)
@@ -20,11 +18,19 @@ fastconley y x1 x2, absorb(id year) lat(lat) lon(lon) cutoff(500) ///
 fastconley y x1 (x2 = z1 z2), absorb(region) lat(lat) lon(lon) cutoff(300)   // 2SLS
 ```
 
-Everything reghdfe reports is reported (`e()`, footnote, `predict`); only the
-variance, `e(F)`, and `e(vcetype)` change. IV models use the `(endog =
-instruments)` syntax and are estimated by 2SLS on the partialled-out data;
-point estimates match ivreghdfe/ivreg2 and, with a negative cutoff, so does
-their robust variance. See `help fastconley`.
+OLS retains reghdfe's output, `e()` surface, footnote, and prediction. IV
+models use the `(endog = instruments)` syntax and are estimated by 2SLS on
+the partialled-out data; they post the core fit/VCE results listed in
+`help fastconley`, plus `predict` support for `xb` and saved residuals. With
+`noabsorb`, IV includes `_cons` unless `noconstant` is specified.
+
+`time()` alone blocks the spatial covariance by time. Serial `lag()` requires
+both `unit()` and `time()`. Numeric-looking string times retain their numeric
+scale (`"2000"` to `"2002"` is a gap of two); other strings can define spatial
+blocks but are rejected for positive serial lags.
+
+The Stata command covers linear OLS and 2SLS models. The R package's GLM
+support, including `feglm`/`fepois`, has no Stata analogue.
 
 ## Option mapping
 
@@ -57,15 +63,18 @@ Two interchangeable engines compute the meat; `e(engine)` records which ran.
   and the only engine with the exact raster **grid engine**
   (`method(auto|pairwise|grid)`), which is pair-count independent on regular
   lat/lon lattices and wraps across the dateline. `fastconley.pkg` installs
-  the binary matching the platform (`g` lines: Linux x86-64, Windows x86-64,
-  macOS universal); the version is checked on load.
+  the binary under its platform name: `fastconley_linux64.plugin`,
+  `fastconley_win64.plugin`, or universal `fastconley_macosx.plugin` (including
+  console macOS). A generic `fastconley.plugin` remains a local-install
+  fallback; the engine version is checked on load.
 - **mata**: pure Mata (cell-grid neighbour search at cell-pair granularity
   with tiled dense blocks, per-period stacking for balanced panels, vectorised
   serial HAC). Always available; `engine(auto)` falls back to it when no
   binary loads.
 
-Both agree with each other and with the R package to about 1e-14
-(`test/parity/`, 21 configurations on both engines, including three IV models).
+The 21-configuration parity harness (including three IV models) observed a
+worst relative V difference of 2.0e-11, in the unbalanced serial lag-2 case;
+the default pass tolerance is 1e-8.
 
 Indicative timings on a 4-core Stata/MP laptop (16 logical CPUs), 100,000
 scattered points with a 500 km cutoff: plugin Bartlett 4.8 s / 1.5 s / 0.8 s at
@@ -79,8 +88,24 @@ with the square of the sample.
 Bartlett distances in both engines come from the chord between the points'
 unit vectors (`2R asin(|u_i - u_j| / 2)`), which needs no per-pair `sin` or
 `atan2` and stays accurate at small angles. The Mata engine builds the chord
-from coordinate differences below 200 km and from the dot product above,
-where that form is already exact to 1e-12 and cheaper.
+from coordinate differences below 200 km and from the dot product above. At
+the 200-km switch, the measured bound is 5e-12 relative in squared chord and
+5e-10 km absolute in distance.
+
+The Mata `tile()` default is 1024. It has a hard cap of 8192 and is also
+rejected when the conservative `5 * tile^2 * 8` workspace estimate exceeds
+1 GiB. Run `fastconley, version` for the ado version, expected engine version,
+loaded file/build, status, and loader-attempt return codes.
+
+The model Wald F uses the covariance before PSD clamping. It is stored as
+missing when the slope block is rank deficient, so the eigenvalue floor cannot
+manufacture an enormous statistic.
+
+For `cutoff(-1)`, unweighted, aweighted, and pweighted VCEs reproduce
+`reghdfe, vce(robust)`. With fweights the Conley score outer product is
+`(w e x)(w e x)'`: the `w` copies are spatially identical points. That is the
+appropriate Conley interpretation but differs from robust's
+`w (e x)(e x)'`.
 
 Coordinates stored as `float` (Stata's default) carry about 6e-8 relative
 rounding noise. The command loosens its lattice-detection tolerance for float
@@ -103,11 +128,14 @@ the ado, otherwise the ado ignores the binary and uses Mata.
 From the repository root, with Stata in batch mode:
 
 ```bash
-stata-mp -b do stata/test/test_basic.do          # smoke, robust-equivalence, engines, raster, panel, errors
-Rscript stata/test/parity/gen_reference.R OUT     # R reference (fixest + fastconley)
-stata-mp -b do stata/test/parity/run_stata.do    # set globals PARITY_DIR and PARITY_ENGINE (mata|plugin)
-Rscript stata/test/parity/compare.R OUT 1e-8
+stata-mp -b do stata/test/test_basic.do
+stata/test/parity/run_parity.sh
 ```
+
+The parity driver runs `gen_reference.R`, Stata with both Mata and plugin
+engines, and `compare.R`. It checks the Stata log because Stata batch mode can
+return shell status 0 after a do-file error. Override the comparison tolerance
+with `FASTCONLEY_PARITY_TOL`; the default is `1e-8`.
 
 Note that `reghdfe` drops singleton groups by default and fixest does not;
 the parity harness passes `keepsingletons`.
@@ -131,7 +159,7 @@ standalone benchmark) and CI keeps building with mingw.
    also be built locally with `make -C stata/plugin linux`.
 2. Bump `*! version` in `fastconley.ado`, `{* *! version` in the help file,
    and `Distribution-Date` in `fastconley.pkg`; keep `CONLEY_CORE_VERSION`
-   in `src/conley_core.h` and the expected version in `LoadPlugin` in sync
+   in `src/conley_core.h` and the single expected-version constant at the top of `LoadPlugin` in sync
    with the R package version when the engine changes.
 3. From the repository root: `stata-mp -b do stata/test/test_basic.do`, the
    parity harness on both engines, and `stata/upstream/test_upstream.do` if

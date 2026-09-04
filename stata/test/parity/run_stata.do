@@ -1,11 +1,18 @@
 * Cross-language parity harness, step 2 (Stata side).
 *   stata-mp -b do stata/test/parity/run_stata.do   (from the repository root;
-*   set the global PARITY_DIR to the OUT_DIR used by gen_reference.R)
+*   optional args: OUT_DIR ENGINE)
 * For every configuration in configs.csv: load the .dta, run fastconley with
 * nossc nopsdfix keepsingletons tolerance(1e-14), write e(V) (slopes only)
 * and e(b) as CSV for compare.R.
 clear all
 adopath ++ "stata/src"
+args parity_dir parity_engine
+if ("`parity_dir'" != "") global PARITY_DIR "`parity_dir'"
+if ("`parity_engine'" != "") global PARITY_ENGINE "`parity_engine'"
+local env_dir : environment FASTCONLEY_PARITY_DIR
+local env_engine : environment FASTCONLEY_PARITY_ENGINE
+if ("`env_dir'" != "") global PARITY_DIR "`env_dir'"
+if ("`env_engine'" != "") global PARITY_ENGINE "`env_engine'"
 if ("$PARITY_DIR" == "") global PARITY_DIR "stata/test/parity/out"
 if ("$PARITY_ENGINE" == "") global PARITY_ENGINE "mata"
 

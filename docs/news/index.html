@@ -7,7 +7,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">fastconley</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.10.0</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -36,6 +36,65 @@
       <small>Source: <a href="https://github.com/rbluhm/fastconley/blob/HEAD/NEWS.md" class="external-link"><code>NEWS.md</code></a></small>
     </div>
 
+    <div class="section level2">
+<h2 class="pkg-version" data-toc-text="0.11.0" id="fastconley-0110">fastconley 0.11.0<a class="anchor" aria-label="anchor" href="#fastconley-0110"></a></h2>
+<p>Engine extraction, a Stata port sharing the same C++ engine, and a review round (six independent code reviews of the engine, the R layer, the Stata command, the plugin build, the reghdfe proposal, and the validation coverage) whose findings are fixed below.</p>
+<div class="section level3">
+<h3 id="corrections-that-change-numbers-0-11-0">Corrections that change numbers<a class="anchor" aria-label="anchor" href="#corrections-that-change-numbers-0-11-0"></a></h3>
+<ul><li>
+<strong>Clustered <code>felm</code> fits got the wrong default <code>ssc</code>.</strong> <code>lfe</code> stores the cluster-adjusted degrees of freedom (number of clusters minus one) in <code>df.residual</code> when a fit carries a cluster specification, and the small-sample scale <code>n / df.residual</code> inherited that value: on a 20-row fixture the covariance was five times too large. The scale now uses the regression’s own residual degrees of freedom (<code>N - p</code>), so clustered and unclustered fits of the same model give identical Conley covariances.</li>
+<li>
+<strong><code>vcovSpHAC.felm</code> ignored the <code>unit</code> and <code>time</code> arguments</strong> and always used the first two absorbed fixed effects. The names are now matched against <code>names(reg$fe)</code> (with the model data as a fallback), a missing name is an error, and the first-two-FE default applies only when nothing was passed. A model with <code>| region + unit + time</code> used the wrong keys before.</li>
+<li>
+<strong>Non-numeric time collapsed gaps in the serial HAC.</strong> Character or factor time values were recoded to consecutive integers, so “2000”, “2002” became lag 1. Values that parse as numbers now keep their numeric spacing (both methods, including the absorbed-FE factor in <code>felm</code> fits); a time key that does not parse is accepted for spatial blocking only and is an error when <code>lag_cutoff &gt; 0</code>.</li>
+<li>
+<strong><code>time</code> without <code>unit</code> is honoured.</strong> The fixest method silently dropped the time blocking when no unit was given; it now blocks by time with each row as its own unit, matching the Stata command. <code>lag_cutoff &gt; 0</code> without a unit is an error.</li>
+<li>
+<strong>fixest observation selection uses <code><a href="https://lrberge.github.io/fixest/reference/obs.html" class="external-link">fixest::obs()</a></code></strong>, so models extracted from <code>split =</code> estimations and fits with several stacked selections align their coordinates correctly. <code>fixest_multi</code> objects, <code>lean = TRUE</code> <code>feols</code> fits, and fixed-effects-only models now fail with clear messages instead of misleading ones.</li>
+<li>
+<strong>Grid engine Bartlett weights use the same chord form as the pairwise engine</strong> (haversine and spherical). Four raster/grid Bartlett battery configurations move by at most 3.3e-14 relative; everything else is bit-identical to 0.10.0 apart from the Bartlett haversine/spherical pairwise change described under “Engine”.</li>
+<li>Edge cases that were silently wrong: exact duplicates at a zero cutoff keep their cross terms, antipodal points with a cutoff above the maximum distance are accepted, Bartlett boundary weights can no longer come out as -2e-16, and a raster lattice at a tiny or zero cutoff keeps its self terms.</li>
+</ul></div>
+<div class="section level3">
+<h3 id="new-validation-and-errors-0-11-0">New validation and errors<a class="anchor" aria-label="anchor" href="#new-validation-and-errors-0-11-0"></a></h3>
+<ul><li>Non-finite or missing <code>lat</code>, <code>lon</code>, <code>unit</code>, <code>time</code> values, latitudes outside [-90, 90], and longitudes outside [-180, 360] are rejected in R before anything reaches C++; the engine repeats the checks (including scores and cutoff) for its other front-ends. A <code>NA</code> time used to split co-located observations into separate blocks.</li>
+<li>Both <code>lat</code> and <code>latitude</code> (or any two aliases) present in the data is now an auto-detection error, as documented.</li>
+<li>Unknown arguments in <code>...</code> are errors (typos such as <code>psd_fxi =</code> were swallowed). <code>maxobsmem</code> warns once that it is ignored; <code>neighbor = "band"</code> is documented as deprecated but still works.</li>
+<li>
+<code>lfe</code> k-class / LIML fits are rejected; only OLS and ordinary 2SLS are supported.</li>
+<li>
+<code>ncores</code> must be a single finite positive integer. The default remains all logical cores, but <code>getOption("fastconley.ncores")</code> overrides it and a true-ish <code>_R_CHECK_LIMIT_CORES_</code> (CRAN’s check convention) caps it at 2.</li>
+<li>Long computations can be interrupted: the engine polls a front-end hook on the calling thread once per block (<code>Rcpp::checkUserInterrupt()</code> in R, <code>SF_poll</code> in the Stata plugin) and joins its workers before raising.</li>
+<li>Thread-pool construction is exception-safe (a failed <code>std::thread</code> constructor used to terminate the process), <code>ncores</code> is capped at 1024, and the sub-metre-cutoff cell cap no longer collapses all points into one cell.</li>
+<li>Raster geometry is validated (<code>dlat</code>, <code>dlon</code> finite and positive, finite <code>lat0</code> in range): a zero longitude step used to spin forever.</li>
+</ul></div>
+<div class="section level3">
+<h3 id="engine-0-11-0">Engine<a class="anchor" aria-label="anchor" href="#engine-0-11-0"></a></h3>
+<ul><li>Haversine weights are computed from the cached 3D unit vectors (<code>sin^2(theta/2) = |u_i - u_j|^2 / 4</code>, distance <code>2R asin(sqrt a)</code>), and the spherical Bartlett weight uses the same asin form instead of <code>acos(dot)</code>, which is ill-conditioned at small angles. No per-pair <code>sin</code>/<code>atan2</code> calls remain, which speeds up the pairwise engine everywhere (about 2x on Linux, 6x on mingw-built Windows binaries, whose libm implements those functions in x87 microcode). Results move at the 1e-14 relative level versus 0.10.0 on Bartlett haversine/spherical configurations.</li>
+<li>The C++ engine lives in a front-end-agnostic header, <code>src/conley_core.h</code> (namespace <code>conley</code>, <code>CONLEY_CORE_VERSION</code> 0.11.1, bumped on every change that alters results or entry points), shared with the Stata plugin. It compiles without R against plain Armadillo under C++14 (<code>tests/manual/core_standalone_check.cpp</code> + <code>.R</code> verify bit-identity).</li>
+<li>RcppParallel dependency dropped: threading is a <code>std::thread</code> pool inside the engine with the same deterministic chunked reduction, so <code>ncores</code> still never affects results. <code>Depends: R (&gt;= 4.0)</code> declared for the posix-threads Rtools toolchain on Windows.</li>
+<li>Dead code from the pre-chord screens removed; the balanced path builds its coordinate cache from the first period only.</li>
+</ul></div>
+<div class="section level3">
+<h3 id="tests-and-tooling-0-11-0">Tests and tooling<a class="anchor" aria-label="anchor" href="#tests-and-tooling-0-11-0"></a></h3>
+<ul><li>testthat grew from 48 to 106 expectations: independent dense references for <code>fepois</code>/<code>feglm</code>, felm and fixest IV, the serial HAC, and pixel aggregation; 1-vs-2-core <code><a href="https://rdrr.io/r/base/identical.html" class="external-link">identical()</a></code> checks for every engine path; and regression tests for each item above.</li>
+<li>
+<code>tests/manual/bitwise-battery.R</code> gained <code>write-ref</code>/<code>check</code> modes with a committed reference (<code>bitwise-battery-reference.txt</code>), and <code>tests/manual/core_edge_probes.cpp</code> exercises the edge cases in C++.</li>
+<li>A GitHub Actions <code>R CMD check --as-cran</code> workflow runs on Linux, macOS, and Windows.</li>
+<li>Documentation reconciled with the code: Conley (1999) throughout, <code>method = "auto"</code> as the default, chord versus great-circle wording, the balanced-panel error (not a fallback), and the pixel-aggregation distance bound (<code>sqrt(2) * pixel</code> for a pair, not <code>pixel / 2</code>).</li>
+</ul></div>
+<div class="section level3">
+<h3 id="stata-port-0-11-0">Stata port<a class="anchor" aria-label="anchor" href="#stata-port-0-11-0"></a></h3>
+<ul><li>
+<code>stata/</code> holds <code>fastconley</code>, a reghdfe-family command with a pure-Mata engine and a compiled plugin built from <code>src/conley_core.h</code> for Linux, Windows, and macOS (see <code>stata/README.md</code> and <code>stata/CHANGELOG.md</code>), and <code>stata/upstream/</code> a self-contained proposal adding <code>vce(conley ...)</code> to reghdfe.</li>
+</ul><p>CRAN preparation.</p>
+<ul><li>
+<code>DESCRIPTION</code>: package names quoted, Conley (1999) DOI added, copyright holder role declared; <code>LICENSE</code> updated to match.</li>
+<li>
+<code>.Rbuildignore</code> keeps development-only files (the agent instructions, <code>notes/</code>, <code>tests/manual/</code>, <code>stata/</code>, <code>.github/</code>, and <code>cran-comments.md</code>) out of the source tarball.</li>
+<li>Tests: the tiny <code>felm</code> fixture in the balanced-panel validation test no longer emits “NaNs produced” warnings.</li>
+</ul></div>
+</div>
     <div class="section level2">
 <h2 class="pkg-version" data-toc-text="0.10.0" id="fastconley-0100">fastconley 0.10.0<a class="anchor" aria-label="anchor" href="#fastconley-0100"></a></h2>
 <p>GLM support and documented IV support.</p>

@@ -16,6 +16,10 @@ vcovSpHAC <- function(reg, ...) UseMethod("vcovSpHAC")
 
 #' @export
 vcovSpHAC.default <- function(reg, ...) {
+  if (inherits(reg, "fixest_multi")) {
+    stop("vcovSpHAC does not accept fixest_multi objects. Extract one fitted ",
+         "model first (for example, fit[[1]]).")
+  }
   stop("vcovSpHAC: unsupported model class '", paste(class(reg), collapse = "/"),
        "'. Pass a felm or fixest fit.")
 }
@@ -28,11 +32,18 @@ vcovSpHAC.default <- function(reg, ...) {
 #' out of the box: \code{lfe} stores the projected (second-stage) design in
 #' \code{cX} and the structural residuals in \code{residuals}, which is
 #' exactly the 2SLS sandwich. Weighted fits are supported (the scores carry
-#' the weights and the bread uses \eqn{X'WX}).
+#' the weights and the bread uses \eqn{X'WX}). Other k-class estimators,
+#' including LIML, are not supported.
 #'
 #' @param reg A fitted object of class "felm", including IV fits.
-#' @param unit Optional name of the panel unit variable.
-#' @param time Optional name of the time variable.
+#' @param unit Optional name of the panel unit variable. When both \code{unit}
+#'   and \code{time} are omitted, the first two absorbed fixed effects are used
+#'   when available; otherwise each row is its own unit.
+#' @param time Optional name of the time variable. A supplied \code{time} is
+#'   honoured even when \code{unit} is omitted (each row is then its own unit),
+#'   but \code{lag_cutoff > 0} requires \code{unit}. Character/factor times are
+#'   parsed as their numeric labels when possible; serial HAC rejects labels
+#'   that are not numeric-parsable because time gaps determine lag weights.
 #' @param lat Name of the latitude variable. If \code{NULL} (default), it is
 #'   auto-detected from the data's column names (\code{"lat"},
 #'   \code{"latitude"}, case-insensitive); a message reports the pick.
@@ -46,22 +57,26 @@ vcovSpHAC.default <- function(reg, ...) {
 #' @param verbose Print progress messages.
 #' @param balanced_pnl Whether the panel is balanced and unit locations are time-invariant.
 #' @param ncores Number of threads for the C++ spatial and serial routines
-#'   (results do not depend on it).
+#'   (results do not depend on it). The default uses
+#'   \code{getOption("fastconley.ncores")} when set, otherwise all detected
+#'   logical cores. Under a true-ish \code{_R_CHECK_LIMIT_CORES_}, the resolved
+#'   value is capped at two. Values are rounded to a positive integer.
 #' @param pixel Score-pre-aggregation cell size, in kilometres. Default 0
 #'   (exact-coordinate dedupe only). If `pixel > 0`, points are snapped to a
 #'   uniform `pixel`-km grid before the dedupe — a speed/accuracy trade-off
-#'   that approximates the distance up to roughly `pixel / 2`.
+#'   that can move a point by up to roughly \code{pixel / sqrt(2)} and can
+#'   change a pair distance by up to roughly \code{sqrt(2) * pixel}.
 #' @param neighbor Neighbor-search strategy for the spatial meat: "grid"
 #'   (default; 3D cell grid, output-sensitive candidate enumeration) or
-#'   "band" (latitude band scan, the pre-0.5.0 behavior). Both are exact and
-#'   use identical per-pair accept tests; results agree to floating-point
-#'   summation order.
+#'   "band" (deprecated; latitude band scan, the pre-0.5.0 behavior). Both are
+#'   exact and use identical per-pair accept tests; results agree to
+#'   floating-point summation order.
 #' @param csr_weight Storage precision for the balanced-path bartlett kernel
 #'   weights: "double" (default, exact) or "float" (halves the per-pair
 #'   weight memory; introduces at most ~6e-8 relative error per weight).
 #'   Ignored for \code{kernel = "uniform"}, which stores no weights.
 #' @param method Spatial meat engine. "pairwise" enumerates neighbor pairs
-#'   (the default engine; works for any data). "grid" uses the exact
+#'   and works for any data. "grid" uses the exact
 #'   grid-native meat — requires observations on a regular lat/lon lattice
 #'   (e.g. raster data); cost is independent of the pair count, so it is
 #'   dramatically faster on dense grids with large cutoffs. The uniform
@@ -78,9 +93,15 @@ vcovSpHAC.default <- function(reg, ...) {
 #' @param ssc Small-sample correction. If \code{TRUE} (default), the variance
 #'   matrix is scaled by \code{n / (n - K)} where \code{K} counts all
 #'   estimated parameters including absorbed fixed-effect levels (taken from
-#'   the fit's residual degrees of freedom). This matches \code{fixest}'s
+#'   the regression's parameter count, independent of any clustering used when
+#'   fitting). This matches \code{fixest}'s
 #'   default Conley correction (its cluster adjustment is a no-op for Conley
-#'   vcovs). Pass \code{FALSE} for no correction — that reproduces
+#'   vcovs). Note that \code{K} is the fitting package's own count: with three
+#'   or more absorbed fixed effects \code{lfe} and \code{fixest} can count the
+#'   estimable levels differently (e.g. 30 versus 33 for the same model), so
+#'   the two methods then differ by exactly that factor while their
+#'   \code{ssc = FALSE} results are identical. Pass \code{FALSE} for no
+#'   correction — that reproduces
 #'   \code{rbluhm/conley}, fastconley versions before 0.9.0, and
 #'   \code{fixest} with \code{ssc(adj = FALSE, cluster.adj = FALSE)}.
 #' @param psd_fix The spatial kernels do not guarantee a positive
@@ -89,14 +110,15 @@ vcovSpHAC.default <- function(reg, ...) {
 #'   does) and a warning reports when the fix noticeably changed the matrix.
 #'   If \code{FALSE}, the matrix is returned as computed, with a warning
 #'   when it is not positive semi-definite.
-#' @param maxobsmem Ignored by the fast spatial path. Kept for backward compatibility.
+#' @param maxobsmem Deprecated and ignored by the fast spatial path. Supplying
+#'   it produces a warning; the argument remains for backward compatibility.
 #' @param data Optional. The data frame to draw \code{lat}/\code{lon} from.
 #'   If \code{NULL} (default), the data is recovered from the fit's call and
 #'   aligned via a model-frame re-evaluation. Pass it explicitly if the
 #'   original data has gone out of scope — and when no rows were dropped at
 #'   fit time (no NAs, no \code{subset}), the coordinates are then taken by
 #'   direct column access with no model-frame rebuild at all.
-#' @param ... Currently unused.
+#' @param ... Must be empty; unknown arguments are rejected.
 #' @return A variance-covariance matrix.
 #' @examples
 #' if (requireNamespace("lfe", quietly = TRUE)) {
@@ -145,7 +167,7 @@ vcovSpHAC.felm <- function(reg,
                            lag_cutoff = 0,
                            verbose = FALSE,
                            balanced_pnl = FALSE,
-                           ncores = NA,
+                           ncores = NULL,
                            pixel = 0,
                            neighbor = c("grid", "band"),
                            csr_weight = c("double", "float"),
@@ -156,23 +178,54 @@ vcovSpHAC.felm <- function(reg,
                            data = NULL,
                            ...) {
 
+  check_dots(list(...))
+  if (!missing(maxobsmem)) {
+    warning("maxobsmem is deprecated and ignored by fastconley.", call. = FALSE)
+  }
   args <- validate_args(kernel, dist_fn, dist_cutoff, lag_cutoff, pixel, ncores,
                         neighbor, csr_weight, method, ssc, psd_fix)
 
-  if (is.null(lat) || is.null(lon)) {
-    nm_src <- if (!is.null(data)) names(data) else {
-      names(tryCatch(eval(reg$call$data, environment(formula(reg))),
-                     error = function(e) NULL))
-    }
-    cn  <- detect_coord_names(nm_src, lat, lon)
-    lat <- cn$lat
-    lon <- cn$lon
+  for (item in list(unit = unit, time = time, lat = lat, lon = lon)) {
+    validate_column_name(item)
   }
 
-  noFEs <- length(unit) == 0L
-  if (noFEs) {
-    unit <- "fe1"
-    time <- "fe2"
+  kclass_call <- reg$call$kclass
+  ordinary_kclass <- is.null(kclass_call) ||
+    (is.numeric(kclass_call) && length(kclass_call) == 1L &&
+       is.finite(kclass_call) && kclass_call == 1)
+  if (!ordinary_kclass ||
+      (length(reg$kappa) &&
+       (length(reg$kappa) != 1L || !is.finite(reg$kappa) || reg$kappa != 1))) {
+    stop("vcovSpHAC.felm supports only OLS and ordinary 2SLS; other k-class ",
+         "estimators (including LIML) are not supported.")
+  }
+
+  fe_names <- names(reg$fe)
+  use_default_fes <- is.null(unit) && is.null(time) && length(fe_names) >= 2L
+  if (use_default_fes) {
+    unit <- fe_names[1L]
+    time <- fe_names[2L]
+  }
+  if (lag_cutoff > 0 && is.null(unit)) {
+    stop("lag_cutoff requires unit.")
+  }
+
+  model_data <- data
+  if (is.null(model_data)) {
+    envs <- list(parent.frame(), environment(stats::formula(reg)))
+    for (env in envs) {
+      cand <- tryCatch(eval(reg$call$data, env), error = function(e) NULL)
+      if (is.data.frame(cand) || data.table::is.data.table(cand)) {
+        model_data <- cand
+        break
+      }
+    }
+  }
+
+  if (is.null(lat) || is.null(lon)) {
+    cn  <- detect_coord_names(names(model_data), lat, lon)
+    lat <- cn$lat
+    lon <- cn$lon
   }
 
   Xvars <- names(reg$coefficients)
@@ -181,47 +234,57 @@ vcovSpHAC.felm <- function(reg,
     stop("Could not infer coefficient names from the felm object.")
   }
 
-  # `lfe` stores FEs as factors. `as.integer(factor)` returns level codes,
-  # which is what the C++ grouping needs — equality matters, not the original
-  # label. Using as.numeric(as.character(...)) (the old `Fac2Num`) silently
-  # produced NAs for any factor whose levels weren't numeric strings.
-  N <- length(reg$cY)
-  if (noFEs) {
-    fe1_vec <- seq_len(N)
-    fe2_vec <- rep(1L, N)
-  } else {
-    fe1_vec <- as.integer(reg$fe[[1L]])
-    fe2_vec <- as.integer(reg$fe[[2L]])
+  N <- reg$N
+  if (is.null(reg$cX)) {
+    stop("vcovSpHAC.felm requires felm(..., keepCX = TRUE).")
   }
-  # Coordinate recovery. With an explicitly passed `data` whose row count
-  # matches the fit (nothing dropped: no NAs, no subset), take the columns
-  # directly -- no model-frame re-evaluation, no second copy of the data.
-  # Otherwise rebuild the model frame (aligned by rownames) as before.
-  if (!is.null(data) && nrow(data) == N && is.null(reg$call$subset)) {
-    for (nm in c(lat, lon)) {
-      if (!nm %in% names(data)) {
-        stop("Column '", nm, "' not found in `data`.")
-      }
+
+  # Requested panel variables can be absorbed FEs or ordinary columns. FE
+  # vectors are already aligned to the fitted sample; other columns are
+  # recovered with the same model-frame alignment used for coordinates.
+  recover_names <- unique(c(lat, lon, setdiff(c(unit, time), fe_names)))
+  if (!is.null(model_data)) {
+    missing_names <- setdiff(recover_names, names(model_data))
+    if (length(missing_names)) {
+      stop("Requested column", if (length(missing_names) > 1L) "s" else "",
+           " not found in the model data: ",
+           paste(sprintf("'%s'", missing_names), collapse = ", "), ".")
     }
-    coords <- data.frame(data[[lat]], data[[lon]])
-    names(coords) <- c(lat, lon)
-  } else {
-    coords <- expand.model.felm(model = reg, extras = c(lat, lon),
-                                na.expand = TRUE, data = data)
   }
+  if (!is.null(model_data) && nrow(model_data) == N && is.null(reg$call$subset)) {
+    recovered <- as.data.frame(model_data)[, recover_names, drop = FALSE]
+  } else {
+    recovered <- tryCatch(
+      expand.model.felm(model = reg, extras = recover_names,
+                        na.expand = TRUE, data = model_data),
+      error = function(e) {
+        stop("Could not recover requested model-data columns: ",
+             conditionMessage(e), call. = FALSE)
+      }
+    )
+  }
+
+  panel_value <- function(nm, what, default) {
+    if (is.null(nm)) return(default)
+    fe_pos <- match(nm, fe_names)
+    if (!is.na(fe_pos)) return(reg$fe[[fe_pos]])
+    if (!nm %in% names(recovered)) {
+      stop("Requested ", what, " column '", nm,
+           "' is absent from both the absorbed fixed effects and model data.")
+    }
+    recovered[[nm]]
+  }
+  unit_vec <- panel_value(unit, "unit", seq_len(N))
+  time_vec <- panel_value(time, "time", rep(1L, N))
 
   # reg$cY is deliberately not carried along -- only the centered design
   # columns, FEs, coordinates, and residuals are used downstream.
   dt <- data.table::data.table(
     reg$cX,
-    fe1 = fe1_vec,
-    fe2 = fe2_vec,
-    coords
-  )
-
-  data.table::setnames(dt, c("fe1", "fe2"),
-    c(ifelse(!noFEs, names(reg$fe)[1L], unit),
-      ifelse(!noFEs, names(reg$fe)[2L], time))
+    unit = unit_vec,
+    time = time_vec,
+    lat = recovered[[lat]],
+    lon = recovered[[lon]]
   )
   # Weighted (WLS) fits: the meat scores are s_i = w_i * e_i * x_i and the
   # bread is (X'WX)^{-1}. lfe stores sqrt(w) in reg$weights, so square it.
@@ -232,15 +295,12 @@ vcovSpHAC.felm <- function(reg,
   if (!is.null(w)) res <- res * w
   dt[, e := res]
 
-  data.table::setnames(dt, c(unit, time, lat, lon),
-                            c("unit", "time", "lat", "lon"))
-
   X <- as.matrix(dt[, Xvars, with = FALSE])
   n <- nrow(dt)
   invXX <- solve(if (is.null(w)) crossprod(X) else crossprod(X, X * w)) * n
   rm(X)
 
-  dof_scale <- ssc_scale(ssc, n, reg$df.residual)
+  dof_scale <- ssc_scale(ssc, n, reg$N - reg$p)
 
   vcovSpHAC_core(dt = dt, Xvars = Xvars, n = n, invXX = invXX,
                  kernel = args$kernel, dist_fn = args$dist_fn,
@@ -272,8 +332,8 @@ vcovSpHAC.felm <- function(reg,
 #' \code{fixest} stores on every (non-\code{lean}) fit. Weights, offsets,
 #' and the fixed-effect profiling are already folded into the stored
 #' scores. This is the same construction \code{fixest}'s own
-#' \code{vcov_conley()} uses for GLMs — but with exact great-circle
-#' distances, and with the serial-HAC panel extension available via
+#' \code{vcov_conley()} uses for GLMs — but with exact supported distance
+#' calculations, and with the serial-HAC panel extension available via
 #' \code{lag_cutoff} (which \code{fixest} does not offer for Conley vcovs).
 #'
 #' The returned matrix can be passed to \code{fixest}'s \code{vcov} argument.
@@ -287,10 +347,13 @@ vcovSpHAC.felm <- function(reg,
 #'   (including IV) with \code{demeaned = TRUE}, or a \code{feglm()} /
 #'   \code{fepois()} fit (any family; \code{lean = TRUE} fits are rejected
 #'   because they carry no score matrix).
-#' @param unit Optional name of the panel unit variable. If \code{NULL} the
-#'   call is treated as a cross-section (each row is its own unit, all rows
-#'   share a single period — no serial HAC).
-#' @param time Optional name of the time variable. Ignored when \code{unit} is NULL.
+#' @param unit Optional name of the panel unit variable. If \code{NULL}, each
+#'   row is its own unit. A positive \code{lag_cutoff} requires \code{unit}.
+#' @param time Optional name of the time variable. It is honoured even when
+#'   \code{unit} is \code{NULL}, so it still defines the spatial time blocks.
+#'   Character/factor times are parsed as their numeric labels when possible;
+#'   serial HAC rejects labels that are not numeric-parsable because time gaps
+#'   determine lag weights.
 #' @param lat Name of the latitude variable. If \code{NULL} (default),
 #'   auto-detected from the data's column names. See \code{\link{vcovSpHAC.felm}}.
 #' @param lon Name of the longitude variable. If \code{NULL} (default),
@@ -302,10 +365,13 @@ vcovSpHAC.felm <- function(reg,
 #' @param verbose Print progress messages.
 #' @param balanced_pnl Whether the panel is balanced and unit locations are time-invariant.
 #' @param ncores Number of threads for the C++ spatial and serial routines
-#'   (results do not depend on it).
+#'   (results do not depend on it). The default uses
+#'   \code{getOption("fastconley.ncores")} when set, otherwise all detected
+#'   logical cores, capped at two under a true-ish
+#'   \code{_R_CHECK_LIMIT_CORES_}. Values are rounded to a positive integer.
 #' @param pixel Score-pre-aggregation cell size, in kilometres.
-#' @param neighbor Neighbor-search strategy: "grid" (default) or "band".
-#'   See \code{\link{vcovSpHAC.felm}}.
+#' @param neighbor Neighbor-search strategy: "grid" (default) or the deprecated
+#'   "band" compatibility path. See \code{\link{vcovSpHAC.felm}}.
 #' @param csr_weight Balanced-path bartlett weight storage: "double"
 #'   (default) or "float". See \code{\link{vcovSpHAC.felm}}.
 #' @param method Spatial meat engine: "auto" (default), "pairwise", or
@@ -318,7 +384,7 @@ vcovSpHAC.felm <- function(reg,
 #'   \code{unit}/\code{time} from. If \code{NULL} (default), the data is
 #'   recovered from the fit's call. Pass it explicitly if the original data
 #'   has gone out of scope, or if you want to override.
-#' @param ... Currently unused.
+#' @param ... Must be empty; unknown arguments are rejected.
 #' @return A variance-covariance matrix.
 #' @examples
 #' if (requireNamespace("fixest", quietly = TRUE)) {
@@ -363,7 +429,7 @@ vcovSpHAC.fixest <- function(reg,
                              lag_cutoff = 0,
                              verbose = FALSE,
                              balanced_pnl = FALSE,
-                             ncores = NA,
+                             ncores = NULL,
                              pixel = 0,
                              neighbor = c("grid", "band"),
                              csr_weight = c("double", "float"),
@@ -373,8 +439,16 @@ vcovSpHAC.fixest <- function(reg,
                              data = NULL,
                              ...) {
 
+  check_dots(list(...))
   args <- validate_args(kernel, dist_fn, dist_cutoff, lag_cutoff, pixel, ncores,
                         neighbor, csr_weight, method, ssc, psd_fix)
+
+  if (lag_cutoff > 0 && is.null(unit)) {
+    stop("lag_cutoff requires unit.")
+  }
+  for (item in list(unit = unit, time = time, lat = lat, lon = lon)) {
+    validate_column_name(item)
+  }
 
   method_type <- reg$method_type
   if (is.null(method_type)) method_type <- "feols"
@@ -385,11 +459,20 @@ vcovSpHAC.fixest <- function(reg,
   }
   is_glm <- method_type == "feglm"
 
+  if (isTRUE(reg$lean)) {
+    stop("vcovSpHAC.fixest does not support lean = TRUE fits; refit with ",
+         "lean = FALSE.")
+  }
+
   # Use direct field access rather than coef(reg) / residuals(reg) — the
   # generic accessors in `fixest` can be 100x+ slower than field access
   # under do.call() evaluation contexts (they recompute or look up the call
   # environment), which makes vcovSpHAC inadvertently slow when wrapped.
   Xvars <- names(reg$coefficients)
+  if (!length(Xvars)) {
+    stop("vcovSpHAC.fixest cannot compute a covariance for an only-fixed-effect ",
+         "model with no estimated coefficients.")
+  }
   if (is_glm) {
     # M-estimation sandwich H^{-1} B H^{-1}: fixest stores the ML score
     # rows (FE profiling, weights, and offsets already folded in) and
@@ -472,28 +555,26 @@ vcovSpHAC.fixest <- function(reg,
     stop("Column '", time, "' not found in the model data.")
   }
 
-  # `obs_selection` has two stacked filters:
-  #   - $subset:     positive 1-based indices into the original data, set when
-  #                  the user passed `subset =` to feols.
-  #   - $obsRemoved: NEGATIVE indices into the SUBSET-APPLIED view (rows dropped
-  #                  for NAs, singletons, perfect collinearity).
-  # The two must be applied in order: subset first, then obsRemoved.
-  subset_idx  <- reg$obs_selection$subset
-  removed_idx <- reg$obs_selection$obsRemoved
-  noFEs <- is.null(unit)
+  # fixest::obs() composes every retained-row selection in original-data
+  # coordinates, including subset, NA/singleton removal, and split/fsplit.
+  obs_idx <- tryCatch(
+    fixest::obs(reg),
+    error = function(e) {
+      stop("Could not recover the fitted observations from the fixest object: ",
+           conditionMessage(e), call. = FALSE)
+    }
+  )
+  no_unit <- is.null(unit)
   pick <- function(col) {
-    v <- data[[col]]
-    if (length(subset_idx))  v <- v[subset_idx]
-    if (length(removed_idx)) v <- v[removed_idx]
-    v
+    data[[col]][obs_idx]
   }
   lat_v  <- pick(lat)
   lon_v  <- pick(lon)
-  unit_v <- if (noFEs) seq_len(n) else pick(unit)
-  time_v <- if (noFEs || is.null(time)) rep(1L, n) else pick(time)
+  unit_v <- if (no_unit) seq_len(n) else pick(unit)
+  time_v <- if (is.null(time)) rep(1L, n) else pick(time)
 
   if (length(lat_v) != n) {
-    stop("Row count after applying obs_selection (", length(lat_v),
+    stop("Row count selected by fixest::obs() (", length(lat_v),
          ") does not match the fitted model (", n, "). ",
          "Pass `data = ` explicitly or refit on a frame with no extra rows.")
   }
@@ -542,14 +623,12 @@ vcovSpHAC_core <- function(dt, Xvars, n, invXX,
                            balanced_pnl, ncores, pixel, neighbor, csr_weight,
                            method, dof_scale = 1, psd_fix = FALSE, verbose) {
 
-  # The FastSpatialMeat / FastSerialHacPanel C++ entry points require numeric
-  # vectors for time and unit (arma::vec). Equality is the only thing they use
-  # — the integer codes preserve the user's grouping while letting character
-  # and factor inputs through. Do this BEFORE setorderv so the integer
-  # codes match the user-supplied sort order (factor level order for factors;
-  # alphabetical for raw strings).
+  validate_core_data(dt)
+
+  # Unit values are equality keys. Time also defines equality keys for the
+  # spatial blocks, but its numeric spacing is meaningful to serial HAC.
   dt[, unit := to_group_id(dt[["unit"]])]
-  dt[, time := to_group_id(dt[["time"]])]
+  dt[, time := to_time_value(dt[["time"]], lag_cutoff)]
 
   if (balanced_pnl) {
     data.table::setorderv(dt, c("time", "unit"))
@@ -722,12 +801,73 @@ validate_args <- function(kernel, dist_fn, dist_cutoff, lag_cutoff, pixel, ncore
   if (length(pixel) != 1L || !is.finite(pixel) || pixel < 0) {
     stop("pixel must be a single non-negative finite number.")
   }
-  if (is.na(ncores)) {
-    ncores <- max(1L, parallel::detectCores(logical = TRUE))
+  if (is.null(ncores)) {
+    option_ncores <- getOption("fastconley.ncores")
+    if (!is.null(option_ncores)) {
+      ncores <- option_ncores
+    } else {
+      ncores <- parallel::detectCores(logical = TRUE)
+      if (length(ncores) != 1L || is.na(ncores)) ncores <- 1L
+    }
   }
-  ncores <- as.integer(max(1L, ncores))
+  if (length(ncores) != 1L || !is.numeric(ncores) ||
+      !is.finite(ncores) || ncores <= 0) {
+    stop("ncores must be a single finite positive number.")
+  }
+  ncores <- round(ncores)
+  if (ncores < 1 || ncores > .Machine$integer.max) {
+    stop("ncores must round to a positive integer representable by R.")
+  }
+  check_limit <- tolower(trimws(Sys.getenv("_R_CHECK_LIMIT_CORES_", "")))
+  if (check_limit %in% c("true", "t", "yes", "y", "1")) {
+    ncores <- min(ncores, 2)
+  }
+  ncores <- as.integer(ncores)
   list(kernel = kernel, dist_fn = dist_fn, ncores = ncores, neighbor = neighbor,
        csr_weight = csr_weight, method = method)
+}
+
+check_dots <- function(dots) {
+  if (!length(dots)) return(invisible(NULL))
+  nms <- names(dots)
+  shown <- if (is.null(nms)) rep("<unnamed>", length(dots)) else nms
+  shown[is.na(shown) | shown == ""] <- "<unnamed>"
+  stop("Unknown argument", if (length(dots) > 1L) "s" else "", " in ...: ",
+       paste(shown, collapse = ", "), ".")
+}
+
+validate_column_name <- function(x) {
+  if (is.null(x)) return(invisible(NULL))
+  if (!is.character(x) || length(x) != 1L || is.na(x) || !nzchar(x)) {
+    stop("unit, time, lat, and lon must each be NULL or a single non-empty ",
+         "column name.")
+  }
+  invisible(NULL)
+}
+
+validate_core_data <- function(dt) {
+  validate_key <- function(x, what) {
+    if (!is.atomic(x) || is.object(x) && !is.factor(x)) {
+      stop(what, " must be an atomic vector or factor.")
+    }
+    if (anyNA(x)) stop(what, " contains missing values.")
+    if (is.numeric(x) && any(!is.finite(x))) {
+      stop(what, " contains non-finite values.")
+    }
+  }
+  validate_coord <- function(x, what, lower, upper) {
+    if (!is.numeric(x)) stop(what, " must be numeric.")
+    if (anyNA(x)) stop(what, " contains missing values.")
+    if (any(!is.finite(x))) stop(what, " contains non-finite values.")
+    if (any(x < lower | x > upper)) {
+      stop(what, " must lie in [", lower, ", ", upper, "].")
+    }
+  }
+  validate_key(dt[["unit"]], "unit")
+  validate_key(dt[["time"]], "time")
+  validate_coord(dt[["lat"]], "latitude", -90, 90)
+  validate_coord(dt[["lon"]], "longitude", -180, 360)
+  invisible(NULL)
 }
 
 # Small-sample scale factor n / max(n - K, 1), with n - K taken from the
@@ -755,13 +895,12 @@ detect_coord_names <- function(nms, lat, lon) {
   }
   low <- tolower(nms)
   pick1 <- function(cands, what) {
-    for (cand in cands) {
-      i <- which(low == cand)
-      if (length(i) == 1L) return(nms[i])
-      if (length(i) > 1L) {
-        stop("Auto-detection of the ", what, " column is ambiguous (several ",
-             "columns named '", cand, "' up to case). Pass it explicitly.")
-      }
+    i <- which(low %in% cands)
+    if (length(i) == 1L) return(nms[i])
+    if (length(i) > 1L) {
+      stop("Auto-detection of the ", what, " column is ambiguous; matched: ",
+           paste(sprintf("'%s'", nms[i]), collapse = ", "),
+           ". Pass it explicitly.")
     }
     stop("Could not auto-detect the ", what, " column (looked for: ",
          paste(cands, collapse = ", "), "). Pass it explicitly.")
@@ -855,15 +994,29 @@ choose_grid_method <- function(method, kernel, agg, dist_cutoff) {
   if (pairs_est > 2 * grid_work) gi else NULL
 }
 
-# Map any unit/time vector to integer group codes. The FastSpatialMeat /
-# FastSerialHacPanel entry points require numeric (arma::vec) input but only
-# use equality, so the actual values are immaterial; we just need same labels
-# to share a code. `as.integer(factor)` returns the factor's level code, which
-# is what we want both for input factors and for raw character vectors.
+# Map a unit vector to equality-preserving integer group codes.
 to_group_id <- function(x) {
   if (is.integer(x) || is.numeric(x)) return(x)
   if (is.factor(x)) return(as.integer(x))
   as.integer(factor(x))
+}
+
+# Preserve numeric time spacing whenever labels are numeric-parsable. For
+# spatial-only calls arbitrary labels remain valid equality keys; serial HAC
+# needs a numeric scale because its weights depend on the actual time gap.
+to_time_value <- function(x, lag_cutoff) {
+  if (is.integer(x) || is.numeric(x)) return(x)
+  chars <- as.character(x)
+  parsed <- suppressWarnings(as.numeric(chars))
+  if (all(!is.na(parsed))) {
+    if (any(!is.finite(parsed))) stop("time contains non-finite values.")
+    return(parsed)
+  }
+  if (lag_cutoff > 0) {
+    stop("Serial HAC (lag_cutoff > 0) requires time to be numeric or ",
+         "numeric-parsable character/factor values.")
+  }
+  as.integer(factor(chars))
 }
 
 # Build per-time-block aggregated scores. Returns a list with element-wise

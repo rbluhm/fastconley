@@ -2,6 +2,8 @@
 #
 #   Rscript tests/manual/bitwise-battery.R run OUT.rds [LIB_LOC]
 #   Rscript tests/manual/bitwise-battery.R compare BASELINE.rds NEW.rds
+#   Rscript tests/manual/bitwise-battery.R write-ref OUT.txt [LIB_LOC]
+#   Rscript tests/manual/bitwise-battery.R check REF.txt [LIB_LOC]
 #
 # `run` fits a fixed set of lfe/fixest models on seeded synthetic data and
 # stores the vcovSpHAC() matrix for every configuration below (pairwise
@@ -31,7 +33,7 @@ if (mode == "compare") {
   quit(status = if (bad > 0L) 1L else 0L)
 }
 
-stopifnot(mode == "run")
+stopifnot(mode %in% c("run", "write-ref", "check"))
 out_file <- args[2]
 if (length(args) >= 3 && nzchar(args[3])) {
   library(fastconley, lib.loc = args[3])
@@ -168,5 +170,48 @@ add("fixest weighted FE bartlett/haversine nc1",
 add("fixest fepois FE bartlett/haversine nc1",
     vcovSpHAC(f_fx_p, lat = "lat", lon = "lon", dist_cutoff = 300, ncores = 1, data = cs))
 
-saveRDS(res, out_file)
-cat(length(res), "configs saved to", out_file, "\n")
+signature_fields <- function(V) {
+  nr <- nrow(V)
+  c(sprintf("%.17g", V[1, 1]),
+    sprintf("%.17g", V[1, 2]),
+    sprintf("%.17g", V[nr, nr]),
+    sprintf("%.17g", sum(V)))
+}
+
+if (mode == "run") {
+  saveRDS(res, out_file)
+  cat(length(res), "configs saved to", out_file, "\n")
+} else if (mode == "write-ref") {
+  lines <- c(
+    "config\tV[1,1]\tV[1,2]\tV[k,k]\tsum",
+    vapply(names(res), function(nm) {
+      paste(c(nm, signature_fields(res[[nm]])), collapse = "\t")
+    }, character(1))
+  )
+  writeLines(lines, out_file, useBytes = TRUE)
+  cat(length(res), "config signatures written to", out_file, "\n")
+} else {
+  lines <- readLines(out_file, warn = FALSE)
+  stopifnot(length(lines) >= 1L,
+            identical(lines[1], "config\tV[1,1]\tV[1,2]\tV[k,k]\tsum"))
+  ref <- strsplit(lines[-1], "\t", fixed = TRUE)
+  ref_names <- vapply(ref, `[`, character(1), 1L)
+  stopifnot(identical(ref_names, names(res)))
+  bad <- 0L
+  for (i in seq_along(res)) {
+    current <- signature_fields(res[[i]])
+    expected <- ref[[i]][-1]
+    same <- identical(current, expected)
+    if (!same) {
+      bad <- bad + 1L
+      a <- as.numeric(expected)
+      b <- as.numeric(current)
+      scale <- pmax(abs(a), abs(b), .Machine$double.xmin)
+      rel <- max(abs(a - b) / scale)
+      cat(sprintf("DIFF  %-48s max relative = %.17g\n", names(res)[i], rel))
+    }
+  }
+  cat(sprintf("%d configs, %d identical signatures, %d differ\n",
+              length(res), length(res) - bad, bad))
+  quit(status = if (bad) 1L else 0L)
+}

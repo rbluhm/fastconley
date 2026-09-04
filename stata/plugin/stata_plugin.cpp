@@ -24,9 +24,13 @@
 #include "conley_core.h"
 #include "stplugin.h"
 
+#include <cerrno>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <limits>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -36,13 +40,31 @@
 
 namespace {
 
+const char* const SAMPLE_TOO_LARGE =
+    "sample too large for the compiled engine; use engine(mata)";
+
+bool stata_interrupt_requested() {
+  SF_poll();
+  return SW_stopflag != 0;
+}
+
 std::vector<ST_int> sample_rows() {
   std::vector<ST_int> rows;
   const ST_int a = SF_in1();
   const ST_int b = SF_in2();
-  if (b >= a) rows.reserve(static_cast<std::size_t>(b - a + 1));
-  for (ST_int i = a; i <= b; ++i) {
+  const ST_int nobs = SF_nobs();
+  if (a < 0 || b < 0 || nobs < 0) throw conley::Error(SAMPLE_TOO_LARGE);
+  if (b < a) return rows;
+  const std::uint64_t requested =
+      static_cast<std::uint64_t>(static_cast<unsigned int>(b)) -
+      static_cast<std::uint64_t>(static_cast<unsigned int>(a)) + 1U;
+  if (requested > static_cast<std::uint64_t>(std::numeric_limits<ST_int>::max())) {
+    throw conley::Error(SAMPLE_TOO_LARGE);
+  }
+  rows.reserve(static_cast<std::size_t>(requested));
+  for (ST_int i = a;; ++i) {
     if (SF_ifobs(i)) rows.push_back(i);
+    if (i == b) break;
   }
   return rows;
 }
@@ -72,19 +94,27 @@ void store_matrix(const std::string& name, const arma::mat& M) {
   }
 }
 
-void save_local(const char* name, const std::string& value) {
-  std::string key = std::string("_") + name;   // leading underscore = local macro
-  SF_macro_save(const_cast<char*>(key.c_str()), const_cast<char*>(value.c_str()));
+void save_local_checked(const char* name, const char* value) {
+  if (SF_macro_save(const_cast<char*>(name), const_cast<char*>(value))) {
+    throw conley::Error("could not save plugin result local");
+  }
 }
 
-void save_global(const char* name, const std::string& value) {
-  SF_macro_save(const_cast<char*>(name), const_cast<char*>(value.c_str()));
+void report_error_noexcept(const char* what) noexcept {
+  if (!what) what = "unknown error";
+  SF_macro_save(const_cast<char*>("_fc_plugin_error"), const_cast<char*>(what));
+  SF_error(const_cast<char*>("fastconley plugin: "));
+  SF_error(const_cast<char*>(what));
+  SF_error(const_cast<char*>("\n"));
 }
 
 double to_double(const char* s, const char* what) {
+  errno = 0;
   char* end = 0;
   const double v = std::strtod(s, &end);
-  if (end == s || *end != '\0') throw conley::Error(std::string("bad numeric argument for ") + what);
+  if (end == s || *end != '\0' || errno == ERANGE || !std::isfinite(v)) {
+    throw conley::Error(std::string("bad numeric argument for ") + what);
+  }
   return v;
 }
 
@@ -95,24 +125,59 @@ double read_scalar(const char* name, const char* what) {
   if (SF_scal_use(const_cast<char*>(name), &v)) {
     throw conley::Error(std::string("could not read scalar ") + name + " for " + what);
   }
+  if (SF_is_missing(v) || !std::isfinite(v)) {
+    throw conley::Error(std::string("scalar ") + name + " for " + what +
+                        " must be finite and nonmissing");
+  }
   return v;
 }
 
 int to_int(const char* s, const char* what) {
-  return static_cast<int>(to_double(s, what));
+  const double v = to_double(s, what);
+  if (std::trunc(v) != v ||
+      v < static_cast<double>(std::numeric_limits<int>::min()) ||
+      v > static_cast<double>(std::numeric_limits<int>::max())) {
+    throw conley::Error(std::string(what) + " must be an integer in range");
+  }
+  return static_cast<int>(v);
+}
+
+int value_to_int(double v, const char* what) {
+  if (!std::isfinite(v) || std::trunc(v) != v ||
+      v < static_cast<double>(std::numeric_limits<int>::min()) ||
+      v > static_cast<double>(std::numeric_limits<int>::max())) {
+    throw conley::Error(std::string(what) + " values must be finite integers in range");
+  }
+  return static_cast<int>(v);
 }
 
 }  // namespace
 
 STDLL stata_call(int argc, char* argv[]) {
   try {
+    conley::set_interrupt_hook(&stata_interrupt_requested);
     if (argc < 1) throw conley::Error("missing subcommand");
     const std::string cmd = argv[0];
 
     if (cmd == "check") {
-      // Globals: the ado runs this from a program and reads them afterwards.
-      save_global("FASTCONLEY_ENGINE_VERSION", CONLEY_CORE_VERSION);
-      save_global("FASTCONLEY_ENGINE_BUILD", FASTCONLEY_BUILD_ID);
+      // Clear both handshake globals before publishing either value, so a
+      // partial failure cannot leave a stale compatible-looking handshake.
+      const int clear_version = SF_macro_save(
+          const_cast<char*>("FASTCONLEY_ENGINE_VERSION"), const_cast<char*>(""));
+      const int clear_build = SF_macro_save(
+          const_cast<char*>("FASTCONLEY_ENGINE_BUILD"), const_cast<char*>(""));
+      if (clear_version || clear_build) {
+        throw conley::Error("could not clear plugin version handshake globals");
+      }
+      const int save_version = SF_macro_save(
+          const_cast<char*>("FASTCONLEY_ENGINE_VERSION"),
+          const_cast<char*>(CONLEY_CORE_VERSION));
+      const int save_build = SF_macro_save(
+          const_cast<char*>("FASTCONLEY_ENGINE_BUILD"),
+          const_cast<char*>(FASTCONLEY_BUILD_ID));
+      if (save_version || save_build) {
+        throw conley::Error("could not save plugin version handshake globals");
+      }
       return 0;
     }
 
@@ -135,7 +200,7 @@ STDLL stata_call(int argc, char* argv[]) {
           lat, lon, time, S, read_scalar(argv[1], "cutoff"), argv[2], argv[3],
           to_int(argv[4], "balanced") != 0, to_int(argv[5], "threads"), argv[6], argv[7],
           &fallback);
-      save_local("fc_unbalanced_fallback", fallback ? "1" : "0");
+      save_local_checked("_fc_unbalanced_fallback", fallback ? "1" : "0");
       store_matrix(argv[8], M);
       return 0;
     }
@@ -167,8 +232,8 @@ STDLL stata_call(int argc, char* argv[]) {
       for (std::size_t kk = 0; kk < k; ++kk) read_column(static_cast<ST_int>(4 + kk), rows, S.colptr(kk));
       std::vector<int> ring(n), col(n);
       for (std::size_t i = 0; i < n; ++i) {
-        ring[i] = static_cast<int>(ringd[i]);
-        col[i] = static_cast<int>(cold[i]);
+        ring[i] = value_to_int(ringd[i], "ring");
+        col[i] = value_to_int(cold[i], "col");
       }
       const arma::mat M = conley::grid_meat(
           ring.data(), col.data(), time, S,
@@ -180,15 +245,14 @@ STDLL stata_call(int argc, char* argv[]) {
     }
 
     throw conley::Error("unknown subcommand '" + cmd + "'");
+  } catch (const std::bad_alloc&) {
+    report_error_noexcept("out of memory");
+    return 198;
   } catch (const std::exception& e) {
-    const std::string what = e.what();
-    save_local("fc_plugin_error", what);
-    std::string msg = "fastconley plugin: " + what + "\n";
-    SF_error(const_cast<char*>(msg.c_str()));
+    report_error_noexcept(e.what());
     return 198;
   } catch (...) {
-    save_local("fc_plugin_error", "unknown error");
-    SF_error(const_cast<char*>("fastconley plugin: unknown error\n"));
+    report_error_noexcept("unknown error");
     return 198;
   }
 }

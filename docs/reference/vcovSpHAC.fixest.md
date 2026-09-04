@@ -24,7 +24,7 @@ vcovSpHAC(
   lag_cutoff = 0,
   verbose = FALSE,
   balanced_pnl = FALSE,
-  ncores = NA,
+  ncores = NULL,
   pixel = 0,
   neighbor = c("grid", "band"),
   csr_weight = c("double", "float"),
@@ -49,13 +49,16 @@ vcovSpHAC(
 
 - unit:
 
-  Optional name of the panel unit variable. If `NULL` the call is
-  treated as a cross-section (each row is its own unit, all rows share a
-  single period — no serial HAC).
+  Optional name of the panel unit variable. If `NULL`, each row is its
+  own unit. A positive `lag_cutoff` requires `unit`.
 
 - time:
 
-  Optional name of the time variable. Ignored when `unit` is NULL.
+  Optional name of the time variable. It is honoured even when `unit` is
+  `NULL`, so it still defines the spatial time blocks. Character/factor
+  times are parsed as their numeric labels when possible; serial HAC
+  rejects labels that are not numeric-parsable because time gaps
+  determine lag weights.
 
 - lat:
 
@@ -95,7 +98,11 @@ vcovSpHAC(
 
 - ncores:
 
-  Number of cores for the C++/RcppParallel spatial and serial routines.
+  Number of threads for the C++ spatial and serial routines (results do
+  not depend on it). The default uses `getOption("fastconley.ncores")`
+  when set, otherwise all detected logical cores, capped at two under a
+  true-ish `_R_CHECK_LIMIT_CORES_`. Values are rounded to a positive
+  integer.
 
 - pixel:
 
@@ -103,7 +110,8 @@ vcovSpHAC(
 
 - neighbor:
 
-  Neighbor-search strategy: "grid" (default) or "band". See
+  Neighbor-search strategy: "grid" (default) or the deprecated "band"
+  compatibility path. See
   [`vcovSpHAC.felm`](https://rbluhm.github.io/fastconley/reference/vcovSpHAC.felm.md).
 
 - csr_weight:
@@ -136,7 +144,7 @@ vcovSpHAC(
 
 - ...:
 
-  Currently unused.
+  Must be empty; unknown arguments are rejected.
 
 ## Value
 
@@ -159,9 +167,9 @@ on every (non-`lean`) fit. Weights, offsets, and the fixed-effect
 profiling are already folded into the stored scores. This is the same
 construction `fixest`'s own
 [`vcov_conley()`](https://lrberge.github.io/fixest/reference/vcov_conley.html)
-uses for GLMs — but with exact great-circle distances, and with the
-serial-HAC panel extension available via `lag_cutoff` (which `fixest`
-does not offer for Conley vcovs).
+uses for GLMs — but with exact supported distance calculations, and with
+the serial-HAC panel extension available via `lag_cutoff` (which
+`fixest` does not offer for Conley vcovs).
 
 The returned matrix can be passed to `fixest`'s `vcov` argument. For the
 usual `fixest` workflow, define a one-argument wrapper such as

@@ -1,0 +1,7 @@
+The fastconley native plugins are built with Armadillo, authored by Conrad
+Sanderson and Ryan Curtin, under the Apache License 2.0. See
+LICENSE_armadillo.txt.
+
+The files stplugin.c and stplugin.h come from StataCorp's Stata Plugin
+Interface for plugin authors: https://www.stata.com/plugins/. They are
+distributed by StataCorp for use by Stata plugin authors.

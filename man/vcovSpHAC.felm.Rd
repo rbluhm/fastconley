@@ -16,7 +16,7 @@
   lag_cutoff = 0,
   verbose = FALSE,
   balanced_pnl = FALSE,
-  ncores = NA,
+  ncores = NULL,
   pixel = 0,
   neighbor = c("grid", "band"),
   csr_weight = c("double", "float"),
@@ -31,9 +31,15 @@
 \arguments{
 \item{reg}{A fitted object of class "felm", including IV fits.}
 
-\item{unit}{Optional name of the panel unit variable.}
+\item{unit}{Optional name of the panel unit variable. When both \code{unit}
+and \code{time} are omitted, the first two absorbed fixed effects are used
+when available; otherwise each row is its own unit.}
 
-\item{time}{Optional name of the time variable.}
+\item{time}{Optional name of the time variable. A supplied \code{time} is
+honoured even when \code{unit} is omitted (each row is then its own unit),
+but \code{lag_cutoff > 0} requires \code{unit}. Character/factor times are
+parsed as their numeric labels when possible; serial HAC rejects labels
+that are not numeric-parsable because time gaps determine lag weights.}
 
 \item{lat}{Name of the latitude variable. If \code{NULL} (default), it is
 auto-detected from the data's column names (\code{"lat"},
@@ -56,18 +62,22 @@ auto-detected (\code{"lon"}, \code{"long"}, \code{"longitude"},
 \item{balanced_pnl}{Whether the panel is balanced and unit locations are time-invariant.}
 
 \item{ncores}{Number of threads for the C++ spatial and serial routines
-(results do not depend on it).}
+(results do not depend on it). The default uses
+\code{getOption("fastconley.ncores")} when set, otherwise all detected
+logical cores. Under a true-ish \code{_R_CHECK_LIMIT_CORES_}, the resolved
+value is capped at two. Values are rounded to a positive integer.}
 
 \item{pixel}{Score-pre-aggregation cell size, in kilometres. Default 0
 (exact-coordinate dedupe only). If `pixel > 0`, points are snapped to a
 uniform `pixel`-km grid before the dedupe — a speed/accuracy trade-off
-that approximates the distance up to roughly `pixel / 2`.}
+that can move a point by up to roughly \code{pixel / sqrt(2)} and can
+change a pair distance by up to roughly \code{sqrt(2) * pixel}.}
 
 \item{neighbor}{Neighbor-search strategy for the spatial meat: "grid"
 (default; 3D cell grid, output-sensitive candidate enumeration) or
-"band" (latitude band scan, the pre-0.5.0 behavior). Both are exact and
-use identical per-pair accept tests; results agree to floating-point
-summation order.}
+"band" (deprecated; latitude band scan, the pre-0.5.0 behavior). Both are
+exact and use identical per-pair accept tests; results agree to
+floating-point summation order.}
 
 \item{csr_weight}{Storage precision for the balanced-path bartlett kernel
 weights: "double" (default, exact) or "float" (halves the per-pair
@@ -75,7 +85,7 @@ weight memory; introduces at most ~6e-8 relative error per weight).
 Ignored for \code{kernel = "uniform"}, which stores no weights.}
 
 \item{method}{Spatial meat engine. "pairwise" enumerates neighbor pairs
-(the default engine; works for any data). "grid" uses the exact
+and works for any data. "grid" uses the exact
 grid-native meat — requires observations on a regular lat/lon lattice
 (e.g. raster data); cost is independent of the pair count, so it is
 dramatically faster on dense grids with large cutoffs. The uniform
@@ -93,9 +103,15 @@ errors with the specific reason instead of falling back.}
 \item{ssc}{Small-sample correction. If \code{TRUE} (default), the variance
 matrix is scaled by \code{n / (n - K)} where \code{K} counts all
 estimated parameters including absorbed fixed-effect levels (taken from
-the fit's residual degrees of freedom). This matches \code{fixest}'s
+the regression's parameter count, independent of any clustering used when
+fitting). This matches \code{fixest}'s
 default Conley correction (its cluster adjustment is a no-op for Conley
-vcovs). Pass \code{FALSE} for no correction — that reproduces
+vcovs). Note that \code{K} is the fitting package's own count: with three
+or more absorbed fixed effects \code{lfe} and \code{fixest} can count the
+estimable levels differently (e.g. 30 versus 33 for the same model), so
+the two methods then differ by exactly that factor while their
+\code{ssc = FALSE} results are identical. Pass \code{FALSE} for no
+correction — that reproduces
 \code{rbluhm/conley}, fastconley versions before 0.9.0, and
 \code{fixest} with \code{ssc(adj = FALSE, cluster.adj = FALSE)}.}
 
@@ -106,7 +122,8 @@ does) and a warning reports when the fix noticeably changed the matrix.
 If \code{FALSE}, the matrix is returned as computed, with a warning
 when it is not positive semi-definite.}
 
-\item{maxobsmem}{Ignored by the fast spatial path. Kept for backward compatibility.}
+\item{maxobsmem}{Deprecated and ignored by the fast spatial path. Supplying
+it produces a warning; the argument remains for backward compatibility.}
 
 \item{data}{Optional. The data frame to draw \code{lat}/\code{lon} from.
 If \code{NULL} (default), the data is recovered from the fit's call and
@@ -115,7 +132,7 @@ original data has gone out of scope — and when no rows were dropped at
 fit time (no NAs, no \code{subset}), the coordinates are then taken by
 direct column access with no model-frame rebuild at all.}
 
-\item{...}{Currently unused.}
+\item{...}{Must be empty; unknown arguments are rejected.}
 }
 \value{
 A variance-covariance matrix.
@@ -127,7 +144,8 @@ centered design matrix is stored on the object. IV/2SLS fits (the
 out of the box: \code{lfe} stores the projected (second-stage) design in
 \code{cX} and the structural residuals in \code{residuals}, which is
 exactly the 2SLS sandwich. Weighted fits are supported (the scores carry
-the weights and the bread uses \eqn{X'WX}).
+the weights and the bread uses \eqn{X'WX}). Other k-class estimators,
+including LIML, are not supported.
 }
 \examples{
 if (requireNamespace("lfe", quietly = TRUE)) {

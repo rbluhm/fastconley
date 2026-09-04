@@ -9,7 +9,7 @@ fixest::feglm() / fixest::fepois() fits."></head><body>
 
     <a class="navbar-brand me-2" href="../index.html">fastconley</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.10.0</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -59,7 +59,7 @@ fixest::feglm() / fixest::fepois() fits."></head><body>
 <span>  lag_cutoff <span class="op">=</span> <span class="fl">0</span>,</span>
 <span>  verbose <span class="op">=</span> <span class="cn">FALSE</span>,</span>
 <span>  balanced_pnl <span class="op">=</span> <span class="cn">FALSE</span>,</span>
-<span>  ncores <span class="op">=</span> <span class="cn">NA</span>,</span>
+<span>  ncores <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  pixel <span class="op">=</span> <span class="fl">0</span>,</span>
 <span>  neighbor <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"grid"</span>, <span class="st">"band"</span><span class="op">)</span>,</span>
 <span>  csr_weight <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"double"</span>, <span class="st">"float"</span><span class="op">)</span>,</span>
@@ -83,13 +83,16 @@ because they carry no score matrix).</p></dd>
 
 
 <dt id="arg-unit">unit<a class="anchor" aria-label="anchor" href="#arg-unit"></a></dt>
-<dd><p>Optional name of the panel unit variable. If <code>NULL</code> the
-call is treated as a cross-section (each row is its own unit, all rows
-share a single period — no serial HAC).</p></dd>
+<dd><p>Optional name of the panel unit variable. If <code>NULL</code>, each
+row is its own unit. A positive <code>lag_cutoff</code> requires <code>unit</code>.</p></dd>
 
 
 <dt id="arg-time">time<a class="anchor" aria-label="anchor" href="#arg-time"></a></dt>
-<dd><p>Optional name of the time variable. Ignored when <code>unit</code> is NULL.</p></dd>
+<dd><p>Optional name of the time variable. It is honoured even when
+<code>unit</code> is <code>NULL</code>, so it still defines the spatial time blocks.
+Character/factor times are parsed as their numeric labels when possible;
+serial HAC rejects labels that are not numeric-parsable because time gaps
+determine lag weights.</p></dd>
 
 
 <dt id="arg-lat">lat<a class="anchor" aria-label="anchor" href="#arg-lat"></a></dt>
@@ -127,7 +130,11 @@ auto-detected. See <code><a href="vcovSpHAC.felm.html">vcovSpHAC.felm</a></code>
 
 
 <dt id="arg-ncores">ncores<a class="anchor" aria-label="anchor" href="#arg-ncores"></a></dt>
-<dd><p>Number of cores for the C++/RcppParallel spatial and serial routines.</p></dd>
+<dd><p>Number of threads for the C++ spatial and serial routines
+(results do not depend on it). The default uses
+<code>getOption("fastconley.ncores")</code> when set, otherwise all detected
+logical cores, capped at two under a true-ish
+<code>_R_CHECK_LIMIT_CORES_</code>. Values are rounded to a positive integer.</p></dd>
 
 
 <dt id="arg-pixel">pixel<a class="anchor" aria-label="anchor" href="#arg-pixel"></a></dt>
@@ -135,8 +142,8 @@ auto-detected. See <code><a href="vcovSpHAC.felm.html">vcovSpHAC.felm</a></code>
 
 
 <dt id="arg-neighbor">neighbor<a class="anchor" aria-label="anchor" href="#arg-neighbor"></a></dt>
-<dd><p>Neighbor-search strategy: "grid" (default) or "band".
-See <code><a href="vcovSpHAC.felm.html">vcovSpHAC.felm</a></code>.</p></dd>
+<dd><p>Neighbor-search strategy: "grid" (default) or the deprecated
+"band" compatibility path. See <code><a href="vcovSpHAC.felm.html">vcovSpHAC.felm</a></code>.</p></dd>
 
 
 <dt id="arg-csr-weight">csr_weight<a class="anchor" aria-label="anchor" href="#arg-csr-weight"></a></dt>
@@ -167,7 +174,7 @@ has gone out of scope, or if you want to override.</p></dd>
 
 
 <dt id="arg--">...<a class="anchor" aria-label="anchor" href="#arg--"></a></dt>
-<dd><p>Currently unused.</p></dd>
+<dd><p>Must be empty; unknown arguments are rejected.</p></dd>
 
 </dl></div>
     <div class="section level2">
@@ -190,8 +197,8 @@ the maximum-likelihood score matrix and inverse Hessian that
 <code>fixest</code> stores on every (non-<code>lean</code>) fit. Weights, offsets,
 and the fixed-effect profiling are already folded into the stored
 scores. This is the same construction <code>fixest</code>'s own
-<code><a href="https://lrberge.github.io/fixest/reference/vcov_conley.html" class="external-link">vcov_conley()</a></code> uses for GLMs — but with exact great-circle
-distances, and with the serial-HAC panel extension available via
+<code><a href="https://lrberge.github.io/fixest/reference/vcov_conley.html" class="external-link">vcov_conley()</a></code> uses for GLMs — but with exact supported distance
+calculations, and with the serial-HAC panel extension available via
 <code>lag_cutoff</code> (which <code>fixest</code> does not offer for Conley vcovs).</p>
 <p>The returned matrix can be passed to <code>fixest</code>'s <code>vcov</code> argument.
 For the usual <code>fixest</code> workflow, define a one-argument wrapper such as

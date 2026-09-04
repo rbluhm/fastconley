@@ -1,7 +1,7 @@
 Package: fastconley
 Type: Package
 Title: Fast Conley Standard Errors for 'lfe' and 'fixest' Models
-Version: 0.10.0
+Version: 0.11.0
 Authors@R: person("Richard", "Bluhm", email = "richard.bluhm@gmail.com",
                   role = c("aut", "cre", "cph"))
 Maintainer: Richard Bluhm <richard.bluhm@gmail.com>
@@ -10,7 +10,8 @@ Description: Conley (1999) <doi:10.1016/S0304-4076(98)00084-0> spatial
     for fixed effects panel and cross-sectional models estimated with felm()
     from the 'lfe' package (ordinary least squares and instrumental
     variables) or with feols(), feglm(), and fepois() from the 'fixest'
-    package. Generalized linear model fits use the M-estimation sandwich
+    package. Instrumental-variable support is limited to ordinary two-stage
+    least squares. Generalized linear model fits use the M-estimation sandwich
     built from the stored scores and inverse Hessian. The spatial path uses
     score accumulation, a three-dimensional cell-grid neighbour search, and
     compressed sparse row neighbour lists instead of dense distance

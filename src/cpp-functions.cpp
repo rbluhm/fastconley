@@ -11,6 +11,23 @@
 // [[Rcpp::depends(RcppArmadillo)]]
 #include "conley_core.h"
 
+namespace {
+
+bool r_interrupt_requested() {
+  try {
+    Rcpp::checkUserInterrupt();
+    return false;
+  } catch (...) {
+    return true;
+  }
+}
+
+inline void install_interrupt_hook() {
+  conley::set_interrupt_hook(&r_interrupt_requested);
+}
+
+}  // namespace
+
 // [[Rcpp::export]]
 arma::mat FastSpatialMeat_cpp(Rcpp::NumericVector lat, Rcpp::NumericVector lon,
                           Rcpp::NumericVector time, Rcpp::NumericMatrix scores,
@@ -21,6 +38,7 @@ arma::mat FastSpatialMeat_cpp(Rcpp::NumericVector lat, Rcpp::NumericVector lon,
                           int ncores = 1,
                           std::string neighbor = "grid",
                           std::string csr_weight = "double") {
+  install_interrupt_hook();
   const std::size_t n = static_cast<std::size_t>(scores.nrow());
   const std::size_t k = static_cast<std::size_t>(scores.ncol());
   if (static_cast<std::size_t>(lat.size()) != n ||
@@ -46,7 +64,7 @@ arma::mat FastSpatialMeat_cpp(Rcpp::NumericVector lat, Rcpp::NumericVector lon,
                                         neighbor, csr_weight,
                                         &unbalanced_fallback);
   if (unbalanced_fallback) {
-    Rcpp::warning("balanced_pnl = TRUE but time blocks have unequal sizes; using general CSR path.");
+    Rcpp::warning("balanced_pnl = TRUE but time blocks have unequal sizes; using the streaming path.");
   }
   return meat;
 }
@@ -55,6 +73,7 @@ arma::mat FastSpatialMeat_cpp(Rcpp::NumericVector lat, Rcpp::NumericVector lon,
 arma::mat FastSerialHacPanel_cpp(Rcpp::NumericVector unit, Rcpp::NumericVector time,
                              double cutoff, Rcpp::NumericMatrix scores,
                              int ncores = 1) {
+  install_interrupt_hook();
   const std::size_t n = static_cast<std::size_t>(scores.nrow());
   const std::size_t k = static_cast<std::size_t>(scores.ncol());
   if (static_cast<std::size_t>(unit.size()) != n ||
@@ -62,7 +81,8 @@ arma::mat FastSerialHacPanel_cpp(Rcpp::NumericVector unit, Rcpp::NumericVector t
     Rcpp::stop("unit, time, and scores have incompatible lengths.");
   }
   if (n == 0) {
-    return arma::mat(k, k, arma::fill::zeros);
+    return conley::serial_hac_meat(arma::vec(), arma::vec(), cutoff,
+                                   arma::mat(0, k), ncores);
   }
   const arma::vec unit_v(unit.begin(), n, false, true);
   const arma::vec time_v(time.begin(), n, false, true);
@@ -78,6 +98,7 @@ arma::mat FastGridMeat_cpp(Rcpp::IntegerVector ring, Rcpp::IntegerVector col,
                        double cutoff, std::string dist_fn = "spherical",
                        std::string kernel = "uniform",
                        int ncores = 1) {
+  install_interrupt_hook();
   const std::size_t n = static_cast<std::size_t>(scores.nrow());
   const std::size_t k = static_cast<std::size_t>(scores.ncol());
   if (static_cast<std::size_t>(ring.size()) != n ||

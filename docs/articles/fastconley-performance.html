@@ -20,7 +20,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">fastconley</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.10.0</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.11.0</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -86,7 +86,8 @@ M-estimation sandwich built from the scores and inverse Hessian
 + serial correction too. Four properties distinguish it:</p>
 <ul>
 <li>
-<strong>Exact.</strong> Distances are true great-circle distances
+<strong>Exact.</strong> Distances use the selected exact geometry
+(haversine or spherical arc distance, or straight-line chord distance),
 and every within-cutoff pair enters with its exact kernel weight — no
 dense-matrix shortcuts, no approximate distance formulas. Against a
 brute-force reference, results agree to near machine precision (the
@@ -260,7 +261,12 @@ recomputed.</p>
 <p>For <code>lfe</code>, use <code>keepCX = TRUE</code> when fitting the
 model. IV/2SLS fits (the <code>felm</code> multi-part formula with
 <code>(endog ~ instruments)</code>) work out of the box and agree with
-the <code>fixest</code> IV path at machine precision.</p>
+the <code>fixest</code> IV path and an independent dense-R sandwich at
+machine precision. Other k-class estimators, including LIML, are not
+supported. Explicit <code>unit</code> and <code>time</code> names are
+matched to absorbed effects or recovered from the model data; when both
+names are omitted, the first two absorbed effects are the default when
+available.</p>
 <div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://github.com/r-econometrics/lfe" class="external-link">lfe</a></span><span class="op">)</span></span>
 <span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://github.com/rbluhm/fastconley" class="external-link">fastconley</a></span><span class="op">)</span></span>
@@ -285,7 +291,9 @@ the <code>fixest</code> IV path at machine precision.</p>
 <span><span class="fu"><a href="https://rdrr.io/r/base/MathFun.html" class="external-link">sqrt</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/diag.html" class="external-link">diag</a></span><span class="op">(</span><span class="va">V_conley</span><span class="op">)</span><span class="op">)</span></span></code></pre></div>
 <p>For panel data, provide the unit and time variables. Set
 <code>lag_cutoff &gt; 0</code> when you also want serial HAC adjustment
-within units.</p>
+within units. Supplying <code>time</code> alone still defines the
+spatial blocks and treats every row as its own unit; serial HAC requires
+<code>unit</code>.</p>
 <div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">est</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://lrberge.github.io/fixest/reference/feols.html" class="external-link">feols</a></span><span class="op">(</span></span>
 <span>  <span class="va">y</span> <span class="op">~</span> <span class="va">treatment</span> <span class="op">+</span> <span class="va">x1</span> <span class="op">+</span> <span class="va">x2</span> <span class="op">|</span> <span class="va">unit</span> <span class="op">+</span> <span class="va">year</span>,</span>
@@ -351,7 +359,10 @@ for spatial-only inference.</td>
 </tr>
 <tr class="odd">
 <td><code>ncores</code></td>
-<td>Number of threads used for the covariance calculation.</td>
+<td>Number of threads used for the covariance calculation. The default
+uses <code>getOption("fastconley.ncores")</code> when set, otherwise all
+detected logical cores; <code>_R_CHECK_LIMIT_CORES_=TRUE</code> caps it
+at two.</td>
 </tr>
 <tr class="even">
 <td><code>pixel = 0</code></td>
@@ -365,8 +376,14 @@ a little spatial precision for more aggregation.</td>
 counting absorbed fixed-effect levels in
 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi>K</mi><annotation encoding="application/x-tex">K</annotation></semantics></math>
 — exactly <code>fixest</code>’s default Conley correction.
-<code>FALSE</code> applies none, reproducing <code>rbluhm/conley</code>
-and fastconley before 0.9.0.</td>
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi>K</mi><annotation encoding="application/x-tex">K</annotation></semantics></math>
+is the fitting package’s own parameter count; with three or more
+absorbed fixed effects <code>lfe</code> and <code>fixest</code> can
+count the estimable levels differently, so their
+default-<code>ssc</code> results differ by that factor while
+<code>ssc = FALSE</code> results are identical. <code>FALSE</code>
+applies none, reproducing <code>rbluhm/conley</code> and fastconley
+before 0.9.0.</td>
 </tr>
 <tr class="even">
 <td><code>psd_fix = TRUE</code></td>
@@ -392,14 +409,16 @@ large and the application can tolerate approximation, try a positive
 <code>pixel</code> value that is much smaller than
 <code>dist_cutoff</code>, then compare the resulting standard errors on
 a representative subset.</p>
-<p>For <code>dist_fn</code>, the three options are all exact
-great-circle geometries that agree to within a fraction of a percent at
-sub-1000 km cutoffs: <code>haversine</code> is the numerically
-best-conditioned at short distances, <code>spherical</code> (arc-cosine)
-is the cheapest, and <code>chord</code> is the straight-line distance
-through the sphere. Any of them is fine; just report which one you used.
-<code>lag_cutoff</code> is in units of the time variable (periods, not
-years unless your time variable is years).</p>
+<p>For <code>dist_fn</code>, <code>haversine</code> and
+<code>spherical</code> are exact arc-distance formulations;
+<code>chord</code> is the straight-line distance through the sphere.
+They agree closely at sub-1000 km cutoffs but are not the same geometry,
+so report which one you used. <code>lag_cutoff</code> is in units of the
+numeric time variable (periods, not years unless the time variable is
+years). Numeric-looking character or factor labels are parsed without
+collapsing gaps (<code>"2000"</code>, <code>"2002"</code> stay two units
+apart); other labels are valid only when
+<code>lag_cutoff = 0</code>.</p>
 <div class="section level3">
 <h3 id="cutoff-sensitivity-is-cheap-report-it">Cutoff Sensitivity Is Cheap — Report It<a class="anchor" aria-label="anchor" href="#cutoff-sensitivity-is-cheap-report-it"></a>
 </h3>
@@ -477,23 +496,30 @@ have the structure you expected.</p>
 <td>Omit <code>unit</code> and <code>time</code>; use
 <code>lag_cutoff = 0</code>; leave <code>method = "auto"</code> or set
 <code>method = "pairwise"</code>.</td>
-<td>Exact spatial Conley for point locations. This is the default for
-ordinary latitude-longitude data.</td>
+<td>Exact spatial Conley for point locations. Under <code>auto</code>,
+ordinary scattered data use the pairwise engine.</td>
 </tr>
 <tr class="even">
+<td>Repeated cross-sections</td>
+<td>Supply <code>time</code>, omit <code>unit</code>, and keep
+<code>lag_cutoff = 0</code>.</td>
+<td>Spatial pairs are limited to each period; every row is its own
+unit.</td>
+</tr>
+<tr class="odd">
 <td>Repeated locations</td>
 <td>Same as scattered data; start with <code>pixel = 0</code>.</td>
 <td>Rows with identical coordinates are combined exactly before the
 covariance is computed.</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Approximate location snapping</td>
 <td>Set a positive <code>pixel</code>, such as <code>pixel = 5</code>,
 only after checking sensitivity.</td>
 <td>Nearby locations are snapped to a kilometer grid. This can be
 faster, but it is an approximation.</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Regular raster or grid</td>
 <td>Use <code>method = "auto"</code>, or <code>method = "grid"</code> if
 you want to require a regular latitude-longitude lattice.</td>
@@ -501,7 +527,7 @@ you want to require a regular latitude-longitude lattice.</td>
 <code>method = "grid"</code> and the data are not a lattice, the call
 errors instead of falling back.</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Balanced panel with fixed locations</td>
 <td>Provide <code>unit</code> and <code>time</code>; set
 <code>lag_cutoff</code> as needed; set
@@ -510,7 +536,7 @@ errors instead of falling back.</td>
 computed within unit. The balanced setting is faster when every period
 has the same units and locations do not move.</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Unbalanced panel or moving locations</td>
 <td>Provide <code>unit</code> and <code>time</code>; set
 <code>lag_cutoff</code> as needed; leave
@@ -596,7 +622,7 @@ K\left(\frac{d_{ij}}{c}\right)
 </annotation></semantics></math></p>
 <p>where
 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><msub><mi>d</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub><annotation encoding="application/x-tex">d_{ij}</annotation></semantics></math>
-is the great-circle distance between observations
+is the selected spatial distance between observations
 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi>i</mi><annotation encoding="application/x-tex">i</annotation></semantics></math>
 and
 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi>j</mi><annotation encoding="application/x-tex">j</annotation></semantics></math>,
@@ -653,8 +679,8 @@ the stacked rows.</p>
 <p>Two computational guarantees are worth stating precisely. First, the
 sums above are evaluated <strong>exactly</strong>: every pair with
 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>d</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub><mo>≤</mo><mi>c</mi></mrow><annotation encoding="application/x-tex">d_{ij} \le c</annotation></semantics></math>
-enters with its exact kernel weight, using true great-circle distances —
-there is no sampling, no tapering beyond the kernel itself, and no
+enters with its exact kernel weight under the selected distance geometry
+— there is no sampling, no tapering beyond the kernel itself, and no
 approximate distance formula. Second, the result is
 <strong>deterministic</strong>: summation is organized in fixed-size
 chunks, so the same data and settings produce a bit-identical matrix
@@ -693,8 +719,9 @@ relationships can be reused across periods.</li>
 is done as a grid problem instead of a point-pair problem.</li>
 </ul>
 <p>You normally do not have to choose among these paths. The default
-settings are intended to do the right thing for ordinary point data,
-panel data, and regular rasters.</p>
+<code>method = "auto"</code> chooses between the pairwise and grid
+engines; ordinary point data use pairwise while qualifying regular
+rasters can use grid.</p>
 </div>
 <div class="section level2">
 <h2 id="benchmarks">Benchmarks<a class="anchor" aria-label="anchor" href="#benchmarks"></a>
@@ -1107,7 +1134,10 @@ the result is unchanged apart from floating-point summation order.</p>
 <p>Positive <code>pixel</code> values are optional. They can be useful
 for very large data sets with dense nearby coordinates, but they should
 be treated as an approximation and checked against
-<code>pixel = 0</code> on a smaller sample.</p>
+<code>pixel = 0</code> on a smaller sample. Rounding the two coordinate
+axes can move one point by roughly <code>pixel / sqrt(2)</code> and can
+change a two-point distance by as much as roughly
+<code>sqrt(2) * pixel</code>.</p>
 </div>
 <div class="section level3">
 <h3 id="dense-baseline">Dense Baseline<a class="anchor" aria-label="anchor" href="#dense-baseline"></a>

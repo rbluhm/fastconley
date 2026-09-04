@@ -34,3 +34,46 @@ make_balanced_panel <- function(n_unit = 25L, n_time = 4L, k = 3L, seed = 2L,
     time = if (is.null(time_labels)) time_idx else time_labels[time_idx]
   )
 }
+
+review_dense_spatial_meat <- function(scores, lat, lon, time, cutoff,
+                                      kernel = c("bartlett", "uniform")) {
+  kernel <- match.arg(kernel)
+  lat_r <- lat * pi / 180
+  lon_r <- lon * pi / 180
+  dlat <- outer(lat_r, lat_r, "-")
+  dlon <- outer(lon_r, lon_r, "-")
+  a <- sin(dlat / 2)^2 + outer(cos(lat_r), cos(lat_r), "*") * sin(dlon / 2)^2
+  a <- pmin(pmax(a, 0), 1)
+  distance <- 2 * 6371 * asin(sqrt(a))
+  diag(distance) <- 0
+  weight <- (outer(time, time, "==") & distance <= cutoff) *
+    if (kernel == "bartlett") pmax(0, 1 - distance / cutoff) else 1
+  crossprod(scores, weight %*% scores)
+}
+
+review_naive_serial_meat <- function(scores, unit, time, cutoff) {
+  k <- ncol(scores)
+  meat <- matrix(0, k, k)
+  if (nrow(scores) < 2L) return(meat)
+  for (i in seq_len(nrow(scores) - 1L)) {
+    for (j in seq.int(i + 1L, nrow(scores))) {
+      gap <- abs(time[j] - time[i])
+      if (unit[i] != unit[j] || gap <= 0 || gap > cutoff) next
+      weight <- 1 - gap / (cutoff + 1)
+      meat <- meat + weight * (tcrossprod(scores[i, ], scores[j, ]) +
+                                 tcrossprod(scores[j, ], scores[i, ]))
+    }
+  }
+  meat
+}
+
+review_dense_vcov <- function(scores, bread, lat, lon, time, cutoff,
+                              kernel = "bartlett", unit = NULL,
+                              lag_cutoff = 0) {
+  meat <- review_dense_spatial_meat(scores, lat, lon, time, cutoff, kernel)
+  if (lag_cutoff > 0) {
+    meat <- meat + review_naive_serial_meat(scores, unit, time, lag_cutoff)
+  }
+  out <- bread %*% meat %*% bread
+  (out + t(out)) / 2
+}

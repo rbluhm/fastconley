@@ -4,10 +4,10 @@
 // tests/manual/core_standalone_check.R can compare them with the R
 // package bit for bit. Build from the package root with:
 //
-//   g++ -std=c++11 -O2 -pthread -DARMA_DONT_USE_WRAPPER -DARMA_DONT_USE_BLAS
-//       -DARMA_DONT_USE_LAPACK -Isrc tests/manual/core_standalone_check.cpp
-//       -o /tmp/core_standalone_check   (one line)
-//   /tmp/core_standalone_check OUT_DIR
+//   g++ -std=c++14 -O2 -pthread -DARMA_DONT_USE_WRAPPER -DARMA_DONT_USE_BLAS
+//       -DARMA_DONT_USE_LAPACK -DARMA_DONT_USE_SUPERLU -Isrc
+//       tests/manual/core_standalone_check.cpp -o .scratch/core_standalone_check
+//   .scratch/core_standalone_check OUT_DIR
 //
 // (needs the Armadillo headers, e.g. libarmadillo-dev or
 // RcppArmadillo/include on the include path).

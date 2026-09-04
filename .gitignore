@@ -49,6 +49,10 @@ stata/plugin/load_check
 stata/plugin/load_check.exe
 stata/plugin/bench_engine
 stata/plugin/bench_engine.exe
+stata/plugin/golden_check
+stata/plugin/golden_check.exe
+stata/plugin/*.plugin
+*.debug
 # R build artifacts (never track: a stale .o hides header changes)
 src/*.o
 src/*.so
