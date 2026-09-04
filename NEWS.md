@@ -57,8 +57,10 @@ coverage) whose findings are fixed below.
   an auto-detection error, as documented.
 - The fixest method accepts `data =` either as the full original data (rows
   addressed through `fixest::obs()`) or as a frame already aligned with the
-  fit, such as the fitted model frame after `subset =` or NA removal; a frame
-  that is neither is rejected with a clear message.
+  fit, such as the fitted model frame after `subset =` or NA removal. A frame
+  with as many rows as the original data is always read as original data (so
+  subsets that only permute rows stay correct); any other row count is an
+  error.
 - Unknown arguments in `...` are errors (typos such as `psd_fxi =` were
   swallowed). `maxobsmem` warns once that it is ignored; `neighbor = "band"`
   is documented as deprecated but still works.
@@ -123,8 +125,9 @@ coverage) whose findings are fixed below.
 - `stata/` holds `fastconley`, a reghdfe-family command with a pure-Mata
   engine and a compiled plugin built from `src/conley_core.h` for Linux,
   Windows, and macOS (see `stata/README.md` and `stata/CHANGELOG.md`), and
-  `stata/upstream/` a self-contained proposal adding `vce(conley ...)` to
-  reghdfe.
+  `stata/upstream/` two alternative reghdfe proposals: a generic
+  `vce(external PROVIDER, ...)` hook with fastconley as its first provider
+  (primary), and a self-contained native `vce(conley ...)` patch.
 
 CRAN preparation.
 

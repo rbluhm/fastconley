@@ -248,6 +248,17 @@ void reghdfe_conley_aggregate(real colvector lat, real colvector lon,
 	lon = keys[info[., 1], 3]
 }
 
+// Coordinate validation shared by every Mata path (standalone command,
+// reghdfe provider, upstream front-end): the C++ engine rejects the same
+// inputs, so engine selection must never change what is accepted.
+void reghdfe_conley_check_coords(real colvector lat, real colvector lon)
+{
+	if (rows(lat) != rows(lon)) _error(198, "latitude and longitude lengths differ")
+	if (any(lat :== .) | any(lon :== .)) _error(198, "latitude/longitude contain missing values")
+	if (any(abs(lat) :> 90)) _error(198, "latitude must lie in [-90, 90]")
+	if (any(abs(lon) :> 360)) _error(198, "longitude must lie in [-360, 360]")
+}
+
 // ---------------------------------------------------------------------------
 // Spatial meat. S may hold T stacked periods side by side (n x T*k) sharing
 // the coordinates of one period (balanced panel); T = 1 is the general
@@ -265,7 +276,9 @@ real matrix reghdfe_conley_spatial_meat(real colvector lat, real colvector lon,
 	real colvector latr, lonr, key, p, ucid
 	real matrix U, M, tinfo, cinfo, offs, cell
 	transmorphic A
+	external real scalar fc_count_spatial_pairs
 
+	reghdfe_conley_check_coords(lat, lon)
 	n = rows(S)
 	k = cols(S) / T
 	M = J(k, k, 0)
@@ -312,6 +325,9 @@ real matrix reghdfe_conley_spatial_meat(real colvector lat, real colvector lon,
 	offs = (0,0,1 \ 0,1,-1 \ 0,1,0 \ 0,1,1 \ 1,-1,-1 \ 1,-1,0 \ 1,-1,1 \
 	        1,0,-1 \ 1,0,0 \ 1,0,1 \ 1,1,-1 \ 1,1,0 \ 1,1,1)
 
+	// Pair counts are diagnostic-only. Tell the tiled worker not to scan each
+	// acceptance matrix unless verbose output will actually report the count.
+	fc_count_spatial_pairs = verbose
 	npairs = 0
 	for (b = 1; b <= nb; b++) {
 		lo = tinfo[b, 1]
@@ -359,28 +375,76 @@ real scalar reghdfe_conley_cell_pair(real matrix M, real matrix U, real matrix S
                                  real scalar tile)
 {
 	real scalar ti, ti2, tj, tj2, t, npairs, c0, c1
+	real scalar threshold, bound, all_accepted, suma_ready, nr, nc, count_pairs
 	real matrix Ua, Ub, Dot, W, WS, acc, d, a
 	real colvector ea, eb
+	real rowvector uamin, uamax, ubmin, ubmax, maxdiff, suma, sumb
+	external real scalar fc_count_spatial_pairs
 
 	npairs = 0
+	count_pairs = fc_count_spatial_pairs
+	if (kernel == "uniform") {
+		if (dist == "chord") threshold = min((4, (cutoff / 6371)^2))
+		else threshold = 4 * sin(min((pi(), cutoff / 6371)) / 2)^2
+	}
 	for (ti = ia; ti <= ib; ti = ti + tile) {
 		ti2 = min((ib, ti + tile - 1))
 		Ua = U[|ti, 1 \ ti2, 3|]
+		if (kernel == "uniform") {
+			uamin = colmin(Ua)
+			uamax = colmax(Ua)
+			ea = J(rows(Ua), 1, 1)
+			suma_ready = 0
+		}
 		for (tj = (self ? ti : ja); tj <= jb; tj = tj + tile) {
 			tj2 = min((jb, tj + tile - 1))
 			Ub = U[|tj, 1 \ tj2, 3|]
-			Dot = Ua * Ub'
 			if (kernel == "uniform") {
-				// Use squared coordinate differences rather than 1-Dot so
-				// near-cutoff accept/reject decisions retain full precision.
-				ea = J(rows(Ua), 1, 1)
-				eb = J(rows(Ub), 1, 1)
-				a = (Ua[., 1] * eb' - ea * Ub[., 1]') :^ 2 + (Ua[., 2] * eb' - ea * Ub[., 2]') :^ 2 + (Ua[., 3] * eb' - ea * Ub[., 3]') :^ 2
-				if (dist == "chord") acc = (a :<= min((4, (cutoff / 6371)^2)))
-				else acc = (a :<= 4 * sin(min((pi(), cutoff / 6371)) / 2)^2)
+				// The sum of the largest possible squared coordinate gaps between
+				// the two bounding boxes bounds |u_i-u_j|^2 for every pair. When
+				// that bound clears the cutoff (with a conservative roundoff
+				// margin), W is all ones. Keep diagonal self tiles on the original
+				// strict-upper path to preserve its 0.5-diagonal summation order.
+				all_accepted = 0
+				if (!(self & tj == ti)) {
+					ubmin = colmin(Ub)
+					ubmax = colmax(Ub)
+					maxdiff = colmax((abs(uamax :- ubmin) \ abs(ubmax :- uamin)))
+					bound = sum(maxdiff :^ 2)
+					all_accepted = (bound + 1e-14 * max((1, bound)) <= threshold)
+				}
+				if (!all_accepted) {
+					// Use squared coordinate differences rather than 1-Dot so
+					// near-cutoff accept/reject decisions retain full precision.
+					eb = J(rows(Ub), 1, 1)
+					a = (Ua[., 1] * eb' - ea * Ub[., 1]') :^ 2 + (Ua[., 2] * eb' - ea * Ub[., 2]') :^ 2 + (Ua[., 3] * eb' - ea * Ub[., 3]') :^ 2
+					// A loose box can miss an all-accepted tile. Once `a' already
+					// exists, its exact maximum is cheap and still avoids acc and W*S.
+					if (!(self & tj == ti)) all_accepted = (max(a) <= threshold)
+					// Exact antipodes give |u_i-u_j|^2 = 4 + O(1e-15); clamp so a
+					// cutoff covering the whole sphere accepts them (the C++
+					// engine clamps the half-chord to [0, 1] the same way).
+					if (threshold >= 4) a = a :* (a :<= 4) :+ 4 :* (a :> 4)
+				}
+				if (all_accepted) {
+					nr = rows(Ua); nc = rows(Ub)
+					if (!suma_ready) {
+						suma = colsum(S[|ti, 1 \ ti2, T*k|])
+						suma_ready = 1
+					}
+					sumb = colsum(S[|tj, 1 \ tj2, T*k|])
+					for (t = 1; t <= T; t++) {
+						c0 = (t-1)*k + 1; c1 = t*k
+						M = M + suma[|1, c0 \ 1, c1|]' * sumb[|1, c0 \ 1, c1|]
+					}
+					if (count_pairs) npairs = npairs + nr * nc
+					continue
+				}
+				acc = (a :<= threshold)
 				W = acc
 			}
 			else {
+				Dot = Ua * Ub'
 				// Bartlett needs distances. The squared chord |u_i - u_j|^2 equals
 				// 2 - 2 Dot, but that difference cancels at small angles: its
 				// relative error is about 5e-12 in squared chord at 200 km
@@ -399,6 +463,7 @@ real scalar reghdfe_conley_cell_pair(real matrix M, real matrix U, real matrix S
 					a = a :* (a :> 0)
 				}
 				if (dist == "chord") {
+					if (cutoff >= 2 * 6371) a = a :* (a :<= 4) :+ 4 :* (a :> 4)
 					d = 6371 :* sqrt(a)
 				}
 				else {
@@ -413,10 +478,10 @@ real scalar reghdfe_conley_cell_pair(real matrix M, real matrix U, real matrix S
 				W = acc :* (1 :- d :/ cutoff)
 			}
 			if (self & tj == ti) {
-				npairs = npairs + (sum(acc) - rows(acc)) / 2
+				if (count_pairs) npairs = npairs + (sum(acc) - rows(acc)) / 2
 				W = uppertriangle(W, 0.5)
 			}
-			else npairs = npairs + sum(acc)
+			else if (count_pairs) npairs = npairs + sum(acc)
 			// M += Sa' W Sb, per stacked period.
 			WS = W * S[|tj, 1 \ tj2, T*k|]
 			for (t = 1; t <= T; t++) {

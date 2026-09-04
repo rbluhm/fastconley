@@ -46,7 +46,7 @@ index 9b2a23163b6d75eec132156bad54f927f2d501b1..7d96105761e78d2c42af58a808deed30
  	data = st_data_pool(sample, solution.varlist, poolsize, compact, keepvars, verbose)
  	if (this.timeit) timer_off(41)
 diff --git a/current-code/Regression.mata b/current-code/Regression.mata
-index e3008724bab1576379d4b1bd1fce5196ba2e1797..95429a0c61d04898a9ab70d12fcc6983cbb4a35a 100644
+index e3008724bab1576379d4b1bd1fce5196ba2e1797..92abd3c434ad65c9ab2e059453e48bba0686dde0 100644
 --- a/current-code/Regression.mata
 +++ b/current-code/Regression.mata
 @@ -99,6 +99,9 @@ mata:
@@ -73,7 +73,7 @@ index e3008724bab1576379d4b1bd1fce5196ba2e1797..95429a0c61d04898a9ab70d12fcc6983
  		reghdfe_vce_robust(S, sol, inv_xx, X, w, vce_mode)
  	}
  	else if (S.vcetype == "dkraay") {
-@@ -199,6 +202,18 @@ mata:
+@@ -199,6 +202,31 @@ mata:
  }
  
  
@@ -89,11 +89,24 @@ index e3008724bab1576379d4b1bd1fce5196ba2e1797..95429a0c61d04898a9ab70d12fcc6983
 +}
 +
 +
++`Boolean' reghdfe_external_vce_is_valid(`Solution' sol)
++{
++	`Real' scale
++	`Integer' expected_K
++	expected_K = rows(sol.b)
++	if (rows(sol.V) != expected_K | cols(sol.V) != expected_K) return(0)
++	if (hasmissing(sol.V)) return(0)
++	if (!expected_K) return(1)
++	scale = max(abs(sol.V))
++	return(max(abs(sol.V - sol.V')) <= 1e-12 * scale)
++}
++
++
  // --------------------------------------------------------------------------
  // Remove collinear variables (based on ivreg2's s_rmcoll2)
  // --------------------------------------------------------------------------
 diff --git a/current-code/reghdfe.ado b/current-code/reghdfe.ado
-index 415bde490a57501d099576e5fa9a84076261ae50..f06a7786b6619f9bd0c4b58a94a7fcd75fe11bea 100644
+index 415bde490a57501d099576e5fa9a84076261ae50..4183535d919248fc92fe9b0142a63edf166b5a41 100644
 --- a/current-code/reghdfe.ado
 +++ b/current-code/reghdfe.ado
 @@ -1,4 +1,4 @@
@@ -192,11 +205,14 @@ index 415bde490a57501d099576e5fa9a84076261ae50..f06a7786b6619f9bd0c4b58a94a7fcd7
  	if ("`dkraay_lags'" != "") mata: HDFE.dkraay_lags = `dkraay_lags'
  	
  	* For Driscoll-Kraay, ensure timevar is passed to Mata (even if not in compact mode)
-@@ -506,6 +543,20 @@ program Estimate, eclass
+@@ -506,6 +543,81 @@ program Estimate, eclass
  	if (`timeit') timer on 25
  	mata: reghdfe_solve_ols(HDFE, HDFE.solution, "vce_small")
  	if (`timeit') timer off 25
 +	if (`is_external') {
++		* The solver's robust VCE initializes its ordinary result fields, but an
++		* external provider must return its own covariance rather than inherit it.
++		mata: HDFE.solution.V = J(0, 0, .)
 +		sreturn clear
 +		cap noisily `vce_provider_program', compute `vce_options'
 +		loc provider_rc = c(rc)
@@ -207,13 +223,71 @@ index 415bde490a57501d099576e5fa9a84076261ae50..f06a7786b6619f9bd0c4b58a94a7fcd7
 +		}
 +		loc external_post_scalars `"`s(post_scalars)'"'
 +		loc external_post_macros `"`s(post_macros)'"'
++		mata: st_local("external_vce_valid", strofreal(reghdfe_external_vce_is_valid(HDFE.solution)))
++		if (!`external_vce_valid') {
++			if (`compact') restore
++			di as error "vce provider `vce_provider' did not return a covariance matrix"
++			exit 498
++		}
++
++		* Validate all provider metadata while the previous e() results are still
++		* intact. The exact list is Solution.post(), HDFE.post_footnote(),
++		* EreturnPost, and the external hook's own results; numbered cluster
++		* results (and legacy absorbed-F results) are handled by patterns below.
++		loc external_reserved "b v sample properties n n_full n_hdfe n_hdfe_extended rank df_r df_m df_a df_a_initial df_a_redundant df_a_nested tss tss_within rss mss rmse r2 r2_a r2_within r2_a_within f f_absorb ll ll_0 sumweights ic converged report_constant drop_singletons num_singletons n_clust n_clustervars cmd cmdline model depvar indepvars vce vcetype vce_provider vce_options clustvar dkraay_bw title title2 title3 title4 predict estat_cmd footnote marginsok marginsnotok resid absvars extended_absvars dofmethod dof_table wexp wtype"
++		loc external_post_names
++		loc external_metadata_error
++		foreach external_kind in scalars macros {
++			foreach item of local external_post_`external_kind' {
++				gettoken external_name external_value : item, parse("=")
++				gettoken external_equal external_value : external_value, parse("=")
++				if (`"`external_equal'"' != "=" | `"`external_name'"' == "" | `"`external_value'"' == "") {
++					loc external_metadata_error "s(post_`external_kind') contains invalid token `item'"
++					continue, break
++				}
++				if (!regexm(`"`external_name'"', "^[A-Za-z_][A-Za-z0-9_]*$")) {
++					loc external_metadata_error "s(post_`external_kind') contains invalid name `external_name'"
++					continue, break
++				}
++				capture confirm name `external_name'
++				if (c(rc)) {
++					loc external_metadata_error "s(post_`external_kind') contains invalid name `external_name'"
++					continue, break
++				}
++				loc external_lower_name = lower("`external_name'")
++				loc external_name_reserved : list external_lower_name in external_reserved
++				if (`external_name_reserved' | regexm("`external_lower_name'", "^(n_clust|clustvar|df_a|f_absorb)[0-9]+$") | regexm("`external_lower_name'", "^title[0-9]+$")) {
++					loc external_metadata_error "s(post_`external_kind') contains reserved name `external_name'"
++					continue, break
++				}
++				loc external_name_seen : list external_lower_name in external_post_names
++				if (`external_name_seen') {
++					loc external_metadata_error "provider metadata repeats name `external_name'"
++					continue, break
++				}
++				if ("`external_kind'" == "scalars") {
++					capture confirm number `external_value'
++					if (c(rc)) {
++						loc external_metadata_error "s(post_scalars) value for `external_name' is not numeric"
++						continue, break
++					}
++				}
++				loc external_post_names `external_post_names' `external_lower_name'
++			}
++			if (`"`external_metadata_error'"' != "") continue, break
++		}
++		if (`"`external_metadata_error'"' != "") {
++			if (`compact') restore
++			di as error "vce provider `vce_provider' returned invalid metadata: `external_metadata_error'"
++			exit 498
++		}
 +		mata: reghdfe_external_vce_update_F(HDFE.solution)
 +		mata: HDFE.solution.data = J(0, 0, .)
 +	}
  	mata: HDFE.solution.cmdline = HDFE.solution.cmd + " " + st_local("0")
  
  	* Restore
-@@ -536,8 +587,28 @@ program Estimate, eclass
+@@ -536,8 +648,28 @@ program Estimate, eclass
  	}
  
  	* 3) Post the remaining elements
@@ -256,7 +330,7 @@ index a135e3a32796419273c7ed58ca1c19f8cd903947..f51bc700bc4353efe7c0e72e7ef9a29f
  
  f reghdfe.ado
 diff --git a/current-code/reghdfe.sthlp b/current-code/reghdfe.sthlp
-index 0c1f278afe11dededff728f68566597fede4565f..94e12ab2c9dad967fb429a6c19d919d25b6c3ea9 100644
+index 0c1f278afe11dededff728f68566597fede4565f..a95b018322b898a301ae3862dc25f8eee3f50050 100644
 --- a/current-code/reghdfe.sthlp
 +++ b/current-code/reghdfe.sthlp
 @@ -1,5 +1,5 @@
@@ -275,7 +349,7 @@ index 0c1f278afe11dededff728f68566597fede4565f..94e12ab2c9dad967fb429a6c19d919d2
  {synopt : {opth res:iduals(newvar)}}save regression residuals{p_end}
  {synopt : }{bf:- note:} the postestimation command "{it:predict <varname>, d}" requires this option{p_end}
  
-@@ -341,6 +341,19 @@ a moderate to large number of time periods but possibly strong cross-sectional d
+@@ -341,6 +341,25 @@ a moderate to large number of time periods but possibly strong cross-sectional d
  {bf:References:} Driscoll and Kraay (1998), "Consistent Covariance Matrix Estimation with Spatially Dependent Panel Data", 
  Review of Economics and Statistics; Hoechle (2007), "Robust Standard Errors for Panel Regressions with Cross-Sectional Dependence", Stata Journal.
  
@@ -284,18 +358,24 @@ index 0c1f278afe11dededff728f68566597fede4565f..94e12ab2c9dad967fb429a6c19d919d2
 +{cmd:vce(external} {it:PROVIDER} [{cmd:,} {it:provider_options}]{cmd:)} (abbreviation {cmd:ext}) delegates an OLS covariance estimate to
 +{it:PROVIDER}{cmd:_reghdfe_vce}. Before partialling out, reghdfe calls that s-class program with {cmd:, keepvars} and the raw provider options;
 +the provider returns {cmd:s(keepvars)} and optionally a display title in {cmd:s(vcetype)}. After OLS is solved, reghdfe calls it with
-+{cmd:, compute}; the provider must set {cmd:HDFE.solution.V} in coefficient units and may return whitespace-delimited
-+{cmd:name=value} lists in {cmd:s(post_scalars)} and {cmd:s(post_macros)} for posting to {cmd:e()}.
++{cmd:, compute}; the provider must set {cmd:HDFE.solution.V} in coefficient units. The matrix must have one row and column per
++reported coefficient (including {cmd:_cons}), contain only finite values, and be symmetric to {cmd:1e-12} relative tolerance.
++reghdfe makes the covariance left by its preparatory robust calculation unavailable before this call, so a provider must explicitly
++return a matrix. It may also return whitespace-delimited {cmd:name=value} lists in {cmd:s(post_scalars)} and {cmd:s(post_macros)}.
++Names must be ASCII Stata names matching {cmd:^[A-Za-z_][A-Za-z0-9_]*$}, must be unique, and may not collide with results posted by
++reghdfe; scalar values must be numeric, while macro values are strings. reghdfe validates the matrix and all metadata before replacing
++the previous {cmd:e()} results. Invalid responses return {cmd:r(498)} and preserve those results.
 +
 +{pmore}
 +Stored results include {cmd:e(vce)=external}, {cmd:e(vcetype)}, {cmd:e(vce_provider)}, and the raw {cmd:e(vce_options)}, plus provider results.
 +With {cmd:group()} or {cmd:individual()}, every provider keep-variable must be constant within group. The hook is OLS-only:
-+{help ivreghdfe} rejects unknown VCE types. Numerical validation, small-sample scaling, and covariance repair belong to the provider.
++{help ivreghdfe} rejects unknown VCE types. Statistical validation, small-sample scaling, and covariance repair belong to the provider;
++reghdfe enforces only the structural covariance and metadata contract above.
 +
  {phang}
  {opth res:iduals(newvar)} saves the regression residuals in a new variable. 
  
-@@ -762,6 +775,8 @@ or as part of the fixed effects{p_end}
+@@ -762,6 +781,8 @@ or as part of the fixed effects{p_end}
  {synopt:{cmd:e(clustvar}#{cmd:)}}name of the #th cluster variable{p_end}
  {synopt:{cmd:e(vce)}}{it:vcetype} specified in {cmd:vce()}{p_end}
  {synopt:{cmd:e(vcetype)}}title used to label Std. Err.{p_end}
@@ -306,24 +386,31 @@ index 0c1f278afe11dededff728f68566597fede4565f..94e12ab2c9dad967fb429a6c19d919d2
  {synopt:{cmd:e(estat_cmd)}}program used to implement {cmd:estat}{p_end}
 diff --git a/test/part1/external-vce.do b/test/part1/external-vce.do
 new file mode 100644
-index 0000000000000000000000000000000000000000..b90041e3532432a6053fbff270880f4096a19e22
+index 0000000000000000000000000000000000000000..814d57838798202868029d585ccec695ceb050d3
 --- /dev/null
 +++ b/test/part1/external-vce.do
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,78 @@
 +noi cscript "reghdfe: external VCE provider hook" adofile reghdfe
 +
 +quietly include "reghdfe.mata", adopath
 +mata:
-+void dummy_reghdfe_compute(real scalar scale, string scalar keep)
++void dummy_reghdfe_compute(real scalar scale, string scalar keep, string scalar mode)
 +{
 +	external class FixedEffects scalar HDFE
 +	assert(rows(st_data(HDFE.sample, keep)) == rows(HDFE.sample))
-+	HDFE.solution.V = HDFE.solution.V * scale
++	if (mode == "noop") return
++	if (mode == "wrongdim") {
++		HDFE.solution.V = I(rows(HDFE.solution.b) + 1)
++		return
++	}
++	HDFE.solution.V = I(rows(HDFE.solution.b)) * scale
++	if (mode == "nonfinite") HDFE.solution.V[1, 1] = .
++	if (mode == "asymmetric") HDFE.solution.V[1, 2] = 1
 +}
 +end
 +
 +program define dummy_reghdfe_vce, sclass
-+	syntax, [KEEPVARS COMPUTE] KEEP(varname numeric) [SCALE(real 2) FAIL]
++	syntax, [KEEPVARS COMPUTE] KEEP(varname numeric) [SCALE(real 2) FAIL NOOP WRONGDIM NONFINITE ASYMMETRIC BADSCALAR RESERVED]
 +	sreturn clear
 +	assert ("`keepvars'" != "") + ("`compute'" != "") == 1
 +	if ("`keepvars'" != "") {
@@ -335,19 +422,20 @@ index 0000000000000000000000000000000000000000..b90041e3532432a6053fbff270880f40
 +		di as error "dummy provider requested failure"
 +		exit 459
 +	}
-+	mata: dummy_reghdfe_compute(`scale', "`keep'")
-+	sreturn local post_scalars "dummy_scale=`scale'"
-+	sreturn local post_macros "dummy_status=ok"
++	loc mode = cond("`noop'" != "", "noop", cond("`wrongdim'" != "", "wrongdim", cond("`nonfinite'" != "", "nonfinite", cond("`asymmetric'" != "", "asymmetric", "valid"))))
++	mata: dummy_reghdfe_compute(`scale', "`keep'", "`mode'")
++	if ("`badscalar'" != "") sreturn local post_scalars "conley_cutoff=abc"
++	else sreturn local post_scalars "dummy_scale=`scale'"
++	if ("`reserved'" != "") sreturn local post_macros "cmd=regress"
++	else sreturn local post_macros "dummy_status=ok"
 +end
 +
 +sysuse auto, clear
 +drop if missing(rep78)
-+reghdfe price weight length, absorb(turn) vce(robust)
-+matrix V0 = e(V)
-+matrix V2 = 2 * V0
 +reghdfe price weight length, absorb(turn) vce(external dummy, keep(rep78) scale(2)) compact poolsize(1)
 +matrix Vexternal = e(V)
-+assert mreldif(Vexternal, V2) < 1e-15
++matrix Vexpected = I(colsof(e(b))) * 2
++assert mreldif(Vexternal, Vexpected) == 0
 +assert "`e(vce)'" == "external" & "`e(vcetype)'" == "Dummy"
 +assert "`e(vce_provider)'" == "dummy"
 +assert "`e(vce_options)'" == "keep(rep78) scale(2)"
@@ -362,6 +450,22 @@ index 0000000000000000000000000000000000000000..b90041e3532432a6053fbff270880f40
 +assert _rc == 198
 +capture noisily reghdfe price weight length, absorb(turn) vce(external dummy, keep(rep78) fail)
 +assert _rc == 498
++
++regress price weight length
++matrix previous_b = e(b)
++matrix previous_V = e(V)
++local previous_cmd "`e(cmd)'"
++foreach badopt in noop badscalar reserved {
++	capture noisily reghdfe price weight length, absorb(turn) vce(external dummy, keep(rep78) `badopt')
++	local bad_rc = _rc
++	display as result "external-vce `badopt' negative case rc: `bad_rc'"
++	assert `bad_rc' == 498
++	matrix after_b = e(b)
++	matrix after_V = e(V)
++	assert mreldif(after_b, previous_b) == 0
++	assert mreldif(after_V, previous_V) == 0
++	assert "`e(cmd)'" == "`previous_cmd'"
++}
 +
 +display as text "Done! Test passed"
 diff --git a/test/testall.do b/test/testall.do

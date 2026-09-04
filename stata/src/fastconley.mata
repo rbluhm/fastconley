@@ -92,6 +92,17 @@ void fastconley_aggregate(real colvector lat, real colvector lon,
 	lon = keys[info[., 1], 3]
 }
 
+// Coordinate validation shared by every Mata path (standalone command,
+// reghdfe provider, upstream front-end): the C++ engine rejects the same
+// inputs, so engine selection must never change what is accepted.
+void fastconley_check_coords(real colvector lat, real colvector lon)
+{
+	if (rows(lat) != rows(lon)) _error(198, "latitude and longitude lengths differ")
+	if (any(lat :== .) | any(lon :== .)) _error(198, "latitude/longitude contain missing values")
+	if (any(abs(lat) :> 90)) _error(198, "latitude must lie in [-90, 90]")
+	if (any(abs(lon) :> 360)) _error(198, "longitude must lie in [-360, 360]")
+}
+
 // ---------------------------------------------------------------------------
 // Spatial meat. S may hold T stacked periods side by side (n x T*k) sharing
 // the coordinates of one period (balanced panel); T = 1 is the general
@@ -111,6 +122,7 @@ real matrix fastconley_spatial_meat(real colvector lat, real colvector lon,
 	transmorphic A
 	external real scalar fc_count_spatial_pairs
 
+	fastconley_check_coords(lat, lon)
 	n = rows(S)
 	k = cols(S) / T
 	M = J(k, k, 0)

@@ -235,4 +235,13 @@ test_that("fixest path accepts a data frame already aligned with the fit", {
   expect_identical(v_full, v_aligned)
   expect_error(vcovSpHAC(fit, lat = "lat", lon = "lon", dist_cutoff = 300, ncores = 1, data = d[1:100, ]),
                "original rows")
+  # A subset that only permutes the rows keeps n == nobs_origin: the n-row
+  # frame must then be read as ORIGINAL data (rows addressed via obs()), so the
+  # reversed fit equals the forward fit's covariance (same rows, same weights).
+  d2 <- d[!is.na(d$x), ]
+  f_fwd <- fixest::feols(y ~ x | g, d2, demeaned = TRUE)
+  f_rev <- fixest::feols(y ~ x | g, d2, subset = nrow(d2):1, demeaned = TRUE)
+  v_fwd <- vcovSpHAC(f_fwd, lat = "lat", lon = "lon", dist_cutoff = 300, ncores = 1, data = d2)
+  v_rev <- vcovSpHAC(f_rev, lat = "lat", lon = "lon", dist_cutoff = 300, ncores = 1, data = d2)
+  expect_equal(v_fwd, v_rev, tolerance = 1e-12)
 })

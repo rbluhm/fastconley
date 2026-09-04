@@ -134,7 +134,15 @@ The provider accepts {opt latitude()}, {opt longitude()}, {opt cutoff()},
 {opt tile()}, {opt nossc}, {opt nopsdfix}, and {opt verbose}, with the same
 defaults and validation as the standalone command. reghdfe remains responsible
 for OLS, display, replay, and postestimation; fastconley supplies the complete
-covariance and its small-sample/PSD adjustments. The hook posts
+covariance and its small-sample/PSD adjustments. Before calling the provider,
+the hook discards its preparatory robust covariance; it then requires a finite,
+correctly dimensioned covariance symmetric to {cmd:1e-12} relative tolerance.
+Provider {cmd:s(post_scalars)} and {cmd:s(post_macros)} metadata are validated
+before {cmd:e()} is replaced: names must be unique ASCII Stata names, may not
+collide with reghdfe results, and scalar values must be numeric. fastconley's
+{cmd:conley_*}, {cmd:ssc}, {cmd:psd_fix}, {cmd:engine}, and {cmd:method} names
+satisfy that contract. Invalid provider output returns {cmd:r(498)} while
+preserving the previous estimate. The hook posts
 {cmd:e(vce)=external}, {cmd:e(vce_provider)=fastconley}, and the raw provider
 options, plus the usual fastconley VCE results. IV remains available only
 through the standalone {cmd:fastconley} command because ivreghdfe rejects

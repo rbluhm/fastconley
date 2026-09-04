@@ -59,9 +59,10 @@
 <h3 id="new-validation-and-errors-0-11-0">New validation and errors<a class="anchor" aria-label="anchor" href="#new-validation-and-errors-0-11-0"></a></h3>
 <ul><li>Non-finite or missing <code>lat</code>, <code>lon</code>, <code>unit</code>, <code>time</code> values, latitudes outside [-90, 90], and longitudes outside [-180, 360] are rejected in R before anything reaches C++; the engine repeats the checks (including scores and cutoff) for its other front-ends. A <code>NA</code> time used to split co-located observations into separate blocks.</li>
 <li>Both <code>lat</code> and <code>latitude</code> (or any two aliases) present in the data is now an auto-detection error, as documented.</li>
+<li>The fixest method accepts <code>data =</code> either as the full original data (rows addressed through <code><a href="https://lrberge.github.io/fixest/reference/obs.html" class="external-link">fixest::obs()</a></code>) or as a frame already aligned with the fit, such as the fitted model frame after <code>subset =</code> or NA removal. A frame with as many rows as the original data is always read as original data (so subsets that only permute rows stay correct); any other row count is an error.</li>
 <li>Unknown arguments in <code>...</code> are errors (typos such as <code>psd_fxi =</code> were swallowed). <code>maxobsmem</code> warns once that it is ignored; <code>neighbor = "band"</code> is documented as deprecated but still works.</li>
 <li>
-<code>lfe</code> k-class / LIML fits are rejected; only OLS and ordinary 2SLS are supported.</li>
+<code>lfe</code> fits made through the k-class path (any <code>kclass =</code> argument, even <code>kclass = 1</code>) are rejected: lfe stores the raw endogenous regressors for them instead of the projected 2SLS design, so the sandwich would be silently wrong (a <code>kclass = 1</code> fit gave 0.0028 where 2SLS gives 0.0097). Only OLS and ordinary 2SLS are supported.</li>
 <li>
 <code>ncores</code> must be a single finite positive integer. The default remains all logical cores, but <code>getOption("fastconley.ncores")</code> overrides it and a true-ish <code>_R_CHECK_LIMIT_CORES_</code> (CRAN’s check convention) caps it at 2.</li>
 <li>Long computations can be interrupted: the engine polls a front-end hook on the calling thread once per block (<code>Rcpp::checkUserInterrupt()</code> in R, <code>SF_poll</code> in the Stata plugin) and joins its workers before raising.</li>
@@ -86,7 +87,7 @@
 <div class="section level3">
 <h3 id="stata-port-0-11-0">Stata port<a class="anchor" aria-label="anchor" href="#stata-port-0-11-0"></a></h3>
 <ul><li>
-<code>stata/</code> holds <code>fastconley</code>, a reghdfe-family command with a pure-Mata engine and a compiled plugin built from <code>src/conley_core.h</code> for Linux, Windows, and macOS (see <code>stata/README.md</code> and <code>stata/CHANGELOG.md</code>), and <code>stata/upstream/</code> a self-contained proposal adding <code>vce(conley ...)</code> to reghdfe.</li>
+<code>stata/</code> holds <code>fastconley</code>, a reghdfe-family command with a pure-Mata engine and a compiled plugin built from <code>src/conley_core.h</code> for Linux, Windows, and macOS (see <code>stata/README.md</code> and <code>stata/CHANGELOG.md</code>), and <code>stata/upstream/</code> two alternative reghdfe proposals: a generic <code>vce(external PROVIDER, ...)</code> hook with fastconley as its first provider (primary), and a self-contained native <code>vce(conley ...)</code> patch.</li>
 </ul><p>CRAN preparation.</p>
 <ul><li>
 <code>DESCRIPTION</code>: package names quoted, Conley (1999) DOI added, copyright holder role declared; <code>LICENSE</code> updated to match.</li>

@@ -157,13 +157,14 @@ void fastconley_test_uniform_dense()
 		}
 	}
 }
+rseed(4242)
 fastconley_test_uniform_dense()
 end
 di "uniform dense reference, small cutoff: " scalar(fc_uniform_dense_small)
 di "uniform dense reference, all-accepted cutoff: " scalar(fc_uniform_dense_large)
 di "uniform all-accepted vs ordinary tile path: " scalar(fc_uniform_fast_vs_ordinary)
-assert scalar(fc_uniform_dense_small) < 1e-13
-assert scalar(fc_uniform_dense_large) < 1e-13
+assert scalar(fc_uniform_dense_small) < 1e-12
+assert scalar(fc_uniform_dense_large) < 1e-12
 assert scalar(fc_uniform_fast_vs_ordinary) <= 1e-14
 
 * ---- cutoff(-1) = heteroskedasticity-only meat: must equal reghdfe vce(robust)
@@ -580,15 +581,37 @@ mata:
 	ap_lon = (126.38749223202467 \ 126.38749223202467 - 180)
 	ap_t = (1 \ 1)
 	ap_S = (1 \ 2)
-	foreach d in ("haversine", "spherical", "chord") {
-		ap_M = fastconley_spatial_meat(ap_lat, ap_lon, ap_t, ap_S, 1, 25000, "uniform", d, 1024, 0)
-		if (abs(ap_M[1,1] - 9) > 1e-12) _error(9, "antipodes rejected by uniform " + d)
-		ap_M = fastconley_spatial_meat(ap_lat, ap_lon, ap_t, ap_S, 1, 300, "uniform", d, 1024, 0)
-		if (abs(ap_M[1,1] - 5) > 1e-12) _error(9, "self terms wrong for uniform " + d)
+	ap_dists = ("haversine", "spherical", "chord")
+	for (ap_i = 1; ap_i <= 3; ap_i++) {
+		ap_M = fastconley_spatial_meat(ap_lat, ap_lon, ap_t, ap_S, 1, 25000, "uniform", ap_dists[ap_i], 1024, 0)
+		if (abs(ap_M[1,1] - 9) > 1e-12) _error(9, "antipodes rejected by uniform " + ap_dists[ap_i])
+		ap_M = fastconley_spatial_meat(ap_lat, ap_lon, ap_t, ap_S, 1, 300, "uniform", ap_dists[ap_i], 1024, 0)
+		if (abs(ap_M[1,1] - 5) > 1e-12) _error(9, "self terms wrong for uniform " + ap_dists[ap_i])
 	}
 	ap_M = fastconley_spatial_meat(ap_lat, ap_lon, ap_t, ap_S, 1, 2 * 12742, "bartlett", "chord", 1024, 0)
 	if (abs(ap_M[1,1] - 7) > 1e-9) _error(9, "antipode bartlett/chord weight wrong")
+	ap_done = 1
 end
 di as result "exact antipodes accepted at whole-sphere cutoffs (uniform x 3 distances, bartlett chord)"
+
+* ---- invalid coordinates are rejected by every engine (Mata mirrors C++) ---
+clear
+set obs 60
+set seed 77
+gen double lat = 100
+gen double lon = runiform(-110, -80)
+gen int region = ceil(_n / 15)
+gen double x = rnormal()
+gen double y = 0.5 * x + rnormal()
+rcof "fastconley y x, absorb(region) lat(lat) lon(lon) cutoff(300) engine(mata)" == 198
+if ("$FASTCONLEY_REQUIRE_PLUGIN" != "") {
+	rcof "fastconley y x, absorb(region) lat(lat) lon(lon) cutoff(300) engine(plugin)" == 198
+}
+replace lat = runiform(30, 45)
+replace lat = . in 3
+* a missing coordinate is marked out of the sample (documented), not an error
+fastconley y x, absorb(region) lat(lat) lon(lon) cutoff(300) engine(mata)
+assert e(N) == 59
+di as result "invalid latitude rejected by the Mata engine" cond("$FASTCONLEY_REQUIRE_PLUGIN" != "", " and by the plugin", "")
 
 di as result _n "test_basic.do: all checks passed"

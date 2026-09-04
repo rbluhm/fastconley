@@ -571,16 +571,30 @@ vcovSpHAC.fixest <- function(reg,
     }
   )
   no_unit <- is.null(unit)
-  # `data` is either the full original data (rows addressed by obs_idx) or a
-  # frame already aligned with the fit (exactly n rows, e.g. the fitted
-  # model frame after subset/NA removal). In the aligned case obs_idx must
-  # not be applied: it points into the original rows.
-  aligned <- nrow(data) == n
+  # `data` is interpreted in this order:
+  #   1. as many rows as the ORIGINAL data (reg$nobs_origin): original-data
+  #      coordinates, rows addressed through obs_idx (this covers subsets that
+  #      merely permute or repeat rows, where n == nobs_origin);
+  #   2. otherwise exactly n rows: a frame already aligned with the fitted
+  #      observations (e.g. the fitted model frame after subset/NA removal),
+  #      taken as is;
+  #   3. anything else is an error.
+  # An n-row frame when nobs_origin == n and obs_idx is not the identity is
+  # ambiguous by construction and is treated as original data (case 1).
+  n_origin <- reg$nobs_origin
+  if (is.null(n_origin) || !is.finite(n_origin)) n_origin <- max(obs_idx, n)
+  if (nrow(data) == n_origin) {
+    aligned <- FALSE
+  } else if (nrow(data) == n) {
+    aligned <- TRUE
+  } else {
+    stop("`data` has ", nrow(data), " rows; the fixest object was fitted on ",
+         n, " of ", n_origin, " original rows. Pass the full original data ",
+         "or a frame aligned with the fitted observations.", call. = FALSE)
+  }
   if (!aligned && length(obs_idx) && max(obs_idx) > nrow(data)) {
-    stop("`data` has ", nrow(data), " rows but the fixest object selects ",
-         "original rows up to ", max(obs_idx), ". Pass the full original ",
-         "data or a frame aligned with the fitted observations (", n,
-         " rows).", call. = FALSE)
+    stop("The fixest object selects original rows up to ", max(obs_idx),
+         " but `data` has only ", nrow(data), " rows.", call. = FALSE)
   }
   pick <- function(col) {
     if (aligned) data[[col]] else data[[col]][obs_idx]

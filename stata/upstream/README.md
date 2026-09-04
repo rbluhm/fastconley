@@ -43,9 +43,21 @@ The provider is an s-class Stata program with two calls:
    `PROVIDER_reghdfe_vce, compute provider_options` with `HDFE` in Mata scope.
    The provider must replace `HDFE.solution.V` with the full covariance in
    coefficient units, including `_cons` when reported and including its own
-   small-sample adjustment. It may return whitespace-delimited `name=value`
-   lists in `s(post_scalars)` and `s(post_macros)`; reghdfe posts those names
-   to `e()`.
+   small-sample adjustment. Immediately before this call, reghdfe replaces the
+   covariance produced by its preparatory robust calculation with a `0 x 0`
+   sentinel, so a provider that does nothing cannot succeed. The returned
+   matrix must have `rows(V) == cols(V) == rows(b)`, contain only finite
+   values, and be symmetric to `1e-12` relative tolerance.
+
+   The provider may return whitespace-delimited `name=value` lists in
+   `s(post_scalars)` and `s(post_macros)`. Names must match
+   `^[A-Za-z_][A-Za-z0-9_]*$`, be valid Stata names, be unique across both
+   lists, and not collide (case-insensitively) with anything reghdfe posts
+   itself. This includes `e(b)`, `e(V)`, `e(sample)`, all results from
+   `Solution.post()` and `HDFE.post_footnote()`, numbered cluster results, and
+   the hook's own `e(vce_provider)` and `e(vce_options)`. Scalar values must
+   parse as numbers; macro values are plain strings. Existing fastconley names
+   such as `conley_*`, `ssc`, `psd_fix`, `engine`, and `method` remain valid.
 
 Both calls use `capture noisily`, so the provider's diagnostic remains visible.
 A provider error is normalized to `r(498)` followed by
@@ -54,10 +66,17 @@ the model Wald F and posts `e(vce)=external`, the provider title in
 `e(vcetype)`, `e(vce_provider)`, and the raw `e(vce_options)`. Replay,
 `predict`, `test`, and `margins` remain reghdfe-native.
 
+The covariance and metadata checks run before `EreturnPost` or any other
+posting. A structurally invalid covariance returns `r(498)` with
+`vce provider PROVIDER did not return a covariance matrix`; invalid metadata
+returns `r(498)` with `vce provider PROVIDER returned invalid metadata: ...`.
+In either case, the previous `e()` estimate is preserved.
+
 The hook is OLS-only. ivreghdfe rejects VCE types it does not know before this
-path can run. A provider owns all numerical and statistical validation,
-small-sample scaling, and covariance repair; reghdfe deliberately does not
-interpret those choices.
+path can run. A provider owns statistical validation, small-sample scaling,
+and covariance repair; reghdfe enforces only the structural covariance and
+metadata contract above and does not interpret the provider's statistical
+choices.
 
 ## fastconley provider
 
@@ -137,7 +156,9 @@ aggregation, a balanced panel with lag 2 and unit/time keys, and
 uniform/chord/nossc/nopsdfix. It also checks every printed difference,
 provider/raw-option posting, replay, `predict`, `test`, `margins`, compact,
 `poolsize(1)`, compact plus `poolsize(1)`, missing-provider `r(198)`, visible
-provider failures normalized to `r(498)`, dummy-provider dispatch, group
+provider failures normalized to `r(498)`, dummy-provider dispatch, rejection
+of malformed and reserved metadata, rejection of no-op/wrong-dimension/
+non-finite/asymmetric providers without changing the previous estimate, group
 validation, and equality to the alternative native `vce(conley)` patch.
 
 The repository's ordinary Stata gate remains:

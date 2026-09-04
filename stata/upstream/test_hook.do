@@ -20,7 +20,7 @@ which reghdfe
 which fastconley_reghdfe_vce
 
 program define dummy_reghdfe_vce, sclass
-	syntax, [KEEPVARS COMPUTE] KEEP(varname numeric) [SCALE(real 2) FAIL]
+	syntax, [KEEPVARS COMPUTE] KEEP(varname numeric) [SCALE(real 2) FAIL NOOP WRONGDIM NONFINITE ASYMMETRIC BADSCALAR RESERVED]
 	sreturn clear
 	assert ("`keepvars'" != "") + ("`compute'" != "") == 1
 	if ("`keepvars'" != "") {
@@ -32,9 +32,12 @@ program define dummy_reghdfe_vce, sclass
 		di as error "dummy provider requested failure"
 		exit 459
 	}
-	mata: dummy_reghdfe_compute(`scale', "`keep'")
-	sreturn local post_scalars "dummy_scale=`scale'"
-	sreturn local post_macros "dummy_status=ok"
+	loc mode = cond("`noop'" != "", "noop", cond("`wrongdim'" != "", "wrongdim", cond("`nonfinite'" != "", "nonfinite", cond("`asymmetric'" != "", "asymmetric", "valid"))))
+	mata: dummy_reghdfe_compute(`scale', "`keep'", "`mode'")
+	if ("`badscalar'" != "") sreturn local post_scalars "conley_cutoff=abc"
+	else sreturn local post_scalars "dummy_scale=`scale'"
+	if ("`reserved'" != "") sreturn local post_macros "cmd=regress"
+	else sreturn local post_macros "dummy_status=ok"
 end
 
 * --------------------------------------------------------------------------
@@ -50,7 +53,7 @@ gen double x1 = rnormal()
 gen double x2 = rnormal()
 gen double aw = runiform(.5, 2)
 gen double y = .5 * x1 - .3 * x2 + rnormal()
-save ".scratch/test_hook_cross.dta", replace
+save "`c(tmpdir)'/test_hook_cross.dta", replace
 
 reghdfe y x1 x2, absorb(region) vce(external fastconley, lat(lat) lon(lon) cutoff(300))
 matrix Vhook = e(V)
@@ -60,11 +63,11 @@ assert "`e(vce_options)'" == "lat(lat) lon(lon) cutoff(300)"
 assert e(conley_cutoff) == 300 & e(conley_lag) == 0 & e(conley_pixel) == 0
 assert e(conley_balanced) == 0 & e(ssc) == 1 & e(psd_fix) == 1
 assert "`e(conley_kernel)'" == "bartlett" & "`e(conley_dist)'" == "haversine"
-assert "`e(engine)'" == "mata" & "`e(method)'" == "pairwise"
+assert inlist("`e(engine)'", "mata", "plugin") & "`e(method)'" == "pairwise"
 preserve
 clear
 svmat double Vhook
-save ".scratch/test_hook_Vhook.dta", replace
+save "`c(tmpdir)'/test_hook_Vhook.dta", replace
 restore
 
 reghdfe
@@ -106,21 +109,26 @@ assert scalar(__diff) < 1e-15
 * Dummy provider: independent hook check plus provider metadata and failure.
 quietly include "reghdfe.mata", adopath
 mata:
-void dummy_reghdfe_compute(real scalar scale, string scalar keep)
+void dummy_reghdfe_compute(real scalar scale, string scalar keep, string scalar mode)
 {
 	external class FixedEffects scalar HDFE
 	assert(rows(st_data(HDFE.sample, keep)) == rows(HDFE.sample))
-	HDFE.solution.V = HDFE.solution.V * scale
+	if (mode == "noop") return
+	if (mode == "wrongdim") {
+		HDFE.solution.V = I(rows(HDFE.solution.b) + 1)
+		return
+	}
+	HDFE.solution.V = I(rows(HDFE.solution.b)) * scale
+	if (mode == "nonfinite") HDFE.solution.V[1, 1] = .
+	if (mode == "asymmetric") HDFE.solution.V[1, 2] = 1
 }
 end
-reghdfe y x1 x2, absorb(region) vce(robust)
-matrix Vrobust = e(V)
-matrix Vtwice_robust = 2 * Vrobust
 reghdfe y x1 x2, absorb(region) vce(ext dummy, keep(lat) scale(2)) compact poolsize(1)
 matrix Vdummy = e(V)
-scalar __diff = mreldif(Vdummy, Vtwice_robust)
-display as result "dummy provider vs twice robust: " %21.17g scalar(__diff)
-assert scalar(__diff) < 1e-15
+matrix Vdummy_expected = I(colsof(e(b))) * 2
+scalar __diff = mreldif(Vdummy, Vdummy_expected)
+display as result "dummy provider vs supplied covariance: " %21.17g scalar(__diff)
+assert scalar(__diff) == 0
 assert "`e(vce)'" == "external" & "`e(vcetype)'" == "Dummy"
 assert e(dummy_scale) == 2 & "`e(dummy_status)'" == "ok"
 
@@ -132,6 +140,23 @@ capture noisily reghdfe y x1 x2, absorb(region) vce(external fastconley, lat(lat
 assert _rc == 498
 capture noisily reghdfe y x1 x2, absorb(region) vce(external dummy, keep(lat) fail)
 assert _rc == 498
+
+* Provider contract failures must leave the previous estimate byte-identical.
+regress y x1 x2
+matrix previous_b = e(b)
+matrix previous_V = e(V)
+local previous_cmd "`e(cmd)'"
+foreach badopt in badscalar reserved noop wrongdim nonfinite asymmetric {
+	capture noisily reghdfe y x1 x2, absorb(region) vce(external dummy, keep(lat) `badopt')
+	local bad_rc = _rc
+	display as result "external-VCE `badopt' negative case rc: `bad_rc'"
+	assert `bad_rc' == 498
+	matrix after_b = e(b)
+	matrix after_V = e(V)
+	assert mreldif(after_b, previous_b) == 0
+	assert mreldif(after_V, previous_V) == 0
+	assert "`e(cmd)'" == "`previous_cmd'"
+}
 
 * --------------------------------------------------------------------------
 * Balanced panel with serial lag 2.
@@ -177,12 +202,12 @@ display as result "team-FE nonconstant provider keepvars rejected with r(498)"
 clear all
 sysdir set PLUS "$FULL_PATCH_PLUS"
 adopath ++ "stata/src"
-use ".scratch/test_hook_cross.dta", clear
+use "`c(tmpdir)'/test_hook_cross.dta", clear
 which reghdfe
 reghdfe y x1 x2, absorb(region) vce(conley lat lon, cutoff(300))
 matrix Vnative = e(V)
 preserve
-use ".scratch/test_hook_Vhook.dta", clear
+use "`c(tmpdir)'/test_hook_Vhook.dta", clear
 mkmat Vhook*, matrix(Vhook_saved)
 restore
 scalar __diff = mreldif(Vhook_saved, Vnative)

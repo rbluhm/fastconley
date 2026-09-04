@@ -97,9 +97,11 @@ IV/2SLS fits — the `felm` multi-part formula with
 `(endog ~ instruments)` — work out of the box and produce the correct
 2SLS Conley sandwich: `lfe` stores the projected (second-stage) design
 in `cX` and the structural residuals in `residuals`, which is exactly
-what the score construction needs. Other k-class estimators, including
-LIML, are rejected because their influence-function bread is different.
-Ordinary 2SLS is verified against the `fixest` IV path and an
+what the score construction needs. Fits made through lfe’s k-class path
+(any `kclass =` argument, including `kclass = 1`, and therefore LIML)
+are rejected: lfe then stores the raw endogenous regressors in `cX`
+instead of the projected design, so the sandwich would be silently
+wrong. Ordinary 2SLS is verified against the `fixest` IV path and an
 independent dense-R sandwich (see
 `tests/testthat/test-independent-references.R`).
 

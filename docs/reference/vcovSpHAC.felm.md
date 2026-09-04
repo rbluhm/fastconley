@@ -6,8 +6,10 @@ multi-part formula with `(endog ~ instruments)`) work out of the box:
 `lfe` stores the projected (second-stage) design in `cX` and the
 structural residuals in `residuals`, which is exactly the 2SLS sandwich.
 Weighted fits are supported (the scores carry the weights and the bread
-uses \\X'WX\\). Other k-class estimators, including LIML, are not
-supported.
+uses \\X'WX\\). Fits made through lfe's k-class path (any `kclass =`
+argument, including `kclass = 1`) are rejected: lfe then stores the raw
+endogenous regressors instead of the projected design, so the sandwich
+would be silently wrong. Refit without `kclass` for ordinary 2SLS.
 
 ## Usage
 
