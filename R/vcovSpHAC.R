@@ -45,7 +45,8 @@ vcovSpHAC.default <- function(reg, ...) {
 #' @param lag_cutoff Serial HAC lag cutoff.
 #' @param verbose Print progress messages.
 #' @param balanced_pnl Whether the panel is balanced and unit locations are time-invariant.
-#' @param ncores Number of cores for the C++/RcppParallel spatial and serial routines.
+#' @param ncores Number of threads for the C++ spatial and serial routines
+#'   (results do not depend on it).
 #' @param pixel Score-pre-aggregation cell size, in kilometres. Default 0
 #'   (exact-coordinate dedupe only). If `pixel > 0`, points are snapped to a
 #'   uniform `pixel`-km grid before the dedupe — a speed/accuracy trade-off
@@ -300,7 +301,8 @@ vcovSpHAC.felm <- function(reg,
 #' @param lag_cutoff Serial HAC lag cutoff.
 #' @param verbose Print progress messages.
 #' @param balanced_pnl Whether the panel is balanced and unit locations are time-invariant.
-#' @param ncores Number of cores for the C++/RcppParallel spatial and serial routines.
+#' @param ncores Number of threads for the C++ spatial and serial routines
+#'   (results do not depend on it).
 #' @param pixel Score-pre-aggregation cell size, in kilometres.
 #' @param neighbor Neighbor-search strategy: "grid" (default) or "band".
 #'   See \code{\link{vcovSpHAC.felm}}.

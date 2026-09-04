@@ -2,7 +2,8 @@
 # In a normal R development environment, rerun Rcpp::compileAttributes().
 
 # The C++ entry points alias R memory directly (no input copies) and assume
-# REALSXP storage, so the wrappers coerce here. `scores` is the score matrix
+# REALSXP storage, so the wrappers coerce here. `ncores` is passed straight
+# through: the engine runs its own std::thread pool (src/conley_core.h). `scores` is the score matrix
 # e * X (possibly pre-aggregated); passing `X` and `e` instead is supported
 # for convenience and computes `scores <- X * e` once.
 
@@ -22,7 +23,6 @@ FastSpatialMeat <- function(lat, lon, time, X = NULL, e = NULL, cutoff,
                             neighbor = "grid", scores = NULL,
                             csr_weight = "double") {
   if (is.null(scores)) scores <- X * e
-  RcppParallel::setThreadOptions(numThreads = as.integer(max(1L, ncores)))
   .Call(`_fastconley_FastSpatialMeat`,
         .as_dbl_vector(lat), .as_dbl_vector(lon), .as_dbl_vector(time),
         .as_dbl_matrix(scores), cutoff, kernel, dist_fn, balanced_pnl,
@@ -32,7 +32,6 @@ FastSpatialMeat <- function(lat, lon, time, X = NULL, e = NULL, cutoff,
 FastSerialHacPanel <- function(unit, time, cutoff, X = NULL, e = NULL,
                                ncores = 1L, scores = NULL) {
   if (is.null(scores)) scores <- X * e
-  RcppParallel::setThreadOptions(numThreads = as.integer(max(1L, ncores)))
   .Call(`_fastconley_FastSerialHacPanel`,
         .as_dbl_vector(unit), .as_dbl_vector(time), cutoff,
         .as_dbl_matrix(scores), ncores)
@@ -43,7 +42,6 @@ FastGridMeat <- function(ring, col, time, scores, lat0, dlat, dlon,
                          kernel = "uniform", n_col_full = 0L, ncores = 1L) {
   if (!is.integer(ring)) ring <- as.integer(ring)
   if (!is.integer(col)) col <- as.integer(col)
-  RcppParallel::setThreadOptions(numThreads = as.integer(max(1L, ncores)))
   .Call(`_fastconley_FastGridMeat`, ring, col, .as_dbl_vector(time),
         .as_dbl_matrix(scores), lat0, dlat, dlon,
         as.integer(n_ring), as.integer(n_col), as.integer(n_col_full),

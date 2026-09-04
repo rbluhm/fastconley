@@ -9,3 +9,10 @@
 ^_pkgdown\.yml$
 ^docs$
 ^pkgdown$
+^CLAUDE\.md$
+^notes$
+^tests/manual$
+^cran-comments\.md$
+^CRAN-SUBMISSION$
+^\.github$
+^stata$

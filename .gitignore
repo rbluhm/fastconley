@@ -42,3 +42,8 @@ vignettes/*.R
 fastconley_*.tar.gz
 fastconley.Rcheck/
 /.obsidian/
+# Stata batch-mode logs from stata/test
+*.log
+stata/plugin/*.o
+stata/plugin/load_check
+stata/plugin/load_check.exe

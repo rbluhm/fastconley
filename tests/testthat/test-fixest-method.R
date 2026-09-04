@@ -5,7 +5,6 @@
 test_that("vcovSpHAC.fixest matches vcovSpHAC.felm to machine precision", {
   skip_if_not_installed("fixest")
   skip_if_not_installed("lfe")
-  RcppParallel::setThreadOptions(numThreads = 1L)
 
   d <- make_balanced_panel(n_unit = 150L, n_time = 4L, k = 3L, seed = 21L)
   rhs <- "x1 + x2 + x3"
@@ -37,7 +36,6 @@ test_that("vcovSpHAC.fixest matches vcovSpHAC.felm to machine precision", {
 
 test_that("vcovSpHAC.fixest honors subset= in feols", {
   skip_if_not_installed("fixest")
-  RcppParallel::setThreadOptions(numThreads = 1L)
 
   d <- make_cross_section(n = 200L, k = 3L, seed = 51L)
   d$keep <- rep(c(TRUE, FALSE), nrow(d) / 2L)
@@ -57,7 +55,6 @@ test_that("vcovSpHAC.fixest honors subset= in feols", {
 
 test_that("vcovSpHAC.fixest works as a fixest vcov function", {
   skip_if_not_installed("fixest")
-  RcppParallel::setThreadOptions(numThreads = 1L)
 
   d <- make_cross_section(n = 180L, k = 2L, seed = 56L)
   fit <- fixest::feols(y ~ x1 + x2, data = d, demeaned = TRUE)

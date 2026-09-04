@@ -5,7 +5,6 @@
 
 test_that("character unit/time produces the same VCOV as integer keys (felm)", {
   skip_if_not_installed("lfe")
-  RcppParallel::setThreadOptions(numThreads = 1L)
 
   n_unit <- 30L; n_time <- 4L
   d <- make_balanced_panel(n_unit = n_unit, n_time = n_time, k = 2L, seed = 71L)
@@ -31,7 +30,6 @@ test_that("character unit/time produces the same VCOV as integer keys (felm)", {
 
 test_that("character unit/time produces the same VCOV as integer keys (fixest)", {
   skip_if_not_installed("fixest")
-  RcppParallel::setThreadOptions(numThreads = 1L)
 
   n_unit <- 30L; n_time <- 4L
   d <- make_balanced_panel(n_unit = n_unit, n_time = n_time, k = 2L, seed = 71L)

@@ -28,7 +28,6 @@ bench_reps <- as.integer(Sys.getenv("FASTCONLEY_BENCH_REPS", "2"))
 bench_reps <- max(1L, bench_reps)
 
 set.seed(1001)
-RcppParallel::setThreadOptions(numThreads = bench_threads)
 
 message("fastconley benchmark run")
 message("  root: ", root)

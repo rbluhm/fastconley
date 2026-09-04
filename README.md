@@ -52,7 +52,7 @@ V <- vcovSpHAC(
   dist_cutoff  = 500,            # km
   lag_cutoff   = 0,              # serial-HAC lag (set > 0 for both)
   balanced_pnl = TRUE,           # set TRUE only if every period has the same units in the same order, with time-invariant coordinates
-  ncores       = NA,             # NA = use all cores via RcppParallel
+  ncores       = NA,             # NA = use all cores (std::thread pool in C++)
   pixel        = 0               # score-pre-aggregation cell size in km; 0 = exact dedupe only
 )
 ```
@@ -230,7 +230,7 @@ The spatial meat used to be assembled by repeatedly building dense `n × n` dist
 6. **3D dot-product threshold for spherical/chord.** With the unit-vector cache precomputed once, `(spherical, uniform)` pair inclusion is three multiplies + two adds + one compare, no trig at all. The `bartlett` variants only pay `acos` (spherical) or `sqrt` (chord) on accepted pairs.
 7. **Row-major scores + sorted-order layout.** Scores `s_i = e_i · X_i` are stored row-major in a flat buffer, and both the coord cache and the scores are permuted into latitude-sorted order before the worker runs, so every read in the hot loop is sequential.
 
-A `CoordCache` precomputes `cos(lat)`, `sin(lat)`, and (for `dist_fn ∈ {chord, spherical}`) the 3D unit-vector coordinates once per call. CSR construction and meat accumulation are parallelised with `RcppParallel`.
+A `CoordCache` precomputes `cos(lat)`, `sin(lat)`, and (for `dist_fn ∈ {chord, spherical}`) the 3D unit-vector coordinates once per call. CSR construction and meat accumulation are parallelised with a small `std::thread` pool inside the engine header (`src/conley_core.h`, shared with the Stata port); the chunked reduction is deterministic, so results are bit-identical for any `ncores`.
 
 ## Benchmarks
 
@@ -347,7 +347,7 @@ Numerical results match upstream to machine precision for `dist_fn ∈ {haversin
 
 ## Requirements
 
-R ≥ 3.5 with a C++11 compiler and GNU make. Imports `data.table`, `Rcpp`, `RcppParallel` (and links against `RcppArmadillo`); `lfe` and `fixest` are suggested — you need whichever one fits your models.
+R ≥ 4.0 with a C++11 compiler (the engine uses `std::thread`, which on Windows needs the posix-threads Rtools that ship with R 4.0+). Imports `data.table` and `Rcpp` (and links against `RcppArmadillo`); `lfe` and `fixest` are suggested — you need whichever one fits your models.
 
 ## Citation
 

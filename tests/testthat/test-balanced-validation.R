@@ -5,7 +5,6 @@
 
 test_that("balanced_pnl errors on mismatched unit sets across periods", {
   skip_if_not_installed("lfe")
-  RcppParallel::setThreadOptions(numThreads = 1L)
   set.seed(81)
   # Units {1,2,3,4} in period 1, {2,3,4,5} in period 2 — equal sizes, no
   # repeats, time-invariant coords. Should still error.
@@ -17,7 +16,10 @@ test_that("balanced_pnl errors on mismatched unit sets across periods", {
   d <- data.table::data.table(
     y = as.numeric(X %*% c(0.1, 0.1)) + stats::rnorm(N),
     X, lat = ulat[unit], lon = ulon[unit], unit = unit, time = time)
-  fit <- lfe::felm(y ~ x1 + x2 | unit + time, data = d, keepCX = TRUE)
+  # 8 rows with two-way FEs leave lfe almost no residual df; felm warns about
+  # NaNs in its own summary statistics, which is irrelevant to this test.
+  fit <- suppressWarnings(
+    lfe::felm(y ~ x1 + x2 | unit + time, data = d, keepCX = TRUE))
   expect_error(
     vcovSpHAC(fit, unit = "unit", time = "time", lat = "lat", lon = "lon",
               kernel = "uniform", dist_fn = "spherical",
@@ -28,7 +30,6 @@ test_that("balanced_pnl errors on mismatched unit sets across periods", {
 
 test_that("balanced_pnl errors on unequal period sizes", {
   skip_if_not_installed("lfe")
-  RcppParallel::setThreadOptions(numThreads = 1L)
   set.seed(82)
   ulat <- stats::runif(4, 25, 50); ulon <- stats::runif(4, -125, -70)
   unit <- c(1, 2, 3, 4, 1, 2, 3)
@@ -51,7 +52,6 @@ test_that("balanced_pnl errors on unequal period sizes", {
 
 test_that("balanced_pnl errors on duplicated unit within a period", {
   skip_if_not_installed("lfe")
-  RcppParallel::setThreadOptions(numThreads = 1L)
   set.seed(83)
   ulat <- stats::runif(3, 25, 50); ulon <- stats::runif(3, -125, -70)
   unit <- c(1, 1, 2, 3, 1, 2, 2, 3)
@@ -72,7 +72,6 @@ test_that("balanced_pnl errors on duplicated unit within a period", {
 
 test_that("balanced_pnl errors on time-varying coordinates", {
   skip_if_not_installed("lfe")
-  RcppParallel::setThreadOptions(numThreads = 1L)
   d <- make_balanced_panel(n_unit = 20L, n_time = 3L, k = 2L, seed = 84L)
   d[unit == 1L & time == 2L, lat := lat + 1]  # break the invariant
   fit <- lfe::felm(y ~ x1 + x2 | unit + time, data = d, keepCX = TRUE)

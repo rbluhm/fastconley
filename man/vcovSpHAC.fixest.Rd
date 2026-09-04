@@ -57,7 +57,8 @@ auto-detected. See \code{\link{vcovSpHAC.felm}}.}
 
 \item{balanced_pnl}{Whether the panel is balanced and unit locations are time-invariant.}
 
-\item{ncores}{Number of cores for the C++/RcppParallel spatial and serial routines.}
+\item{ncores}{Number of threads for the C++ spatial and serial routines
+(results do not depend on it).}
 
 \item{pixel}{Score-pre-aggregation cell size, in kilometres.}
 

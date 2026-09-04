@@ -164,7 +164,8 @@ tapply-sum; `fixest/R/VCOV.R:2385-2392` for the dedupe call.)
 Secondary reasons:
 
 - `fixest` uses a plain `#pragma omp parallel for` over the outer row index.
-  `fastconley` uses RcppParallel/TBB, which has higher per-task overhead.
+  `fastconley` used RcppParallel/TBB at the time of this comparison (replaced
+  by a `std::thread` pool in v0.11.0), which has higher per-task overhead.
   This is consistent with the observation that the gap narrows under many
   threads.
 - `fixest` lays scores out row-major (`vcov_related.cpp:391-433`), making the

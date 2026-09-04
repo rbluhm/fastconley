@@ -38,7 +38,6 @@ naive_meat <- function(lat, lon, time, X, e, cutoff, kernel, dist_fn) {
 }
 
 test_that("FastSpatialMeat matches brute force across all distance/kernel cells", {
-  RcppParallel::setThreadOptions(numThreads = 1L)
 
   cases <- list(
     list(label = "cross-section", time = rep(1L, 60L), balanced = FALSE),

@@ -6,7 +6,6 @@
 #   Rscript tests/manual/test-grid-neighbor.R
 
 suppressMessages(library(fastconley))
-RcppParallel::setThreadOptions(numThreads = 1L)
 
 AVG_ERAD <- 6371
 

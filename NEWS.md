@@ -1,3 +1,31 @@
+# fastconley (development version)
+
+Engine extraction (phase P0 of the Stata port, `notes/STATA_PORT_PLAN.md`).
+No numerical changes: bit-identical to 0.10.0 on the 60-configuration
+battery (`tests/manual/bitwise-battery.R`), every ncores.
+
+- The C++ engine now lives in a front-end-agnostic header,
+  `src/conley_core.h` (namespace `conley`), shared between this package
+  and the forthcoming Stata plugin. `src/cpp-functions.cpp` is a thin Rcpp
+  front-end. The header compiles without R against plain Armadillo
+  (`tests/manual/core_standalone_check.cpp` + `.R` verify bit-identity).
+- RcppParallel dependency dropped: threading is a `std::thread` pool inside
+  the engine with the same deterministic chunked reduction, so `ncores`
+  still never affects results. `RcppParallel::setThreadOptions()` is no
+  longer touched, `SystemRequirements: GNU make` is gone, and
+  `src/Makevars` needs only `-pthread`.
+- `Depends: R (>= 4.0)` declared: `std::thread` on Windows needs the
+  posix-threads Rtools toolchain that ships with R 4.0 and later.
+
+CRAN preparation.
+
+- `DESCRIPTION`: package names quoted, Conley (1999) DOI added, copyright
+  holder role declared; `LICENSE` updated to match.
+- `.Rbuildignore` keeps `CLAUDE.md`, `notes/`, `tests/manual/`, and
+  `cran-comments.md` out of the source tarball.
+- Tests: the tiny `felm` fixture in the balanced-panel validation test no
+  longer emits "NaNs produced" warnings.
+
 # fastconley 0.10.0
 
 GLM support and documented IV support.

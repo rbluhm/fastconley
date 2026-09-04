@@ -4,7 +4,6 @@ suppressMessages({
   library(data.table)
 })
 
-RcppParallel::setThreadOptions(numThreads = 1L)
 
 # Naive O(n^2) brute-force reference. Computes the spatial meat from scratch
 # using simple per-pair distance formulas, matching what the new templated
