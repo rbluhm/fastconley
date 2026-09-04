@@ -23,6 +23,7 @@ d Support: https://github.com/rbluhm/fastconley/issues
 d
 f fastconley.ado
 f fastconley.mata
+f fastconley_reghdfe_vce.ado
 f fastconley_p.ado
 f fastconley.sthlp
 f LICENSE_fastconley.txt

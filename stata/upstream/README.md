@@ -1,120 +1,180 @@
-# Proposal: native `vce(conley ...)` for reghdfe
+# Primary proposal: a generic external-VCE hook for reghdfe
 
-This directory contains a reviewable proposal for Conley (1999) spatial HAC
-standard errors in reghdfe's native OLS estimator. It has not been submitted.
+This directory contains two alternative, unsubmitted proposals against
+reghdfe 6.14.1. The primary proposal is the small generic hook in
+`reghdfe-external-vce-hook.patch`; fastconley is its first provider.
 
 ```stata
-reghdfe y x1 x2, absorb(region) vce(conley lat lon, cutoff(300))
-reghdfe y x1 x2, absorb(id year) ///
-    vce(conley lat lon, cutoff(500) kernel(uniform) lag(2) unit(id) time(year))
+reghdfe y x1 x2, absorb(region) ///
+    vce(external fastconley, lat(lat) lon(lon) cutoff(300))
 ```
 
-The grammar is `vce(conley latvar lonvar, cutoff(#)
-[kernel(bartlett|uniform) distance(haversine|spherical|chord) lag(#)
-unit(varname) time(varname) pixel(#) balanced nossc nopsdfix])`. `con` and
-`conl` are accepted abbreviations. String suboption values are normalized to
-lower case. All Conley syntax-validation failures return `r(198)`.
+The hook keeps estimator-specific algorithms out of reghdfe. reghdfe owns
+sample construction, partialling out, OLS, compact-mode preservation, result
+posting, replay, and postestimation. fastconley continues to own Conley syntax,
+validation, small-sample and PSD rules, the pure-Mata engine, compiled plugin,
+and its statistical documentation. A second provider can use the same hook
+without another reghdfe parser or solver change.
 
-Defaults are Bartlett weights, haversine distance, no serial lags, no pixel
-aggregation, robust-style `N/(N-df_m-df_a)` small-sample scaling, and PSD
-repair. The repair follows fastconley/fixest semantics: eigenvalues at or below
-zero are replaced by `1e-16`, with a note only when the matrix changes by more
-than `1e-8`; `nopsdfix` leaves it unchanged and reports a noticeable failure.
+## External-provider contract
 
-## Scope and limitations
+The grammar is:
 
-Native `vce(conley)` is OLS-only. ivreghdfe rejects VCE types other than
-unadjusted, robust, and cluster before calling reghdfe, so this patch does not
-make Conley reachable for IV. The standalone fastconley command is separately
-validated for IV and raster/FFT workloads; neither claim applies to this native
-integration, whose engine is pairwise pure Mata.
+```stata
+vce(external PROVIDER [, provider_options])
+vce(ext PROVIDER [, provider_options])
+```
 
-With `group()` or `individual()`, latitude, longitude, unit, and time variables
-are included in `ValidateGroups`; they must be constant within group. The
-`balanced` suboption validates equal period sizes, identical unit membership,
-and time-invariant coordinates, while using the same exact general covariance
-path. Numeric-looking string times keep their numeric spacing; other string
-keys are grouped in sorted-value order.
+Before ftools' `ms_parse_vce` runs, reghdfe recognizes the external clause,
+verifies that `PROVIDER_reghdfe_vce` is on the adopath, and gives
+`ms_parse_vce` a valid robust VCE. Missing or unavailable providers return
+`r(198)` with the expected program name.
 
-For fweights, Conley treats an observation of weight `w` as `w` colocated,
-perfectly correlated observations. Consequently the negative-cutoff diagnostic
-used by standalone development tests is not equal to reghdfe's robust VCE for
-fweights. Unweighted, aweight, and pweight score construction follows
-reghdfe's normalized-weight conventions.
+The provider is an s-class Stata program with two calls:
 
-## Files and design
+1. Before partial-out, reghdfe calls
+   `PROVIDER_reghdfe_vce, keepvars provider_options`. The provider returns a
+   simple varlist in `s(keepvars)` and may return the standard-error column
+   title in `s(vcetype)`; the default title is `External`. reghdfe adds those
+   variables to the estimation sample, compact/pool loading, and
+   `ValidateGroups`. Thus provider variables must be constant within
+   `group()` when team/individual FEs are used.
+2. After `reghdfe_solve_ols`, reghdfe calls
+   `PROVIDER_reghdfe_vce, compute provider_options` with `HDFE` in Mata scope.
+   The provider must replace `HDFE.solution.V` with the full covariance in
+   coefficient units, including `_cons` when reported and including its own
+   small-sample adjustment. It may return whitespace-delimited `name=value`
+   lists in `s(post_scalars)` and `s(post_macros)`; reghdfe posts those names
+   to `e()`.
 
-- `make_conley_mata.py` embeds the reghdfe front end and discovers every
-  top-level `fastconley_*` function in `stata/src/fastconley.mata`. It applies
-  the `reghdfe_conley_` namespace, rewrites standalone-only diagnostics, and
-  deterministically generates `Conley.mata` without reading the old output.
-- `reghdfe-vce-conley.patch` adds `Conley.mata`, local pre-parsing before stock
-  `ms_parse_vce`, a generic `vce_extra_keepvars` field used by compact loading,
-  full `e(conley_*)` posting and replay display, help, version/date/changelog
-  updates, and `test/part1/conley.do` in the upstream certification layout.
-- `test_upstream.do` compares the patched command with standalone fastconley
-  and exercises parsing, replay/posting, compact and `poolsize(1)`, aweights,
-  fweights, native pweights, panel lags, stale `s()` state, PSD repair, and
-  group-coordinate validation.
+Both calls use `capture noisily`, so the provider's diagnostic remains visible.
+A provider error is normalized to `r(498)` followed by
+`vce provider PROVIDER failed`. After a successful compute, reghdfe recomputes
+the model Wald F and posts `e(vce)=external`, the provider title in
+`e(vcetype)`, `e(vce_provider)`, and the raw `e(vce_options)`. Replay,
+`predict`, `test`, and `margins` remain reghdfe-native.
 
-No ftools patch is needed. reghdfe recognizes `con`/`conl` before calling
-`ms_parse_vce`, parses the complete Conley clause locally, hands stock ftools a
-valid robust VCE, and then restores `vcetype="conley"`. The declared dependency
-therefore remains stock ftools 2.50.0.
+The hook is OLS-only. ivreghdfe rejects VCE types it does not know before this
+path can run. A provider owns all numerical and statistical validation,
+small-sample scaling, and covariance repair; reghdfe deliberately does not
+interpret those choices.
 
-## Rebuild and validation
+## fastconley provider
 
-The patches are pinned to:
+`../src/fastconley_reghdfe_vce.ado` implements both calls. It accepts:
 
-- reghdfe `29b2b203f534413369d675d0c0f674d61291f536` (tag 6.14.1 and the
-  verified current `master` at preparation time);
-- ftools `7b3663e49ea5c5b81638c55be29edf416e68e8b7` (`*! version 2.50.0
-  09jan2026`), unmodified.
+```text
+lat() lon() cutoff() kernel() dist() lag() unit() time() balanced pixel()
+engine() method() threads() tile() nossc nopsdfix verbose
+```
 
-From the fastconley repository root, regenerate after every engine change:
+The provider includes the standalone command's shared Mata routines and loads
+the same installed plugin binary under a provider-private Stata program name.
+On compute it reconstructs the same
+weighted design, bread, scores, constant extension, DoF factor, spatial and
+serial meat, engine dispatch, and PSD repair as standalone fastconley. The
+provider therefore retains plugin acceleration and a pure-Mata fallback;
+reghdfe contains no Conley-specific code.
+
+## Files
+
+- `reghdfe-external-vce-hook.patch`: primary patch, including help, version
+  6.15.0 metadata, and `test/part1/external-vce.do`, whose tiny dummy provider
+  makes the upstream certification test independent of fastconley.
+- `test_hook.do`: end-to-end hook/provider tests run from this repository.
+- `reghdfe-vce-conley.patch`: alternative full native patch. It adds
+  `vce(conley lat lon, ...)`, the generated `Conley.mata`, help, posting, and
+  native certification tests directly to reghdfe.
+- `Conley.mata` and `make_conley_mata.py`: generated engine and generator used
+  only by the full-patch alternative.
+- `test_upstream.do`: integration suite for the full-patch alternative.
+
+No ftools patch is needed by either proposal. Both pre-parse their new grammar
+inside reghdfe and use unmodified ftools 2.50.0.
+
+## Pinned sources and clean application
+
+Both reghdfe patches target
+`29b2b203f534413369d675d0c0f674d61291f536` (tag 6.14.1, also current master
+when prepared). ftools is pinned at
+`7b3663e49ea5c5b81638c55be29edf416e68e8b7` (2.50.0). The patches are
+alternatives and must be applied to separate fresh copies, never stacked.
+
+From the fastconley repository root:
 
 ```bash
-python3 stata/upstream/make_conley_mata.py
-git diff --exit-code -- stata/upstream/Conley.mata
+mkdir -p .scratch
+cp -a /path/to/pinned/reghdfe .scratch/reghdfe-hook
+cp -a /path/to/pinned/reghdfe .scratch/reghdfe-full
+cp -a /path/to/pinned/ftools .scratch/ftools
+
+git -C .scratch/reghdfe-hook apply --check "$PWD/stata/upstream/reghdfe-external-vce-hook.patch"
+git -C .scratch/reghdfe-hook apply "$PWD/stata/upstream/reghdfe-external-vce-hook.patch"
+(cd .scratch/reghdfe-hook/current-code && python3 build.py)
+
+git -C .scratch/reghdfe-full apply --check "$PWD/stata/upstream/reghdfe-vce-conley.patch"
+git -C .scratch/reghdfe-full apply "$PWD/stata/upstream/reghdfe-vce-conley.patch"
+(cd .scratch/reghdfe-full/current-code && python3 build.py)
 ```
 
-To validate the upstream patch, copy the pinned repositories to scratch, then:
+Create two scratch PLUS directories. Copy the corresponding built reghdfe
+`src/`, stock ftools `src/`, and `require.ado`/`require.sthlp` into each. Add
+this repository's `stata/src` to the adopath. A scratch runner can then set:
+
+```stata
+global UPSTREAM_PLUS "/absolute/path/to/.scratch/plus-hook"
+global FULL_PATCH_PLUS "/absolute/path/to/.scratch/plus-full"
+do stata/upstream/test_hook.do
+```
+
+Run it from the repository root with `stata-mp -b do .scratch/run_hook.do`.
+Stata batch mode can return shell status 0 after a do-file error, so inspect
+the log and require the final line `test_hook.do: all checks passed`.
+
+`test_hook.do` checks external fastconley against the standalone command at a
+`1e-15` relative threshold for a cross section, aweights plus pixel
+aggregation, a balanced panel with lag 2 and unit/time keys, and
+uniform/chord/nossc/nopsdfix. It also checks every printed difference,
+provider/raw-option posting, replay, `predict`, `test`, `margins`, compact,
+`poolsize(1)`, compact plus `poolsize(1)`, missing-provider `r(198)`, visible
+provider failures normalized to `r(498)`, dummy-provider dispatch, group
+validation, and equality to the alternative native `vce(conley)` patch.
+
+The repository's ordinary Stata gate remains:
 
 ```bash
-git -C reghdfe apply --check /path/to/reghdfe-vce-conley.patch
-git -C reghdfe apply /path/to/reghdfe-vce-conley.patch
-cd reghdfe/current-code && python3 build.py
+stata-mp -b do stata/test/test_basic.do
 ```
 
-Install the resulting reghdfe `src/` and the unmodified pinned ftools `src/`
-into a scratch PLUS, add fastconley's `stata/src` to the adopath, set global
-`UPSTREAM_PLUS`, and run `stata-mp -b do stata/upstream/test_upstream.do` from
-the fastconley root. Stata batch can return shell status 0 after a do-file
-error, so the log must contain `test_upstream.do: all checks passed`.
+The shipped plugins currently identify as engine 0.11.0 while the ado expects
+0.11.1, so `engine(auto)` falling back to Mata in that test is expected.
 
-`test_upstream.do` primarily checks reghdfe integration because both commands
-use the same Mata engine. It does not independently validate the distance
-formula, compiled plugin, IV, raster/FFT dispatch, cross-platform numerics, or
-large-data performance. Those belong to fastconley's R/Stata parity and engine
-test suites. The upstream-native `test/part1/conley.do` has no fastconley
-dependency and independently reconstructs the PSD floor from the raw VCE.
+## Alternative: native `vce(conley ...)`
 
-## Likely maintainer concerns
+The full patch offers a single-command, dependency-free Conley experience once
+reghdfe is installed. Its option surface and stored results are visible in
+reghdfe help, and its pure-Mata engine can be reviewed and tested in one
+repository. It does not provide the compiled plugin or raster/FFT engine and
+does not make Conley available to ivreghdfe.
 
-The largest review question is ownership: this proposal adds a sizeable
-estimator-specific algorithm to reghdfe, including generated source and a new
-public option/result surface. Other concerns are the pure-Mata runtime,
-long-term synchronization with fastconley, the OLS-only boundary at ivreghdfe,
-the statistical assumptions behind cutoff/kernel choices, and whether a
-provider interface would be easier to maintain than native Conley code.
+Its trade-off is ownership: roughly nine hundred generated Mata lines plus
+Conley parsing, validation, posting, documentation, and tests become reghdfe
+maintenance. The generated copy must remain synchronized with fastconley, and
+future algorithm changes require coordinated upstream updates. Validate it
+separately with `test_upstream.do`; regenerate `Conley.mata` only for this
+alternative via `python3 stata/upstream/make_conley_mata.py`.
 
-An alternative is a generic external-VCE hook, for example
-`vce(external:<provider> ...)`. reghdfe would call the provider with `S`, `sol`,
-`D`, `X`, `w`, and `vce_mode`; the provider would update `sol.V` and declare the
-raw variables it needs through `vce_extra_keepvars` before partial-out. That
-keeps compact/team-FE preservation generic while leaving Conley parsing,
-documentation, algorithm ownership, IV/raster claims, and optional compiled
-acceleration in fastconley. A production hook would also need a stable callback
-contract, namespace/error rules, capability/version negotiation, posting and
-replay conventions, and tests showing that external providers cannot corrupt
-reghdfe state.
+## Maintainer review questions
+
+For the generic hook, the central questions are whether the two-call ABI is
+stable enough, whether retaining the trimmed standardized design for an
+external run is an acceptable temporary memory cost, how strictly provider
+`e()` names should be namespaced, and whether executing third-party ado code
+inside reghdfe needs capability/version negotiation beyond `which` and clear
+failure isolation. Its benefit is a small generic surface with no statistical
+algorithm to maintain.
+
+For the full patch, the central questions are the size and generated nature of
+the added engine, pure-Mata performance, long-term synchronization, and
+reghdfe assuming responsibility for Conley defaults and validation. Its
+benefit is a self-contained native option with no provider contract.

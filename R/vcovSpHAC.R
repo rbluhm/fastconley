@@ -32,8 +32,11 @@ vcovSpHAC.default <- function(reg, ...) {
 #' out of the box: \code{lfe} stores the projected (second-stage) design in
 #' \code{cX} and the structural residuals in \code{residuals}, which is
 #' exactly the 2SLS sandwich. Weighted fits are supported (the scores carry
-#' the weights and the bread uses \eqn{X'WX}). Other k-class estimators,
-#' including LIML, are not supported.
+#' the weights and the bread uses \eqn{X'WX}). Fits made through lfe's
+#' k-class path (any \code{kclass =} argument, including \code{kclass = 1}) are
+#' rejected: lfe then stores the raw endogenous regressors instead of the
+#' projected design, so the sandwich would be silently wrong. Refit without
+#' \code{kclass} for ordinary 2SLS.
 #'
 #' @param reg A fitted object of class "felm", including IV fits.
 #' @param unit Optional name of the panel unit variable. When both \code{unit}
@@ -189,15 +192,18 @@ vcovSpHAC.felm <- function(reg,
     validate_column_name(item)
   }
 
-  kclass_call <- reg$call$kclass
-  ordinary_kclass <- is.null(kclass_call) ||
-    (is.numeric(kclass_call) && length(kclass_call) == 1L &&
-       is.finite(kclass_call) && kclass_call == 1)
-  if (!ordinary_kclass ||
-      (length(reg$kappa) &&
-       (length(reg$kappa) != 1L || !is.finite(reg$kappa) || reg$kappa != 1))) {
-    stop("vcovSpHAC.felm supports only OLS and ordinary 2SLS; other k-class ",
-         "estimators (including LIML) are not supported.")
+  # lfe's k-class code path (any `kclass =` argument, including kclass = 1)
+  # stores the raw endogenous regressors in cX instead of the projected
+  # second-stage design that the default 2SLS path stores as `x(fit)`; the
+  # sandwich below assumes the projected design, so k-class objects would
+  # give silently wrong covariances (checked: kclass = 1 reproduces the 2SLS
+  # point estimate but a very different vcov). lfe leaves `kappa` NULL on
+  # the OLS and default 2SLS paths, so its presence identifies the k-class
+  # path regardless of how the argument was written in the call.
+  if (!is.null(reg$kappa)) {
+    stop("vcovSpHAC.felm supports OLS and ordinary 2SLS fits only. This fit ",
+         "went through lfe's k-class path (kclass = ), which stores a ",
+         "different design; refit without `kclass` for 2SLS or use fixest.")
   }
 
   fe_names <- names(reg$fe)
@@ -565,8 +571,19 @@ vcovSpHAC.fixest <- function(reg,
     }
   )
   no_unit <- is.null(unit)
+  # `data` is either the full original data (rows addressed by obs_idx) or a
+  # frame already aligned with the fit (exactly n rows, e.g. the fitted
+  # model frame after subset/NA removal). In the aligned case obs_idx must
+  # not be applied: it points into the original rows.
+  aligned <- nrow(data) == n
+  if (!aligned && length(obs_idx) && max(obs_idx) > nrow(data)) {
+    stop("`data` has ", nrow(data), " rows but the fixest object selects ",
+         "original rows up to ", max(obs_idx), ". Pass the full original ",
+         "data or a frame aligned with the fitted observations (", n,
+         " rows).", call. = FALSE)
+  }
   pick <- function(col) {
-    data[[col]][obs_idx]
+    if (aligned) data[[col]] else data[[col]][obs_idx]
   }
   lat_v  <- pick(lat)
   lon_v  <- pick(lon)

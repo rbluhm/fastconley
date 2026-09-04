@@ -5,6 +5,7 @@
 {vieweralsosee "ivreghdfe" "help ivreghdfe"}{...}
 {viewerjumpto "Syntax" "fastconley##syntax"}{...}
 {viewerjumpto "Description" "fastconley##description"}{...}
+{viewerjumpto "Use through reghdfe" "fastconley##reghdfe_hook"}{...}
 {viewerjumpto "Options" "fastconley##options"}{...}
 {viewerjumpto "Remarks" "fastconley##remarks"}{...}
 {viewerjumpto "Examples" "fastconley##examples"}{...}
@@ -114,6 +115,30 @@ Point estimates equal those of {help ivreghdfe} and {cmd:ivreg2}. With
 Factor-variable terms are not allowed in the IV lists (absorb them or use
 indicators). After IV fits, {cmd:predict ..., xb} is available; residual
 prediction requires {opt residuals(newvar)} on the estimation command.
+
+
+{marker reghdfe_hook}{...}
+{title:Use through reghdfe}
+
+{pstd}
+When reghdfe 6.15.0 is built with the external-VCE hook proposed in this
+package, fastconley can provide the covariance without replacing reghdfe as
+the estimation command:{p_end}
+
+{phang2}{cmd:. reghdfe y x1 x2, absorb(region) vce(external fastconley, lat(lat) lon(lon) cutoff(300))}{p_end}
+
+{pstd}
+The provider accepts {opt latitude()}, {opt longitude()}, {opt cutoff()},
+{opt kernel()}, {opt distance()}, {opt lag()}, {opt unit()}, {opt time()},
+{opt balanced}, {opt pixel()}, {opt engine()}, {opt method()}, {opt threads()},
+{opt tile()}, {opt nossc}, {opt nopsdfix}, and {opt verbose}, with the same
+defaults and validation as the standalone command. reghdfe remains responsible
+for OLS, display, replay, and postestimation; fastconley supplies the complete
+covariance and its small-sample/PSD adjustments. The hook posts
+{cmd:e(vce)=external}, {cmd:e(vce_provider)=fastconley}, and the raw provider
+options, plus the usual fastconley VCE results. IV remains available only
+through the standalone {cmd:fastconley} command because ivreghdfe rejects
+external VCE types.
 
 
 {marker options}{...}

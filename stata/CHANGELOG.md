@@ -1,5 +1,10 @@
 # fastconley for Stata changelog
 
+## Unreleased
+
+- Added `fastconley_reghdfe_vce`, the first provider for the proposed generic reghdfe `vce(external PROVIDER, ...)` hook, with standalone-identical Mata/plugin numerics and provider metadata.
+- Made the generic external-VCE hook the primary upstream proposal; retained the native pure-Mata `vce(conley ...)` patch as an alternative.
+
 ## 0.2.0 - 2026-09-04
 
 - Added pweight preparation, strict numeric-option validation, grouped-expression-safe IV parsing, IV regressor collinearity handling, no-absorb IV constants, IV prediction, and fuller IV stored results.

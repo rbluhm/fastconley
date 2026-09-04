@@ -34,16 +34,29 @@ FRONT_END = r'''// -------------------------------------------------------------
 
 mata:
 
-real colvector reghdfe_conley_read_key(`FixedEffects' S, string scalar varname)
+// Time keys: numeric variables are used as-is; string time values that all
+// parse as numbers keep their numeric scale (so "2000" and "2002" stay two
+// units apart for the serial HAC); other strings are equality-coded and only
+// define spatial blocks, so they are rejected when lag() is positive. This
+// mirrors fastconley and its R original.
+real colvector reghdfe_conley_read_time(`FixedEffects' S, string scalar varname)
 {
 	string colvector raw
-	real colvector value
 
 	if (!st_isstrvar(varname)) return(st_data(S.sample, varname))
 	raw = st_sdata(S.sample, varname)
-	value = strtoreal(raw)
-	if (!any(missing(value))) return(value)
-	return(reghdfe_conley_group(raw))
+	if (reghdfe_conley_numeric_string(raw)) return(strtoreal(raw))
+	if (S.conley_lag > 0) {
+		_error(198, "lag() requires numeric time; nonnumeric string time values only define spatial blocks")
+	}
+	return(reghdfe_conley_group_codes(raw))
+}
+
+// Unit keys always keep string identity ("01" and "1" are distinct units).
+real colvector reghdfe_conley_read_unit(`FixedEffects' S, string scalar varname)
+{
+	if (!st_isstrvar(varname)) return(st_data(S.sample, varname))
+	return(reghdfe_conley_group_codes(st_sdata(S.sample, varname)))
 }
 
 
@@ -105,8 +118,8 @@ void reghdfe_conley_validate_balanced(real colvector lat,
 
 	lat = st_data(S.sample, S.conley_lat)
 	lon = st_data(S.sample, S.conley_lon)
-	time = S.conley_time == "" ? J(n, 1, 1) : reghdfe_conley_read_key(S, S.conley_time)
-	unit = S.conley_unit == "" ? (1::n) : reghdfe_conley_read_key(S, S.conley_unit)
+	time = S.conley_time == "" ? J(n, 1, 1) : reghdfe_conley_read_time(S, S.conley_time)
+	unit = S.conley_unit == "" ? (1::n) : reghdfe_conley_read_unit(S, S.conley_unit)
 	if (S.conley_balanced) reghdfe_conley_validate_balanced(lat, lon, time, unit)
 
 	if (S.verbose > 0) {

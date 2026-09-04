@@ -55,11 +55,18 @@ coverage) whose findings are fixed below.
   co-located observations into separate blocks.
 - Both `lat` and `latitude` (or any two aliases) present in the data is now
   an auto-detection error, as documented.
+- The fixest method accepts `data =` either as the full original data (rows
+  addressed through `fixest::obs()`) or as a frame already aligned with the
+  fit, such as the fitted model frame after `subset =` or NA removal; a frame
+  that is neither is rejected with a clear message.
 - Unknown arguments in `...` are errors (typos such as `psd_fxi =` were
   swallowed). `maxobsmem` warns once that it is ignored; `neighbor = "band"`
   is documented as deprecated but still works.
-- `lfe` k-class / LIML fits are rejected; only OLS and ordinary 2SLS are
-  supported.
+- `lfe` fits made through the k-class path (any `kclass =` argument, even
+  `kclass = 1`) are rejected: lfe stores the raw endogenous regressors for
+  them instead of the projected 2SLS design, so the sandwich would be silently
+  wrong (a `kclass = 1` fit gave 0.0028 where 2SLS gives 0.0097). Only OLS and
+  ordinary 2SLS are supported.
 - `ncores` must be a single finite positive integer. The default remains all
   logical cores, but `getOption("fastconley.ncores")` overrides it and a
   true-ish `_R_CHECK_LIMIT_CORES_` (CRAN's check convention) caps it at 2.

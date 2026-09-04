@@ -144,8 +144,11 @@ centered design matrix is stored on the object. IV/2SLS fits (the
 out of the box: \code{lfe} stores the projected (second-stage) design in
 \code{cX} and the structural residuals in \code{residuals}, which is
 exactly the 2SLS sandwich. Weighted fits are supported (the scores carry
-the weights and the bread uses \eqn{X'WX}). Other k-class estimators,
-including LIML, are not supported.
+the weights and the bread uses \eqn{X'WX}). Fits made through lfe's
+k-class path (any \code{kclass =} argument, including \code{kclass = 1}) are
+rejected: lfe then stores the raw endogenous regressors instead of the
+projected design, so the sandwich would be silently wrong. Refit without
+\code{kclass} for ordinary 2SLS.
 }
 \examples{
 if (requireNamespace("lfe", quietly = TRUE)) {

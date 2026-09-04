@@ -122,12 +122,12 @@ test_that("felm rejects non-2SLS k-class estimates", {
   fit <- lfe::felm(y ~ x | 0 | (q ~ z1 + z2) | 0, data = d,
                    keepCX = TRUE, kclass = "liml")
   expect_error(vcovSpHAC(fit, lat = "lat", lon = "lon", dist_cutoff = 500,
-                         data = d), "only OLS and ordinary 2SLS")
+                         data = d), "k-class")
   fit_exact <- lfe::felm(y ~ x | 0 | (q ~ z1) | 0, data = d,
                          keepCX = TRUE, kclass = "liml")
   expect_error(vcovSpHAC(fit_exact, lat = "lat", lon = "lon",
                          dist_cutoff = 500, data = d),
-               "only OLS and ordinary 2SLS")
+               "k-class")
 })
 
 test_that("ncores options, CRAN cap, rounding, and validation are explicit", {
@@ -201,4 +201,38 @@ test_that("panel keys and coordinates are validated before dispatch", {
     dd[[case$col]][1L] <- case$value
     expect_error(call_bad(dd), case$msg, label = paste(case$col, case$value))
   }
+})
+
+test_that("felm fits through lfe's k-class path are rejected, default 2SLS accepted", {
+  skip_if_not_installed("lfe")
+  set.seed(31)
+  n <- 150
+  d <- data.frame(g = rep(1:5, 30), lat = runif(n, 30, 45), lon = runif(n, -110, -80))
+  d$w <- rnorm(n); d$z <- 0.8 * d$w + rnorm(n); d$y <- d$z + rnorm(n)
+  f_def <- lfe::felm(y ~ 1 | g | (z ~ w) | 0, d, keepCX = TRUE)
+  expect_silent(v_def <- vcovSpHAC(f_def, lat = "lat", lon = "lon", dist_cutoff = 300, ncores = 1))
+  # kclass = 1 reproduces the 2SLS point estimate but lfe stores the raw
+  # endogenous regressor in cX, so the object is not usable here.
+  kval <- 1
+  f_sym <- lfe::felm(y ~ 1 | g | (z ~ w) | 0, d, kclass = kval, keepCX = TRUE)
+  expect_equal(unname(coef(f_sym)), unname(coef(f_def)))
+  expect_error(vcovSpHAC(f_sym, lat = "lat", lon = "lon", dist_cutoff = 300, ncores = 1), "k-class")
+  f_liml <- lfe::felm(y ~ 1 | g | (z ~ w) | 0, d, kclass = "liml", keepCX = TRUE)
+  expect_error(vcovSpHAC(f_liml, lat = "lat", lon = "lon", dist_cutoff = 300, ncores = 1), "k-class")
+})
+
+test_that("fixest path accepts a data frame already aligned with the fit", {
+  skip_if_not_installed("fixest")
+  set.seed(32)
+  n <- 160
+  d <- data.frame(x = rnorm(n), g = rep(1:4, 40), lat = runif(n, 30, 45), lon = runif(n, -110, -80))
+  d$y <- 0.5 * d$x + rnorm(n)
+  d$x[c(5, 17)] <- NA
+  fit <- fixest::feols(y ~ x | g, d, subset = ~ lat > 32, demeaned = TRUE)
+  v_full <- vcovSpHAC(fit, lat = "lat", lon = "lon", dist_cutoff = 300, ncores = 1, data = d)
+  d_aligned <- d[fixest::obs(fit), ]
+  v_aligned <- vcovSpHAC(fit, lat = "lat", lon = "lon", dist_cutoff = 300, ncores = 1, data = d_aligned)
+  expect_identical(v_full, v_aligned)
+  expect_error(vcovSpHAC(fit, lat = "lat", lon = "lon", dist_cutoff = 300, ncores = 1, data = d[1:100, ]),
+               "original rows")
 })

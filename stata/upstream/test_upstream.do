@@ -184,4 +184,43 @@ capture noisily reghdfe y x, noabsorb group(team) individual(person) absorb(pers
 assert _rc == 498
 display as result "team-FE nonconstant coordinates rejected with r(498)"
 
+
+* --------------------------------------------------------------------------
+* Key handling: string units keep identity ("01" != "1"); numeric-looking
+* string time keeps its scale; nonnumeric string time is rejected with lag().
+* --------------------------------------------------------------------------
+clear
+set obs 400
+set seed 17
+gen int unum = ceil(_n / 20)
+gen double lat = runiform(30, 45)
+gen double lon = runiform(-110, -80)
+bysort unum (lat): gen int t = _n
+gen double x = rnormal()
+gen double y = 0.5 * x + rnormal()
+gen str2 ustr = string(unum, "%02.0f")
+replace ustr = "1" if unum == 1 & t > 10
+gen int unum2 = unum
+replace unum2 = 99 if unum == 1 & t > 10
+reghdfe y x, noabsorb vce(conley lat lon, cutoff(300) unit(unum2) time(t) lag(2))
+matrix __Vnum = e(V)
+reghdfe y x, noabsorb vce(conley lat lon, cutoff(300) unit(ustr) time(t) lag(2))
+matrix __Vstr = e(V)
+scalar __diff = mreldif(__Vstr, __Vnum)
+display as result "string unit identity (01 vs 1 distinct): " scalar(__diff)
+assert scalar(__diff) < 1e-12
+gen str4 tstr = string(2000 + 2 * t)
+gen int tnum = 2000 + 2 * t
+reghdfe y x, noabsorb vce(conley lat lon, cutoff(300) unit(unum) time(tnum) lag(2))
+matrix __Vt1 = e(V)
+reghdfe y x, noabsorb vce(conley lat lon, cutoff(300) unit(unum) time(tstr) lag(2))
+matrix __Vt2 = e(V)
+scalar __diff = mreldif(__Vt1, __Vt2)
+display as result "numeric-looking string time keeps scale: " scalar(__diff)
+assert scalar(__diff) < 1e-12
+gen str5 tbad = "T" + string(t)
+rcof `"reghdfe y x, noabsorb vce(conley lat lon, cutoff(300) unit(unum) time(tbad) lag(2))"' == 198
+reghdfe y x, noabsorb vce(conley lat lon, cutoff(300) unit(unum) time(tbad))
+display as result "nonnumeric string time rejected with lag(), accepted without"
+
 display as result _n "test_upstream.do: all checks passed"

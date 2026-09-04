@@ -171,6 +171,19 @@ standalone benchmark) and CI keeps building with mingw.
 
 ## Upstream proposal
 
-`stata/upstream/` contains a ready-to-review contribution adding
-`vce(conley latvar lonvar, cutoff(#) ...)` to reghdfe itself (pure Mata,
-same engine); see its README.
+The primary proposal in `stata/upstream/` is a small generic hook for
+reghdfe 6.15.0. With that patch installed, the same OLS fit can be requested
+without making reghdfe own the Conley algorithm:
+
+```stata
+reghdfe y x1 x2, absorb(region) ///
+    vce(external fastconley, lat(lat) lon(lon) cutoff(300))
+```
+
+`fastconley_reghdfe_vce.ado` is the first provider. It uses the same Mata or
+compiled engine, option validation, small-sample factor, and PSD repair as the
+standalone command; reghdfe retains its native posting, replay, `predict`,
+`test`, and `margins` behavior. The hook is OLS-only. The older full patch,
+which adds a pure-Mata `vce(conley ...)` implementation directly to reghdfe,
+remains in `stata/upstream/` as an alternative. See that directory's README
+for both trade-offs and reproducible tests.
