@@ -4,6 +4,8 @@
 
 - Added `fastconley_reghdfe_vce`, the first provider for the proposed generic reghdfe `vce(external PROVIDER, ...)` hook, with standalone-identical Mata/plugin numerics and provider metadata.
 - Made the generic external-VCE hook the primary upstream proposal; retained the native pure-Mata `vce(conley ...)` patch as an alternative.
+- Optimized the pure-Mata uniform kernel with an all-accepted tile path, conditional verbose pair counting, and reuse of per-left-tile work vectors (about 10-20% faster on 100,000 points).
+- Mata uniform and Bartlett/chord tiles clamp the squared chord to 4 so exact antipodes are accepted when the cutoff covers the whole sphere (matches the compiled engine).
 
 ## 0.2.0 - 2026-09-04
 

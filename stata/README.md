@@ -76,10 +76,13 @@ The 21-configuration parity harness (including three IV models) observed a
 worst relative V difference of 2.0e-11, in the unbalanced serial lag-2 case;
 the default pass tolerance is 1e-8.
 
-Indicative timings on a 4-core Stata/MP laptop (16 logical CPUs), 100,000
-scattered points with a 500 km cutoff: plugin Bartlett 4.8 s / 1.5 s / 0.8 s at
-1 / 4 / 16 threads, uniform 2.5 s / 0.8 s / 0.5 s; Mata 28 s Bartlett, 8 s
-uniform. A balanced 40,000 x 3 panel at 500 km with one serial lag: plugin
+Indicative timings measured 2026-09-04 on a 4-core Stata/MP Linux laptop
+(16 logical CPUs), 100,000 scattered points with one absorbed FE, `k = 4`
+(including `_cons`), and a 500 km cutoff: plugin Bartlett 4.8 s / 1.5 s /
+0.8 s at 1 / 4 / 16
+threads, uniform 2.5 s / 0.8 s / 0.5 s; Mata (best of two runs in one Stata
+instance) 21.8 s Bartlett/haversine and 23.0 s uniform/spherical. A balanced
+40,000 x 3 panel at 500 km with one serial lag: plugin
 about 1 s, Mata 5 s with `balanced`. A 216,000-cell 0.1-degree raster at
 300 km: grid engine 0.7 s, pairwise 1.0 s. For comparison, `acreg` needs
 1.6 s for 5,000 points where `fastconley` needs 0.1 s, and its cost grows

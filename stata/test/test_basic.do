@@ -49,15 +49,122 @@ if (`have_plugin') {
 	fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300) engine(mata) kernel(uniform) dist(chord)
 	assert mreldif(e(V), Vpu) < 1e-12
 }
-else di as text "plugin not available on this platform; skipping plugin checks"
+else {
+	if ("$FASTCONLEY_REQUIRE_PLUGIN" != "") {
+		di as error "FASTCONLEY_REQUIRE_PLUGIN is set but the compiled engine did not load:"
+		fastconley, version
+		error 498
+	}
+	di as text "plugin not available on this platform; skipping plugin checks"
+}
 rcof "fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300) engine(mata) method(grid)" == 198
 rcof "fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300) engine(nope)" == 198
 
 * uniform kernel, spherical distance, verbose
-fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300) kernel(uniform) dist(spherical) verbose
+fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300) kernel(uniform) dist(spherical) engine(mata) verbose
 matrix Vverbose = e(V)
 fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300) kernel(uniform) dist(spherical) engine(mata)
-assert mreldif(e(V), Vverbose) < 1e-12
+di "uniform Mata verbose vs non-verbose: " mreldif(e(V), Vverbose)
+assert mreldif(e(V), Vverbose) <= 1e-14
+
+* Uniform Mata meat against an independent dense pair loop. The small-cutoff
+* geometry occupies one cell whose bounding box is wider than the cutoff, so
+* the ordinary acceptance-matrix path is used. At the large cutoff all 300
+* points and every tile bounding box fit inside the cutoff, exercising the
+* all-accepted path on every eligible off-diagonal tile pair. Diagonal self
+* tiles deliberately retain the original strict-upper/0.5-diagonal path.
+quietly include "stata/src/fastconley.mata"
+mata:
+void fastconley_test_uniform_dense()
+{
+	real scalar n, k, cc, cutoff, edge, q, lo, threshold, i, j, a, rd, junk
+	real scalar ti, ti2, tj, tj2, tile
+	real colvector idx, lat, lon, latr, ycoord, zcoord, ea, eb
+	real matrix S, U, got, ref, ordinary, fasttile, Ua, Ub, A, W, WS
+	real rowvector si, sj
+
+	n = 300
+	k = 3
+	idx = 1::n
+	S = (sin(idx:/7), cos(idx:/11), (mod(idx, 13):-6):/7)
+	for (cc = 1; cc <= 2; cc++) {
+		if (cc == 1) {
+			cutoff = 100
+			edge = 2 * sin(cutoff / (2 * 6371))
+			q = floor(1 / edge)
+			lo = q * edge - 1
+			ycoord = lo :+ edge :* (0.1 :+ 0.8 :* mod(idx, 2))
+			zcoord = lo :+ edge :* (0.1 :+ 0.8 :* mod(floor((idx:-1):/2), 2))
+			latr = asin(zcoord)
+			lat = latr :* (180 / pi())
+			lon = asin(ycoord :/ cos(latr)) :* (180 / pi())
+		}
+		else {
+			cutoff = 7000
+			lat = 25 :+ mod(idx:*37, 2400) :/ 100
+			lon = -124 :+ mod(idx:*83, 5700) :/ 100
+		}
+		latr = lat :* (pi() / 180)
+		U = (cos(latr) :* cos(lon :* (pi()/180)),
+		     cos(latr) :* sin(lon :* (pi()/180)), sin(latr))
+		threshold = 4 * sin(min((pi(), cutoff / 6371)) / 2)^2
+		ref = J(k, k, 0)
+		for (i = 1; i <= n; i++) {
+			si = S[i, .]
+			ref = ref + si' * si
+			for (j = i + 1; j <= n; j++) {
+				a = sum((U[i, .] - U[j, .]) :^ 2)
+				if (a <= threshold) {
+					sj = S[j, .]
+					ref = ref + si' * sj + sj' * si
+				}
+			}
+		}
+		got = fastconley_spatial_meat(lat, lon, J(n, 1, 1), S, 1,
+		                                  cutoff, "uniform", "spherical",
+		                                  cc == 1 ? 512 : 37, 0)
+		rd = mreldif(got, ref)
+		if (cc == 1) st_numscalar("fc_uniform_dense_small", rd)
+		else {
+			st_numscalar("fc_uniform_dense_large", rd)
+			// Drive fastconley_cell_pair() as a cross-cell pair and reproduce
+			// its pre-optimization acceptance-matrix math at the same tile size.
+			// Both 150-row halves span the region, so their box bound is below
+			// this cutoff and every cross-tile pair takes the fast branch.
+			fasttile = J(k, k, 0)
+			junk = fastconley_cell_pair(fasttile, U, S, 1, k, 1, 150,
+			                                151, 300, 0, cos(cutoff/6371),
+			                                cutoff, "uniform", "spherical", 37)
+			ordinary = J(k, k, 0)
+			tile = 37
+			for (ti = 1; ti <= 150; ti = ti + tile) {
+				ti2 = min((150, ti + tile - 1))
+				Ua = U[|ti, 1 \ ti2, 3|]
+				ea = J(rows(Ua), 1, 1)
+				for (tj = 151; tj <= 300; tj = tj + tile) {
+					tj2 = min((300, tj + tile - 1))
+					Ub = U[|tj, 1 \ tj2, 3|]
+					eb = J(rows(Ub), 1, 1)
+					A = (Ua[.,1]*eb' - ea*Ub[.,1]') :^ 2 +
+					    (Ua[.,2]*eb' - ea*Ub[.,2]') :^ 2 +
+					    (Ua[.,3]*eb' - ea*Ub[.,3]') :^ 2
+					W = (A :<= threshold)
+					WS = W * S[|tj, 1 \ tj2, k|]
+					ordinary = ordinary + S[|ti, 1 \ ti2, k|]' * WS
+				}
+			}
+			st_numscalar("fc_uniform_fast_vs_ordinary", mreldif(fasttile, ordinary))
+		}
+	}
+}
+fastconley_test_uniform_dense()
+end
+di "uniform dense reference, small cutoff: " scalar(fc_uniform_dense_small)
+di "uniform dense reference, all-accepted cutoff: " scalar(fc_uniform_dense_large)
+di "uniform all-accepted vs ordinary tile path: " scalar(fc_uniform_fast_vs_ordinary)
+assert scalar(fc_uniform_dense_small) < 1e-13
+assert scalar(fc_uniform_dense_large) < 1e-13
+assert scalar(fc_uniform_fast_vs_ordinary) <= 1e-14
 
 * ---- cutoff(-1) = heteroskedasticity-only meat: must equal reghdfe vce(robust)
 fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(-1) nopsdfix
@@ -387,6 +494,9 @@ rcof "fastconley y x1 (x2 u = z1), absorb(region) lat(lat) lon(lon) cutoff(300)"
 rcof "fastconley y i.region (x2 = z1 z2), absorb(region) lat(lat) lon(lon) cutoff(300)" == 198
 
 * ---- panel: spatial + serial HAC, balanced vs general path ----------------
+* Reset after optional plugin-only tests so their random draws cannot change
+* the deterministic panel fixture when the shipped plugin is unavailable.
+set seed 20260904
 clear
 set obs 400
 gen unit = _n
@@ -456,11 +566,29 @@ quietly count
 local unbal_N = r(N)
 fastconley y x1 x2, absorb(unit time) lat(ulat) lon(ulon) cutoff(300) unit(unit) time(time) lag(2) keepsingletons
 matrix Vunbal = e(V)
-di "final unbalanced N/V11/V22: " e(N) " " Vunbal[1,1] " " Vunbal[2,2]
+di "final unbalanced raw N/final N/V11/V22: " `unbal_N' " " e(N) " " Vunbal[1,1] " " Vunbal[2,2]
 di %21.17g Vunbal[1,1] " " %21.17g Vunbal[2,2]
-assert e(N) == 1612 & `unbal_N' == 1614
-assert reldif(Vunbal[1,1], .0008537077846446459) < 1e-12
-assert reldif(Vunbal[2,2], .0007224009295529158) < 1e-12
+assert e(N) == 1619 & `unbal_N' == 1620
+assert reldif(Vunbal[1,1], .0009170766510187081) < 1e-12
+assert reldif(Vunbal[2,2], .0009104991328768975) < 1e-12
 assert !missing(e(F))
+
+* ---- exact antipodes: a cutoff covering the whole sphere must accept them
+* (squared chord 4 + O(1e-15) is clamped; matches the C++ engine) ---------
+mata:
+	ap_lat = (28.597969631664455 \ -28.597969631664455)
+	ap_lon = (126.38749223202467 \ 126.38749223202467 - 180)
+	ap_t = (1 \ 1)
+	ap_S = (1 \ 2)
+	foreach d in ("haversine", "spherical", "chord") {
+		ap_M = fastconley_spatial_meat(ap_lat, ap_lon, ap_t, ap_S, 1, 25000, "uniform", d, 1024, 0)
+		if (abs(ap_M[1,1] - 9) > 1e-12) _error(9, "antipodes rejected by uniform " + d)
+		ap_M = fastconley_spatial_meat(ap_lat, ap_lon, ap_t, ap_S, 1, 300, "uniform", d, 1024, 0)
+		if (abs(ap_M[1,1] - 5) > 1e-12) _error(9, "self terms wrong for uniform " + d)
+	}
+	ap_M = fastconley_spatial_meat(ap_lat, ap_lon, ap_t, ap_S, 1, 2 * 12742, "bartlett", "chord", 1024, 0)
+	if (abs(ap_M[1,1] - 7) > 1e-9) _error(9, "antipode bartlett/chord weight wrong")
+end
+di as result "exact antipodes accepted at whole-sphere cutoffs (uniform x 3 distances, bartlett chord)"
 
 di as result _n "test_basic.do: all checks passed"
