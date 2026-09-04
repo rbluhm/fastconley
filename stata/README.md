@@ -68,13 +68,19 @@ Both agree with each other and with the R package to about 1e-14
 (`test/parity/`, 21 configurations on both engines, including three IV models).
 
 Indicative timings on a 4-core Stata/MP laptop (16 logical CPUs), 100,000
-scattered points with a 500 km cutoff: plugin Bartlett 10 s / 3.0 s / 1.6 s at
-1 / 4 / 16 threads, uniform 2.5 s / 0.8 s / 0.5 s; Mata 25 s Bartlett, 8 s
+scattered points with a 500 km cutoff: plugin Bartlett 4.8 s / 1.5 s / 0.8 s at
+1 / 4 / 16 threads, uniform 2.5 s / 0.8 s / 0.5 s; Mata 28 s Bartlett, 8 s
 uniform. A balanced 40,000 x 3 panel at 500 km with one serial lag: plugin
-1.0 s, Mata 5 s with `balanced`. A 216,000-cell 0.1-degree raster at 300 km:
-grid engine 0.7 s, pairwise 1.0 s. For comparison, `acreg` needs 1.6 s for
-5,000 points where `fastconley` needs 0.1 s, and its cost grows with the
-square of the sample.
+about 1 s, Mata 5 s with `balanced`. A 216,000-cell 0.1-degree raster at
+300 km: grid engine 0.7 s, pairwise 1.0 s. For comparison, `acreg` needs
+1.6 s for 5,000 points where `fastconley` needs 0.1 s, and its cost grows
+with the square of the sample.
+
+Bartlett distances in both engines come from the chord between the points'
+unit vectors (`2R asin(|u_i - u_j| / 2)`), which needs no per-pair `sin` or
+`atan2` and stays accurate at small angles. The Mata engine builds the chord
+from coordinate differences below 200 km and from the dot product above,
+where that form is already exact to 1e-12 and cheaper.
 
 Coordinates stored as `float` (Stata's default) carry about 6e-8 relative
 rounding noise. The command loosens its lattice-detection tolerance for float
@@ -111,12 +117,11 @@ On Windows, run the same do-files with `StataSE-64.exe /e do stata\test\test_bas
 Bash the `/e` flag is rewritten as a path; use `//e` or set
 `MSYS_NO_PATHCONV=1`. The log lands in the working directory.
 
-Reference timings from a Windows 11 laptop (Stata/SE, i7-1265U, 12 logical
-processors) on the same 100,000-point, 500 km case: plugin 15 s with
-`threads(8)` (106 s single-threaded), uniform kernel 10 s, Mata 169 s. The
-plugin's single-thread speed relative to Mata is somewhat lower there than on
-Linux, possibly the mingw math library; multithreading more than makes up for
-it.
+Reference timings from a Windows 11 laptop (Stata/SE, i7-1265U) before the
+chord-form change: plugin 106 s single-threaded / 15 s with `threads(8)`,
+Mata 169 s. That machine traced the single-thread gap to mingw-w64's x87
+`sin`/`atan2`; the chord form removes those calls (46.6 s to 7.1 s on its
+standalone benchmark) and CI keeps building with mingw.
 
 ## Release checklist
 

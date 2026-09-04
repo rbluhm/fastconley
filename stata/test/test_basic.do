@@ -147,6 +147,29 @@ if (`have_plugin') {
 	assert e(method) == "pairwise"
 }
 
+* ---- small cutoff: the Mata engine must keep full precision (chord form) ----
+* points within ~6 km of each other, 1 km cutoff: 1 - dot would lose ~8 digits
+clear
+set obs 3000
+gen double lat = 48 + runiform() * 0.05
+gen double lon = 11 + runiform() * 0.08
+gen region = ceil(runiform() * 3)
+gen x1 = rnormal()
+gen x2 = rnormal()
+gen y = 0.5 * x1 - 0.3 * x2 + rnormal()
+fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(1) engine(mata) verbose
+matrix Vsm = e(V)
+if (`have_plugin') {
+	fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(1) engine(plugin)
+	di "1 km cutoff, plugin vs mata: " mreldif(e(V), Vsm)
+	assert mreldif(e(V), Vsm) < 1e-12
+	fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(1) dist(spherical) engine(mata)
+	matrix Vsm = e(V)
+	fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(1) dist(spherical) engine(plugin)
+	di "1 km cutoff spherical, plugin vs mata: " mreldif(e(V), Vsm)
+	assert mreldif(e(V), Vsm) < 1e-12
+}
+
 * ---- IV / 2SLS -------------------------------------------------------------
 clear
 set obs 4000

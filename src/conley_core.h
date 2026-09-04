@@ -255,32 +255,17 @@ inline double pair_weight<DIST_HAVERSINE, KERNEL_UNIFORM>(
     const CoordCache& c, std::size_t i, std::size_t j,
     double cutoff, const ScreenParams& screen) {
   (void)cutoff;
-  // Cheap 3D screen first: in exact arithmetic a = (1 - dot)/2, so
-  // dot < cos(cutoff) can never pass the a-test below. The 1e-12 margin
-  // keeps the screen conservative; the a-test remains the arbiter, so
-  // results are bit-identical with or without this screen.
-  {
-    const double dot = c.x3[i] * c.x3[j] + c.y3[i] * c.y3[j] + c.z3[i] * c.z3[j];
-    if (dot < screen.cos_cutoff - 1e-12) return 0.0;
-  }
-  const double cos_i = c.cos_lat[i];
-  const double cos_j = c.cos_lat[j];
-  const double denom = cos_i * cos_j;
-  const double dlon = lon_abs_wrapped(c.lon_rad[i], c.lon_rad[j]);
-  const double sin_half_dlon = std::sin(dlon / 2.0);
-  const double s2_dlon = sin_half_dlon * sin_half_dlon;
-
-  // Multiply-form of the longitude screen: a >= denom * s2_dlon, so
-  // denom * s2_dlon > sin2cut implies rejection by the exact a-test below.
-  // The absolute 1e-15 margin keeps the screen conservative (denom <= 1, so
-  // this admits weakly more candidates than the old divide form); the a-test
-  // remains the arbiter, and a multiply is ~4x cheaper than a divide.
-  if (screen.angular_cutoff_rad < PI && denom > EPS) {
-    if (s2_dlon * denom > screen.sin2_half_angular_cutoff + 1e-15) return 0.0;
-  }
-  const double dlat = c.lat_rad[j] - c.lat_rad[i];
-  const double sin_half_dlat = std::sin(dlat / 2.0);
-  const double a = sin_half_dlat * sin_half_dlat + denom * s2_dlon;
+  // The haversine 'a' = sin^2(theta/2) equals |u_i - u_j|^2 / 4 exactly, so
+  // the cached unit vectors give it with three subtractions and no per-pair
+  // trig. The subtraction cancels at small angles exactly as dlat / dlon do
+  // in the classic form, so precision is unchanged; the accept test is the
+  // same a-test as before. (Per-pair sin/atan2 were also the reason the
+  // mingw-w64 build was 5x slower than MSVC: its libm implements them in
+  // x87 microcode.)
+  const double dx = c.x3[i] - c.x3[j];
+  const double dy = c.y3[i] - c.y3[j];
+  const double dz = c.z3[i] - c.z3[j];
+  const double a = 0.25 * (dx * dx + dy * dy + dz * dz);
   if (a > screen.sin2_half_angular_cutoff) return 0.0;
   return 1.0;
 }
@@ -290,33 +275,18 @@ template<>
 inline double pair_weight<DIST_HAVERSINE, KERNEL_BARTLETT>(
     const CoordCache& c, std::size_t i, std::size_t j,
     double cutoff, const ScreenParams& screen) {
-  // See the UNIFORM specialization: conservative dot screen, a-test arbiter.
-  {
-    const double dot = c.x3[i] * c.x3[j] + c.y3[i] * c.y3[j] + c.z3[i] * c.z3[j];
-    if (dot < screen.cos_cutoff - 1e-12) return 0.0;
-  }
-  const double cos_i = c.cos_lat[i];
-  const double cos_j = c.cos_lat[j];
-  const double denom = cos_i * cos_j;
-  const double dlon = lon_abs_wrapped(c.lon_rad[i], c.lon_rad[j]);
-  const double sin_half_dlon = std::sin(dlon / 2.0);
-  const double s2_dlon = sin_half_dlon * sin_half_dlon;
-
-  // Multiply-form of the longitude screen: a >= denom * s2_dlon, so
-  // denom * s2_dlon > sin2cut implies rejection by the exact a-test below.
-  // The absolute 1e-15 margin keeps the screen conservative (denom <= 1, so
-  // this admits weakly more candidates than the old divide form); the a-test
-  // remains the arbiter, and a multiply is ~4x cheaper than a divide.
-  if (screen.angular_cutoff_rad < PI && denom > EPS) {
-    if (s2_dlon * denom > screen.sin2_half_angular_cutoff + 1e-15) return 0.0;
-  }
-  const double dlat = c.lat_rad[j] - c.lat_rad[i];
-  const double sin_half_dlat = std::sin(dlat / 2.0);
-  double a = sin_half_dlat * sin_half_dlat + denom * s2_dlon;
+  // See the UNIFORM specialization for the chord form of 'a'. Accepted
+  // pairs get the distance 2R asin(sqrt a), which is well conditioned for
+  // a <= 0.5 (angles up to 90 degrees); the atan2 form covers the rest.
+  const double dx = c.x3[i] - c.x3[j];
+  const double dy = c.y3[i] - c.y3[j];
+  const double dz = c.z3[i] - c.z3[j];
+  double a = 0.25 * (dx * dx + dy * dy + dz * dz);
   if (a > screen.sin2_half_angular_cutoff) return 0.0;
   if (a < 0.0) a = 0.0;
   if (a > 1.0) a = 1.0;
-  const double d = AVG_ERAD * 2.0 * std::atan2(std::sqrt(a), std::sqrt(1.0 - a));
+  const double d = AVG_ERAD * 2.0 *
+      (a <= 0.5 ? std::asin(std::sqrt(a)) : std::atan2(std::sqrt(a), std::sqrt(1.0 - a)));
   if (cutoff <= 0.0) return d <= 0.0 ? 1.0 : 0.0;
   return 1.0 - d / cutoff;
 }
@@ -338,7 +308,16 @@ inline double pair_weight<DIST_SPHERICAL, KERNEL_BARTLETT>(
     double cutoff, const ScreenParams& screen) {
   const double dot = c.x3[i] * c.x3[j] + c.y3[i] * c.y3[j] + c.z3[i] * c.z3[j];
   if (dot < screen.cos_cutoff) return 0.0;
-  const double d = AVG_ERAD * safe_acos(dot);
+  // Great-circle angle from the half chord, 2 asin(|u_i - u_j| / 2): acos(dot)
+  // loses ~half its digits at small angles (acos is ill-conditioned near 1),
+  // the asin form loses none; both are the same distance in exact arithmetic.
+  const double dx = c.x3[i] - c.x3[j];
+  const double dy = c.y3[i] - c.y3[j];
+  const double dz = c.z3[i] - c.z3[j];
+  double a = 0.25 * (dx * dx + dy * dy + dz * dz);
+  if (a > 1.0) a = 1.0;
+  const double d = AVG_ERAD * 2.0 *
+      (a <= 0.5 ? std::asin(std::sqrt(a)) : std::atan2(std::sqrt(a), std::sqrt(1.0 - a)));
   if (cutoff <= 0.0) return d <= 0.0 ? 1.0 : 0.0;
   return 1.0 - d / cutoff;
 }

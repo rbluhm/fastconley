@@ -177,7 +177,8 @@ real scalar fastconley_cell_pair(real matrix M, real matrix U, real matrix S,
                                  real scalar tile)
 {
 	real scalar ti, ti2, tj, tj2, t, npairs, c0, c1
-	real matrix Ua, Dot, W, WS, acc, d, a
+	real matrix Ua, Ub, Dot, W, WS, acc, d, a
+	real colvector ea, eb
 
 	npairs = 0
 	for (ti = ia; ti <= ib; ti = ti + tile) {
@@ -185,7 +186,8 @@ real scalar fastconley_cell_pair(real matrix M, real matrix U, real matrix S,
 		Ua = U[|ti, 1 \ ti2, 3|]
 		for (tj = (self ? ti : ja); tj <= jb; tj = tj + tile) {
 			tj2 = min((jb, tj + tile - 1))
-			Dot = Ua * U[|tj, 1 \ tj2, 3|]'
+			Ub = U[|tj, 1 \ tj2, 3|]
+			Dot = Ua * Ub'
 			if (max(Dot) < coscut) {
 				// No pair within the cutoff; only a self tile still needs its diagonal.
 				if (!(self & tj == ti)) continue
@@ -193,25 +195,39 @@ real scalar fastconley_cell_pair(real matrix M, real matrix U, real matrix S,
 			if (kernel == "uniform") {
 				// Every supported distance is monotone in the chord, so the
 				// accept test is the dot threshold alone (the C++ pair_weight
-				// uniform specializations use the same criterion).
+				// uniform specializations use the same criterion). The dot
+				// product's rounding only matters exactly at the boundary.
 				acc = (Dot :>= coscut)
 				W = acc
 			}
 			else {
-				if (dist == "haversine") {
-					a = (1 :- Dot) :/ 2
-					a = a :* (a :> 0)
-					a = a :* (a :< 1) :+ (a :>= 1)
-					d = (2 * 6371) :* asin(sqrt(a))
-				}
-				else if (dist == "spherical") {
-					a = Dot :* (abs(Dot) :<= 1) :+ (Dot :> 1) :- (Dot :< -1)
-					d = 6371 :* acos(a)
+				// Bartlett needs distances. The squared chord |u_i - u_j|^2 equals
+				// 2 - 2 Dot, but that difference cancels at small angles: its
+				// relative error is ~2e-16 / (theta^2 / 2), i.e. 1e-12 at 200 km
+				// and 1e-8 at 1 km. Below 200 km the chord is therefore built
+				// from coordinate differences (full precision, eight extra
+				// passes per tile); above, the dot form is exact to 1e-12 and
+				// ~40% cheaper. (Outer products with ones vectors: Mata's colon
+				// operators do not broadcast a column against a row.)
+				if (cutoff < 200) {
+					ea = J(rows(Ua), 1, 1)
+					eb = J(rows(Ub), 1, 1)
+					a = (Ua[., 1] * eb' - ea * Ub[., 1]') :^ 2 + (Ua[., 2] * eb' - ea * Ub[., 2]') :^ 2 + (Ua[., 3] * eb' - ea * Ub[., 3]') :^ 2
 				}
 				else {
 					a = 2 :- 2 :* Dot
 					a = a :* (a :> 0)
+				}
+				if (dist == "chord") {
 					d = 6371 :* sqrt(a)
+				}
+				else {
+					// great-circle angle 2 asin(chord / 2) (haversine and
+					// spherical are the same distance; this form is well
+					// conditioned where acos(Dot) is not)
+					a = a :/ 4
+					a = a :* (a :<= 1) :+ (a :> 1)
+					d = (2 * 6371) :* asin(sqrt(a))
 				}
 				acc = (d :<= cutoff)
 				W = acc :* (1 :- d :/ cutoff)

@@ -201,7 +201,10 @@ strategy and neighbour-weight precision, mirroring the R package's
 {phang}
 {opt tile(#)} sets the dense block size the Mata engine uses inside each pair
 of neighbouring cells; larger tiles are faster but use more memory
-(about 5 x #^2 x 8 bytes).
+(about 5 x #^2 x 8 bytes). Both engines compute Bartlett distances from the
+chord between unit vectors, accurate to better than 1e-12 relative at any
+cutoff; the Mata engine builds the chord from coordinate differences below
+200 km, where the dot-product form would lose precision.
 
 
 {marker remarks}{...}

@@ -1,7 +1,7 @@
 // Rcpp front-end for the fastconley engine. All numerics live in
 // conley_core.h; this file only validates lengths, aliases R memory
 // through the Armadillo advanced constructors (no input copies -- the R
-// wrappers in R/RcppExports.R guarantee REALSXP storage), and lets
+// wrappers in R/engine.R guarantee REALSXP storage), and lets
 // conley::Error propagate to Rcpp's BEGIN_RCPP/END_RCPP (RcppExports.cpp),
 // which turns it into an R error carrying the same message.
 #ifndef ARMA_64BIT_WORD
@@ -12,7 +12,7 @@
 #include "conley_core.h"
 
 // [[Rcpp::export]]
-arma::mat FastSpatialMeat(Rcpp::NumericVector lat, Rcpp::NumericVector lon,
+arma::mat FastSpatialMeat_cpp(Rcpp::NumericVector lat, Rcpp::NumericVector lon,
                           Rcpp::NumericVector time, Rcpp::NumericMatrix scores,
                           double cutoff,
                           std::string kernel = "bartlett",
@@ -52,7 +52,7 @@ arma::mat FastSpatialMeat(Rcpp::NumericVector lat, Rcpp::NumericVector lon,
 }
 
 // [[Rcpp::export]]
-arma::mat FastSerialHacPanel(Rcpp::NumericVector unit, Rcpp::NumericVector time,
+arma::mat FastSerialHacPanel_cpp(Rcpp::NumericVector unit, Rcpp::NumericVector time,
                              double cutoff, Rcpp::NumericMatrix scores,
                              int ncores = 1) {
   const std::size_t n = static_cast<std::size_t>(scores.nrow());
@@ -71,7 +71,7 @@ arma::mat FastSerialHacPanel(Rcpp::NumericVector unit, Rcpp::NumericVector time,
 }
 
 // [[Rcpp::export]]
-arma::mat FastGridMeat(Rcpp::IntegerVector ring, Rcpp::IntegerVector col,
+arma::mat FastGridMeat_cpp(Rcpp::IntegerVector ring, Rcpp::IntegerVector col,
                        Rcpp::NumericVector time, Rcpp::NumericMatrix scores,
                        double lat0, double dlat, double dlon,
                        int n_ring, int n_col, int n_col_full,

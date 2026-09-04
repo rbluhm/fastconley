@@ -1,8 +1,17 @@
 # fastconley (development version)
 
-Engine extraction (phase P0 of the Stata port, `notes/STATA_PORT_PLAN.md`).
-No numerical changes: bit-identical to 0.10.0 on the 60-configuration
-battery (`tests/manual/bitwise-battery.R`), every ncores.
+Engine extraction (phase P0 of the Stata port, `notes/STATA_PORT_PLAN.md`)
+and a numerically neutral change to the Bartlett pair weights.
+
+- Haversine weights are now computed from the cached 3D unit vectors
+  (`sin^2(theta/2) = |u_i - u_j|^2 / 4`, distance `2R asin(sqrt a)`), and the
+  spherical Bartlett weight uses the same asin form instead of `acos(dot)`,
+  which is ill-conditioned at small angles. No per-pair `sin`/`atan2` calls
+  remain, which speeds up the pairwise engine everywhere (about 2x on Linux,
+  6x on mingw-built Windows binaries, whose libm implements those functions
+  in x87 microcode). Results move at the 1e-14 relative level versus 0.10.0
+  (asin/acos rounding); everything else in the package is bit-identical.
+  Found by the Windows test session of the Stata port.
 
 - The C++ engine now lives in a front-end-agnostic header,
   `src/conley_core.h` (namespace `conley`), shared between this package
