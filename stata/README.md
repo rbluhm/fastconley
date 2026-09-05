@@ -10,7 +10,7 @@ R package and reproduces `vcovSpHAC()` on the same fit (validated by
 ssc install ftools
 ssc install reghdfe     // >= 6.12.5; reghdfe 6.13+ also needs: ssc install require
 ssc install require
-net install fastconley, from("https://raw.githubusercontent.com/rbluhm/fastconley/dev/stata/src/")
+net install fastconley, from("https://raw.githubusercontent.com/rbluhm/fastconley/main/stata/src/")
 
 fastconley y x1 x2, absorb(region) lat(lat) lon(lon) cutoff(300)
 fastconley y x1 x2, absorb(id year) lat(lat) lon(lon) cutoff(500) ///
