@@ -13,7 +13,7 @@ This is the Stata counterpart of the R package's performance vignette. The same 
 
 | item | value |
 |---|---|
-| run date | 2026-09-05T06:10:44Z |
+| run date | 2026-09-05T17:27:50Z |
 | CPU | 13th Gen Intel(R) Core(TM) i7-1360P |
 | logical CPUs | 16 |
 | memory | 30 GB |
@@ -29,9 +29,9 @@ Small cross-sections (5 regressors, 500 km, uniform kernel, spherical distance) 
 
 | observations | plugin (8 thr.) | Mata | acreg | R fastconley (8 thr.) | R dense | Mata vs plugin | acreg vs plugin |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 1,000 | 0.003 | 0.012 | 0.126 | 0.002 | 0.019 | 1.5e-18 | 6.5e-05 |
-| 2,000 | 0.004 | 0.024 | 0.347 | 0.002 | 0.058 | 7.6e-19 | 3.1e-05 |
-| 4,000 | 0.008 | 0.057 | 1.09 | 0.003 | 0.539 | 2.7e-19 | 1.0e-05 |
+| 1,000 | 0.002 | 0.012 | 0.185 | 0.002 | 0.019 | 1.4e-18 | 6.5e-05 |
+| 2,000 | 0.004 | 0.023 | 0.406 | 0.002 | 0.058 | 7.6e-19 | 3.1e-05 |
+| 4,000 | 0.005 | 0.050 | 1.14 | 0.003 | 0.539 | 2.2e-19 | 1.0e-05 |
 
 The acreg column differs from fastconley at the 1e-5 level because acreg measures distance on an equirectangular plane (111 km per degree of latitude, scaled by the cosine of the latitude for longitude) rather than on the sphere; a few pairs near the cutoff boundary change status.
 
@@ -41,22 +41,22 @@ The acreg column differs from fastconley at the 1e-5 level because acreg measure
 
 | observations | cutoff km | threads | plugin | Mata (1 thr.) | acreg | R fastconley | R fixest | plugin vs Mata |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 50,000 | 100 | 1 | 0.106 | 1.63 | 151 | n/a | n/a | 15x |
-| 50,000 | 100 | 4 | 0.081 |  |  | n/a | n/a | 20x |
-| 50,000 | 100 | 8 | 0.075 |  |  | 0.066 | 0.369 | 22x |
-| 50,000 | 100 | 16 | 0.071 |  |  | n/a | n/a | 23x |
-| 50,000 | 500 | 1 | 0.778 | 4.01 | 153 | 1.09 | 11.5 | 5.2x |
-| 50,000 | 500 | 4 | 0.308 |  |  | n/a | n/a | 13x |
-| 50,000 | 500 | 8 | 0.217 |  |  | 0.293 | 2.43 | 18x |
-| 50,000 | 500 | 16 | 0.159 |  |  | n/a | n/a | 25x |
-| 100,000 | 100 | 1 | 0.295 | 2.62 | 692 | n/a | n/a | 8.9x |
-| 100,000 | 100 | 4 | 0.199 |  |  | n/a | n/a | 13x |
-| 100,000 | 100 | 8 | 0.182 |  |  | 0.123 | 1.14 | 14x |
-| 100,000 | 100 | 16 | 0.154 |  |  | n/a | n/a | 17x |
-| 100,000 | 500 | 1 | 3.17 | 18.8 | 760 | n/a | n/a | 5.9x |
-| 100,000 | 500 | 4 | 1.03 |  |  | n/a | n/a | 18x |
-| 100,000 | 500 | 8 | 1.03 |  |  | 0.812 | 9.60 | 18x |
-| 100,000 | 500 | 16 | 0.877 |  |  | n/a | n/a | 21x |
+| 50,000 | 100 | 1 | 0.082 | 0.673 | 179 | n/a | n/a | 8.2x |
+| 50,000 | 100 | 4 | 0.065 |  |  | n/a | n/a | 10x |
+| 50,000 | 100 | 8 | 0.052 |  |  | 0.066 | 0.369 | 13x |
+| 50,000 | 100 | 16 | 0.048 |  |  | n/a | n/a | 14x |
+| 50,000 | 500 | 1 | 0.677 | 3.16 | 181 | 1.09 | 11.5 | 4.7x |
+| 50,000 | 500 | 4 | 0.278 |  |  | n/a | n/a | 11x |
+| 50,000 | 500 | 8 | 0.197 |  |  | 0.293 | 2.43 | 16x |
+| 50,000 | 500 | 16 | 0.151 |  |  | n/a | n/a | 21x |
+| 100,000 | 100 | 1 | 0.244 | 1.45 | 777 | n/a | n/a | 6.0x |
+| 100,000 | 100 | 4 | 0.150 |  |  | n/a | n/a | 9.7x |
+| 100,000 | 100 | 8 | 0.123 |  |  | 0.123 | 1.14 | 12x |
+| 100,000 | 100 | 16 | 0.114 |  |  | n/a | n/a | 13x |
+| 100,000 | 500 | 1 | 2.79 | 17.3 | 782 | n/a | n/a | 6.2x |
+| 100,000 | 500 | 4 | 1.26 |  |  | n/a | n/a | 14x |
+| 100,000 | 500 | 8 | 1.06 |  |  | 0.812 | 9.60 | 16x |
+| 100,000 | 500 | 16 | 0.897 |  |  | n/a | n/a | 19x |
 
 acreg's Mata loop touches every pair of observations once per observation, so its time grows with n² regardless of the cutoff, while fastconley's cell grid only visits candidate pairs within the cutoff. The Mata fallback of fastconley uses the same cell grid, so it stays proportional to the number of pairs but runs single-threaded in interpreted Mata.
 
@@ -66,12 +66,12 @@ acreg's Mata loop touches every pair of observations once per observation, so it
 
 | method | threads | seconds | R (8 thr.) |
 |---|---:|---:|---:|
-| plugin | 1 | 0.174 |  |
-| plugin | 4 | 0.157 |  |
-| plugin | 8 | 0.144 | 0.328 |
-| plugin | 16 | 0.147 |  |
-| Mata | 1 | 0.313 | |
-| acreg (`hac lag(1) pfe1 pfe2`) | 1 | 62.4 | |
+| plugin | 1 | 0.160 |  |
+| plugin | 4 | 0.128 |  |
+| plugin | 8 | 0.116 | 0.328 |
+| plugin | 16 | 0.116 |  |
+| Mata | 1 | 0.312 | |
+| acreg (`hac lag(1) pfe1 pfe2`) | 1 | 75.3 | |
 | R fixest composition (conley + NW - hetero) | 8 | | 0.123 |
 
 ## Regular raster
@@ -80,8 +80,8 @@ A 180 × 180 latitude/longitude lattice (32,400 cells at 0.05°), 3 regressors, 
 
 | kernel | plugin grid (8 thr.) | plugin pairwise (8 thr.) | Mata pairwise | acreg | R grid | R pairwise | grid vs pairwise |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| uniform | 0.047 | 0.209 | 7.94 | 72.8 | 0.030 | 0.219 | 8.1e-20 |
-| bartlett | 0.071 | 0.480 | 8.96 | 76.5 | 0.055 | 0.548 | 6.4e-20 |
+| uniform | 0.033 | 0.212 | 7.12 | 65.1 | 0.030 | 0.219 | 8.1e-20 |
+| bartlett | 0.052 | 0.521 | 9.85 | 69.3 | 0.055 | 0.548 | 6.4e-20 |
 
 ## Repeated locations and pixel aggregation
 
@@ -89,9 +89,9 @@ A 180 × 180 latitude/longitude lattice (32,400 cells at 0.05°), 3 regressors, 
 
 | pixel km | plugin (8 thr.) | Mata | R fastconley (8 thr.) | vs exact (pixel 0) |
 |---:|---:|---:|---:|---:|
-| 0 | 0.108 | 0.512 | 0.054 | 0 |
-| 10 | 0.116 | 0.473 | 0.058 | 5.7e-08 |
-| 25 | 0.103 | 0.389 | 0.046 | 1.3e-07 |
+| 0 | 0.102 | 0.516 | 0.054 | 0 |
+| 10 | 0.114 | 0.526 | 0.058 | 5.7e-08 |
+| 25 | 0.102 | 0.373 | 0.046 | 1.3e-07 |
 
 ## One million observations
 
@@ -99,12 +99,12 @@ A global cross-section of 1,000,000 points (latitude -55 to 70, all longitudes),
 
 | threads | plugin | Mata | R fastconley |
 |---:|---:|---:|---:|
-| 1 | 2.80 | n/a | n/a |
-| 4 | 2.18 |  | 1.55 |
-| 8 | 2.12 |  | 1.41 |
-| 16 | 2.02 |  | 1.13 |
+| 1 | 2.27 | 15.4 | n/a |
+| 4 | 1.75 |  | 1.55 |
+| 8 | 1.66 |  | 1.41 |
+| 16 | 1.65 |  | 1.13 |
 
-The Mata fallback did not finish this case: aborted: exceeded the 5400 s cap (plugin: 2.0-2.8 s). Its cell grid keeps the pair count proportional to the data, but interpreted Mata pays a fixed cost per cell pair, and at one million points over the whole globe there are hundreds of thousands of occupied cells.
+The Mata fallback agrees with the plugin to 3.5e-20 relative on this case.
 acreg is not attempted here: its cost grows with n², and its whole-command time at 100,000 points is already about 700 s.
 
 ## Fixed preparation cost
@@ -113,8 +113,8 @@ acreg is not attempted here: its cost grows with n², and its whole-command time
 
 | observations | plugin (8 thr.) | Mata |
 |---:|---:|---:|
-| 100,000 | 0.184 | 0.177 |
-| 1,000,000 | 2.29 | 1.98 |
+| 100,000 | 0.109 | 0.081 |
+| 1,000,000 | 1.50 | 1.15 |
 
 At one million rows this fixed work is most of the covariance time reported above, which is why the plugin's thread scaling looks flat there: the pair work itself is a fraction of a second at 16 threads. Splitting the fixed part between the Mata preparation and the engine's own sort and gather, and trimming the Mata side (skipping the coordinate merge when locations are unique, streaming scores to the plugin without temporary variables), is the obvious next optimisation for very large samples.
 
@@ -122,7 +122,7 @@ At one million rows this fixed work is most of the covariance time reported abov
 
 - The plugin is the same C++ engine as the R package, so plugin and R times differ only by the front-end (Stata tempvars versus R memory aliasing), by build flags (the plugin uses -O3, R its default -O2), and by the engine changes since the R numbers were recorded.
 - Thread scaling flattens beyond 8 threads on this 12-core, 16-thread laptop (hybrid P/E cores and memory bandwidth), and at one million rows the fixed preparation cost dominates (see the previous section). Stata's own licence (MP with 4 cores here) does not limit the plugin's `threads()`.
-- The Mata fallback is 5 to 15 times slower than the single-threaded plugin but has the same complexity, so it remains usable at a few hundred thousand observations. It is what `engine(auto)` uses when no plugin is available for the platform.
+- The Mata fallback is 5 to 8 times slower than the single-threaded plugin but has the same complexity, so it remains usable up to a million observations (15 s at 100 km). It is what `engine(auto)` uses when no plugin is available for the platform.
 - acreg and fastconley agree to about 1e-5 on the uniform kernel and 1e-6 on Bartlett at these cutoffs; the residual is acreg's planar distance approximation, not a difference in the estimator.
 
 ## Reproducing

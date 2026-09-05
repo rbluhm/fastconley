@@ -283,9 +283,9 @@ L.append("- The plugin is the same C++ engine as the R package, so plugin and R 
 L.append("- Thread scaling flattens beyond 8 threads on this 12-core, 16-thread laptop (hybrid P/E cores and "
          "memory bandwidth), and at one million rows the fixed preparation cost dominates (see the previous section). "
          "Stata's own licence (MP with 4 cores here) does not limit the plugin's `threads()`.")
-L.append("- The Mata fallback is 5 to 15 times slower than the single-threaded plugin but has the same "
-         "complexity, so it remains usable at a few hundred thousand observations. It is what `engine(auto)` "
-         "uses when no plugin is available for the platform.")
+L.append("- The Mata fallback is 5 to 8 times slower than the single-threaded plugin but has the same "
+         "complexity, so it remains usable up to a million observations (15 s at 100 km). It is what "
+         "`engine(auto)` uses when no plugin is available for the platform.")
 L.append("- acreg and fastconley agree to about 1e-5 on the uniform kernel and 1e-6 on Bartlett at these "
          "cutoffs; the residual is acreg's planar distance approximation, not a difference in the estimator.\n")
 L.append("## Reproducing\n")
