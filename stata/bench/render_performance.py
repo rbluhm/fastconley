@@ -108,11 +108,16 @@ L.append("- **fastconley (plugin, Mata)**: `e(vce_seconds)`, the covariance step
 L.append("- **acreg**: the whole command, because acreg estimates and corrects in one pass and exposes no "
          "separate timer. On these configurations its regression is a negligible part of the total.")
 L.append("- **R (same machine)**: the numbers shipped with the R package (`inst/benchmarks/`), run on the same "
-         "CPU on 2026-06-10 with fastconley 0.8.0; the engine has since become faster (chord-form weights), so "
-         "today's R package is at least as fast as the R column shows.")
+         "CPU on 2026-06-10 with fastconley 0.8.0; the engine has changed since (chord-form weights, RcppParallel replaced by a "
+         "std::thread pool with a serial sort), so the R column is a historical reference on the same "
+         "hardware, not a current measurement.")
 L.append("- Every fastconley call uses `nossc nopsdfix` so that its covariance is comparable to acreg, which "
          "applies no small-sample correction. The relative-difference columns compare the slope block of `e(V)` "
-         "with the plugin result on the same data (`mreldif`).\n")
+         "with the plugin result on the same data using Stata's `mreldif`, which divides each element's "
+         "difference by one plus the reference value; for covariance entries far below one that is close to an "
+         "absolute difference, so treat those columns as evidence of agreement, not as a norm-relative error "
+         "comparable to the R package's checks. Each fastconley time is the repetition with the smaller "
+         "covariance time (of two), with its own total.\n")
 L.append("## Machine\n")
 L.append("| item | value |\n|---|---|")
 L.append(f"| run date | {sess('run_date')} |")
@@ -253,25 +258,28 @@ L.append("acreg is not attempted here: its cost grows with n², and its whole-co
 # ---------------------------------------------------------------- overhead
 L.append("## Fixed preparation cost\n")
 L.append("`cutoff(-1)` keeps only the diagonal of the meat, so `e(vce_seconds)` then measures everything except "
-         "the pair work: reading the sample into Mata, sorting by period, merging identical coordinates, "
-         "marshalling scores into temporary variables for the plugin, and assembling the sandwich.\n")
+         "the pair enumeration and accumulation: reading the sample into Mata, sorting by period, merging "
+         "identical coordinates, marshalling scores into temporary variables for the plugin, the engine's own "
+         "coordinate cache, sort, and score gather (a negative cutoff still runs the engine's band path), and "
+         "assembling the sandwich. It is therefore an upper bound on the Stata-side preparation, measured on "
+         "data generated with a different seed than the timed runs.\n")
 L.append("| observations | plugin (8 thr.) | Mata |")
 L.append("|---:|---:|---:|")
 for n in sorted({int(float(r["n_obs"])) for r in rows if r["section"] == "overhead"}):
     p = first(rows, section="overhead", engine="plugin", n_obs=str(n))
     m2 = first(rows, section="overhead", engine="mata", n_obs=str(n))
     L.append(f"| {n:,} | {fmt_s(stata_time(p))} | {fmt_s(stata_time(m2))} |")
-L.append("\nAt one million rows this preparation is most of the covariance time reported above, which is why "
-         "the plugin's thread scaling looks flat there: the engine itself needs well under a second at 16 "
-         "threads, as the R vignette's 1.1 s on the same machine shows. Trimming this Mata-side work (skipping "
-         "the coordinate merge when locations are unique, streaming scores to the plugin without temporary "
-         "variables) is the obvious next optimisation for very large samples.\n")
+L.append("\nAt one million rows this fixed work is most of the covariance time reported above, which is why the "
+         "plugin's thread scaling looks flat there: the pair work itself is a fraction of a second at 16 threads. "
+         "Splitting the fixed part between the Mata preparation and the engine's own sort and gather, and trimming "
+         "the Mata side (skipping the coordinate merge when locations are unique, streaming scores to the plugin "
+         "without temporary variables), is the obvious next optimisation for very large samples.\n")
 
 # ---------------------------------------------------------------- how to read / reproduce
 L.append("## Reading the numbers\n")
 L.append("- The plugin is the same C++ engine as the R package, so plugin and R times differ only by the "
-         "front-end (Stata tempvars versus R memory aliasing) and by the engine improvements since the R "
-         "numbers were recorded.")
+         "front-end (Stata tempvars versus R memory aliasing), by build flags (the plugin uses -O3, R its "
+         "default -O2), and by the engine changes since the R numbers were recorded.")
 L.append("- Thread scaling flattens beyond 8 threads on this 12-core, 16-thread laptop (hybrid P/E cores and "
          "memory bandwidth), and at one million rows the fixed preparation cost dominates (see the previous section). "
          "Stata's own licence (MP with 4 cores here) does not limit the plugin's `threads()`.")

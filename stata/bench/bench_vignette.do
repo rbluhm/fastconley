@@ -88,6 +88,8 @@ local meta `""`run_date'","`stata_version'","`ado_version'","`engine_build'","`a
 * and total wall time, and leaves e(V) of the last run in memory.
 program define time_fastconley, rclass
 	syntax, cmd(string)
+	* keep the repetition with the smallest covariance time and report ITS
+	* total, so the two numbers describe the same run
 	local best_vce = .
 	local best_tot = .
 	forvalues r = 1/$BENCH_REPS {
@@ -98,8 +100,10 @@ program define time_fastconley, rclass
 		qui timer list 90
 		local tot = r(t90)
 		local v = e(vce_seconds)
-		if (`v' < `best_vce') local best_vce = `v'
-		if (`tot' < `best_tot') local best_tot = `tot'
+		if (`v' < `best_vce') {
+			local best_vce = `v'
+			local best_tot = `tot'
+		}
 	}
 	return scalar vce = `best_vce'
 	return scalar total = `best_tot'
