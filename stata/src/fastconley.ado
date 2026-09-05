@@ -308,6 +308,9 @@ program Estimate, eclass
 	}
 
 	* ---- 4. Conley VCE ----------------------------------------------------
+	* Wall-clock time of this step alone (Mata timer slot 100), posted as
+	* e(vce_seconds): comparable to the R package's post-estimation timings.
+	mata: timer_clear(100); timer_on(100)
 
 	* Coordinates and panel identifiers on the regression sample
 	mata: fc_lat = st_data(HDFE.sample, "`latitude'")
@@ -446,6 +449,7 @@ program Estimate, eclass
 		}
 	}
 	mata: fc_V = fastconley_assemble(fc_D, fc_meat, `dof_adj', `psdfix')
+	mata: timer_off(100); st_local("vce_seconds", strofreal(timer_value(100)[1], "%12.6f"))
 	if (`iv') {
 		mata: st_local("iv_F", strofreal(fastconley_wald_F(fc_b, fc_V_unfixed, fc_df_m, fc_df_m), "%21.17g"))
 		mata: fastconley_iv_expand(fc_b, fc_V)
@@ -556,6 +560,7 @@ program Estimate, eclass
 	ereturn scalar ssc = `ssc'
 	ereturn scalar psd_fix = `psdfix'
 	ereturn scalar dof_adj = `dof_adj'
+	ereturn scalar vce_seconds = `vce_seconds'
 
 	* reghdfe's documented savefe flow: residuals -> store_alphas -> remove
 	* the temporary residual when the user did not request residuals().
@@ -608,7 +613,7 @@ program FastconleyPluginDiagnostics
 end
 
 
-program FastconleyVersion
+program FastconleyVersion, rclass
 	LoadPlugin
 	loc ok = r(ok)
 	loc expected `r(expected)'
@@ -627,6 +632,13 @@ program FastconleyVersion
 	else {
 		di as text "loader status: " as error "unavailable (`why')"
 	}
+	return local ado_version "0.2.0"
+	return local expected "`expected'"
+	return local status = cond(`ok', "ready", "unavailable")
+	return local why "`why'"
+	return local plugin_file "`file'"
+	return local engine_version "`engine_version'"
+	return local engine_build "`build'"
 end
 
 

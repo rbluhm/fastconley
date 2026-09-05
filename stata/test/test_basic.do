@@ -614,4 +614,21 @@ fastconley y x, absorb(region) lat(lat) lon(lon) cutoff(300) engine(mata)
 assert e(N) == 59
 di as result "invalid latitude rejected by the Mata engine" cond("$FASTCONLEY_REQUIRE_PLUGIN" != "", " and by the plugin", "")
 
+* ---- e(vce_seconds) and the r() results of `fastconley, version` ---------
+fastconley, version
+assert "`r(ado_version)'" == "0.2.0"
+assert inlist("`r(status)'", "ready", "unavailable")
+if ("$FASTCONLEY_REQUIRE_PLUGIN" != "") assert "`r(status)'" == "ready" & "`r(engine_version)'" == "`r(expected)'"
+clear
+set obs 300
+set seed 91
+gen double lat = runiform(30, 45)
+gen double lon = runiform(-110, -80)
+gen int region = ceil(_n / 30)
+gen double x = rnormal()
+gen double y = 0.5 * x + rnormal()
+fastconley y x, absorb(region) lat(lat) lon(lon) cutoff(300) engine(mata)
+assert e(vce_seconds) >= 0 & e(vce_seconds) < 60
+di as result "e(vce_seconds) = " e(vce_seconds) " (mata)"
+
 di as result _n "test_basic.do: all checks passed"

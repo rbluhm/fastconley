@@ -57,3 +57,5 @@ stata/plugin/*.plugin
 src/*.o
 src/*.so
 src/*.dll
+stata/bench/results/section_*.do
+stata/bench/results/*.log

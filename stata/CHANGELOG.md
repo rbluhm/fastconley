@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `fastconley, version` returns its fields in `r()`; `stata/bench/` holds the benchmark suite behind `stata/PERFORMANCE.md` (the R vignette's six sections timed with the plugin, the Mata fallback, and acreg).
+
+- `e(vce_seconds)` reports the wall-clock time of the covariance step alone (Mata timer slot 100), the quantity the benchmarks in `stata/PERFORMANCE.md` compare with the R package.
+
 - Shipped plugins rebuilt by CI from engine 0.11.1 (build fd27197): stripped, exporting only `stata_call`/`pginit`, GLIBC floor 2.25 on Linux, ad-hoc signed universal macOS binary, installed under their platform names by the .pkg.
 
 - Added `fastconley_reghdfe_vce`, the first provider for the proposed generic reghdfe `vce(external PROVIDER, ...)` hook, with standalone-identical Mata/plugin numerics and provider metadata.

@@ -302,6 +302,17 @@ Correspondence with the R package ({cmd:vcovSpHAC()} arguments):
 
 
 {marker results}{...}
+{title:Performance}
+
+{pstd}
+{cmd:fastconley} stores the wall-clock time of the covariance step in {cmd:e(vce_seconds)}.
+The file {it:stata/PERFORMANCE.md} in the source repository reports the six benchmark
+sections of the R package's performance vignette run through this command with the
+compiled plugin at several thread counts, with the Mata fallback, and with {cmd:acreg}
+where feasible, on the same machine as the R numbers. {cmd:fastconley, version} returns
+{cmd:r(ado_version)}, {cmd:r(expected)}, {cmd:r(status)}, {cmd:r(plugin_file)},
+{cmd:r(engine_version)}, and {cmd:r(engine_build)} for scripts.
+
 {title:Stored results}
 
 {pstd}
@@ -311,6 +322,7 @@ For OLS, {cmd:fastconley} stores everything {help reghdfe##results:reghdfe} stor
 {synoptset 22 tabbed}{...}
 {p2col 5 22 26 2: Scalars}{p_end}
 {synopt:{cmd:e(conley_cutoff)}}spatial cutoff (km){p_end}
+{synopt:{cmd:e(vce_seconds)}}wall-clock seconds spent computing the Conley covariance (the step after reghdfe's partial-out and solve; uses Mata timer slot 100){p_end}
 {synopt:{cmd:e(conley_lag)}}serial lag cutoff{p_end}
 {synopt:{cmd:e(conley_pixel)}}pixel size (km){p_end}
 {synopt:{cmd:e(conley_balanced)}}1 if {opt balanced} was used{p_end}

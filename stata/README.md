@@ -172,6 +172,10 @@ standalone benchmark) and CI keeps building with mingw.
    https://ideas.repec.org/c/boc/bocode/ (package name `fastconley`).
    GitHub installs keep working from `stata/src/` at any time.
 
+## Performance
+
+`stata/PERFORMANCE.md` is the Stata counterpart of the R package's performance vignette: the same six benchmark sections (dense baseline, 50k/100k cross-sections, a 10,000-unit panel with serial HAC, a 180 x 180 raster, repeated locations with pixel aggregation, one million points) timed through `fastconley` with the compiled plugin at 1/4/8/16 threads and with the Mata fallback, next to acreg where its O(n^2) loop is feasible and next to the R numbers recorded on the same machine. `e(vce_seconds)` is the covariance-step time each run reports. Regenerate with `bash stata/bench/run_bench.sh` and `python3 stata/bench/render_performance.py`.
+
 ## Upstream proposal
 
 The primary proposal in `stata/upstream/` is a small generic hook for

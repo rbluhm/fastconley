@@ -1,0 +1,24 @@
+run_date: 2026-09-05T06:10:44Z
+threads: 1 4 8 16
+reps: 2
+acreg_max_n: 50000
+large_n: 1000000
+
+# CPU
+CPU(s):                                  16
+Model name:                              13th Gen Intel(R) Core(TM) i7-1360P
+Thread(s) per core:                      2
+Core(s) per socket:                      12
+CPU(s) scaling MHz:                      45%
+L3 cache:                                18 MiB (1 instance)
+
+# Memory
+               total        used        free      shared  buff/cache   available
+Mem:              30          20           6           1           5          10
+
+# OS
+Linux 7.0.0-30-generic x86_64
+PRETTY_NAME="Ubuntu 24.04.4 LTS"
+
+# Stata
+18 IC licensed=4 machine=16
