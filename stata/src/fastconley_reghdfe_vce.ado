@@ -6,7 +6,7 @@ program define fastconley_reghdfe_vce, sclass
 		LATitude(varname numeric) LONgitude(varname numeric) CUToff(real) ///
 		[ KERnel(string) DISTance(string) LAG(real 0) UNIT(varname) TIME(varname) ///
 		  BALanced PIXel(real 0) ENGine(string) METHod(string) ///
-		  THReads(real 0) TILE(real 1024) NOSSC NOPSDfix Verbose ]
+		  THReads(real 0) TILE(real 512) NOSSC NOPSDfix Verbose ]
 
 	if (("`keepvars'" != "") + ("`compute'" != "") != 1) {
 		di as error "fastconley reghdfe provider requires exactly one of keepvars or compute"

@@ -2,6 +2,8 @@
 * Run from the repository root:  stata-mp -b do stata/test/test_basic.do
 clear all
 adopath ++ "stata/src"
+local require_plugin : environment FASTCONLEY_REQUIRE_PLUGIN
+if ("`require_plugin'" != "") global FASTCONLEY_REQUIRE_PLUGIN "`require_plugin'"
 set seed 20260903
 
 which fastconley
@@ -630,5 +632,75 @@ gen double y = 0.5 * x + rnormal()
 fastconley y x, absorb(region) lat(lat) lon(lon) cutoff(300) engine(mata)
 assert e(vce_seconds) >= 0 & e(vce_seconds) < 60
 di as result "e(vce_seconds) = " e(vce_seconds) " (mata)"
+
+* ---- numeric cell maps: direct and sparse, including changing time blocks --
+* A dense reference is independent of the cell lookup. Integer scores make
+* uniform meat exact even if order() permutes ties differently.
+mata:
+	map_lat = (0 \ .004 \ .02 \ 45 \ 45.004 \ 0 \ .004 \ -45 \ -45.004 \ 0 \ 0 \ 89.99)
+	map_lon = (0 \ .004 \ .02 \ 80 \ 80.004 \ 0 \ .004 \ -80 \ -80.004 \ 0 \ 0 \ 179.99)
+	map_time = (1 \ 1 \ 1 \ 1 \ 1 \ 2 \ 2 \ 2 \ 2 \ 3 \ 3 \ 3)
+	map_S = (1::rows(map_lat)), mod((1::rows(map_lat)), 3)
+	map_U = (cos(map_lat*pi()/180):*cos(map_lon*pi()/180), cos(map_lat*pi()/180):*sin(map_lon*pi()/180), sin(map_lat*pi()/180))
+	map_cuts = (100, 1, 1e-9)
+	for (map_c = 1; map_c <= cols(map_cuts); map_c++) {
+		map_cut = map_cuts[map_c]
+		map_W = J(rows(map_lat), rows(map_lat), 0)
+		map_B = map_W
+		for (map_i = 1; map_i <= rows(map_lat); map_i++) {
+			for (map_j = 1; map_j <= rows(map_lat); map_j++) {
+				map_d = 12742 * asin(min((1, sqrt(sum((map_U[map_i,.]-map_U[map_j,.]):^2))/2)))
+				if (map_time[map_i] == map_time[map_j] & map_d <= map_cut) {
+					map_W[map_i,map_j] = 1
+					map_B[map_i,map_j] = 1 - map_d/map_cut
+				}
+			}
+		}
+		map_scores = map_S
+		map_M = fastconley_spatial_meat(map_lat, map_lon, map_time, map_scores, 1, map_cut, "uniform", "spherical", 1024, 0)
+		assert(mreldif(map_M, map_S' * map_W * map_S) == 0)
+		map_scores = map_S
+		map_M = fastconley_spatial_meat(map_lat, map_lon, map_time, map_scores, 1, map_cut, "bartlett", "spherical", 1024, 0)
+		assert(mreldif(map_M, map_S' * map_B * map_S) < 1e-12)
+	}
+end
+di as result "numeric cell maps: direct/sparse/tiny cutoffs and multiple time blocks passed"
+
+* ---- singleton aggregation and one cached period count across preparation --
+mata:
+	prep_lat = (2 \ 1 \ 2 \ 1)
+	prep_lon = (4 \ 3 \ 4 \ 3)
+	prep_time = (2 \ 1 \ 1 \ 2)
+	prep_unit = (2 \ 1 \ 2 \ 1)
+	prep_S = (1,2 \ 3,4 \ 5,6 \ 7,8)
+	prep_p = order((prep_time, prep_lat, prep_lon), (1,2,3))
+	prep_alat = prep_lat; prep_alon = prep_lon; prep_atime = prep_time; prep_AS = prep_S
+	fastconley_aggregate(prep_alat, prep_alon, prep_atime, prep_AS, 0)
+	assert(prep_AS == prep_S[prep_p,.])
+	assert((prep_atime,prep_alat,prep_alon) == (prep_time,prep_lat,prep_lon)[prep_p,.])
+	fc_S = prep_S
+	fastconley_prepare_rows(prep_lat, prep_lon, prep_time, prep_unit, 1, 0, 0)
+	assert(fc_n_periods == 2 & fc_sp_balanced == 1)
+	prep_M = fastconley_meat_mata(fc_sp_lat, fc_sp_lon, fc_sp_time, fc_sp_S, fc_sp_balanced, 500, "uniform", "spherical", 1024, 0)
+	// Each period's two locations are inside 500 km.
+	prep_sum1 = prep_S[2,.] + prep_S[3,.]
+	prep_sum2 = prep_S[1,.] + prep_S[4,.]
+	assert(mreldif(prep_M, prep_sum1'*prep_sum1 + prep_sum2'*prep_sum2) == 0)
+	// A direct matrix call must not accidentally reuse another sample's count.
+	prep_atime = fc_sp_time
+	fc_n_periods = 3
+	prep_direct = fastconley_meat_mata(fc_sp_lat, fc_sp_lon, prep_atime, fc_sp_S, 1, 500, "uniform", "spherical", 1024, 0)
+	assert(mreldif(prep_direct, prep_M) == 0)
+	prep_time = J(4,1,1)
+	fastconley_prepare_rows(prep_lat, prep_lon, prep_time, prep_unit, 0, 0, 0)
+	assert(fc_n_periods == 1 & fc_sp_balanced == 0)
+	assert(rows(fc_sp_S) == 2)
+	assert(fc_sp_S == (prep_S[2,.]+prep_S[4,.] \ prep_S[1,.]+prep_S[3,.]))
+	// Failed latitude detection and successful lattices preserve the outputs.
+	assert(fastconley_detect_grid((0 \ 1 \ 2.1), (0 \ 1 \ 2), 1e-6) == 0)
+	assert(fastconley_detect_grid((0 \ 0 \ 1 \ 1), (0 \ 1 \ 0 \ 1), 1e-6) == 1)
+	assert(fc_grid == (0,1,0,1,2,2,360))
+end
+di as result "singleton aggregation, cached period counts, and lazy raster detection passed"
 
 di as result _n "test_basic.do: all checks passed"

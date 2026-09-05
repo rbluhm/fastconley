@@ -132,7 +132,7 @@ void reghdfe_conley_validate_balanced(real colvector lat,
 	alat = lat; alon = lon; atime = time; Sagg = Scores
 	reghdfe_conley_aggregate(alat, alon, atime, Sagg, S.conley_pixel)
 	M = reghdfe_conley_spatial_meat(alat, alon, atime, Sagg, 1, S.conley_cutoff,
-	                                S.conley_kernel, S.conley_dist, 1024, S.verbose > 0)
+	                                S.conley_kernel, S.conley_dist, 512, S.verbose > 0)
 	if (S.conley_lag > 0 & rows(uniqrows(time)) > 1) {
 		M = M + reghdfe_conley_serial_meat(unit, time, Scores, S.conley_lag)
 	}

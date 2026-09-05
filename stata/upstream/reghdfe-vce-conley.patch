@@ -19,10 +19,10 @@ index f9fba52..bdbd9a2 100644
 -
 diff --git a/current-code/Conley.mata b/current-code/Conley.mata
 new file mode 100644
-index 0000000..430e363
+index 0000000..a12bb09
 --- /dev/null
 +++ b/current-code/Conley.mata
-@@ -0,0 +1,965 @@
+@@ -0,0 +1,1017 @@
 +// --------------------------------------------------------------------------
 +// Conley (1999) spatial HAC standard errors: vce(conley latvar lonvar, ...)
 +// --------------------------------------------------------------------------
@@ -139,7 +139,7 @@ index 0000000..430e363
 +	alat = lat; alon = lon; atime = time; Sagg = Scores
 +	reghdfe_conley_aggregate(alat, alon, atime, Sagg, S.conley_pixel)
 +	M = reghdfe_conley_spatial_meat(alat, alon, atime, Sagg, 1, S.conley_cutoff,
-+	                                S.conley_kernel, S.conley_dist, 1024, S.verbose > 0)
++	                                S.conley_kernel, S.conley_dist, 512, S.verbose > 0)
 +	if (S.conley_lag > 0 & rows(uniqrows(time)) > 1) {
 +		M = M + reghdfe_conley_serial_meat(unit, time, Scores, S.conley_lag)
 +	}
@@ -262,11 +262,11 @@ index 0000000..430e363
 +	// group id = running count of rows whose (time, lat, lon) differs from the previous row
 +	grp = J(n, 1, 1)
 +	if (n > 1) grp[|2 \ n|] = (rowsum(keys[|2, 1 \ n, 3|] :!= keys[|1, 1 \ n-1, 3|]) :> 0)
-+	info = panelsetup(runningsum(grp), 1)
-+	if (rows(info) == n) {           // nothing to merge
++	if (all(grp)) {                 // nothing to merge; no panel metadata needed
 +		time = keys[., 1]; lat = keys[., 2]; lon = keys[., 3]
 +		return
 +	}
++	info = panelsetup(runningsum(grp), 1)
 +	S = panelsum(S, info)
 +	time = keys[info[., 1], 1]
 +	lat = keys[info[., 1], 2]
@@ -296,11 +296,10 @@ index 0000000..430e363
 +                                    string scalar kernel, string scalar dist,
 +                                    real scalar tile, real scalar verbose)
 +{
-+	real scalar n, k, ang, edge, G, coscut, b, c, kk, nb, lo, hi, ncell, ca, cb, o
-+	real scalar cx, cy, cz, nx, ny, nz, u, npairs
-+	real colvector latr, lonr, key, p, ucid
-+	real matrix U, M, tinfo, cinfo, offs, cell
-+	transmorphic A
++	real scalar n, k, ang, edge, G, coscut, b, nb, lo, hi, ncell, ca, cb, o
++	real scalar cx, cy, cz, nx, ny, nz, u, npairs, direct
++	real colvector latr, lonr, key, p, ucid, lookup
++	real matrix U, M, tinfo, cinfo, offs, cell, neighbors
 +	external real scalar fc_count_spatial_pairs
 +
 +	reghdfe_conley_check_coords(lat, lon)
@@ -349,6 +348,11 @@ index 0000000..430e363
 +	// The 13 lexicographically-forward neighbor offsets (dx, dy, dz).
 +	offs = (0,0,1 \ 0,1,-1 \ 0,1,0 \ 0,1,1 \ 1,-1,-1 \ 1,-1,0 \ 1,-1,1 \
 +	        1,0,-1 \ 1,0,0 \ 1,0,1 \ 1,1,-1 \ 1,1,0 \ 1,1,1)
++	// Bound the direct-address map at 64 MiB. Small cutoffs use a sparse
++	// numeric neighbor table instead; no live asarray may reach the worker
++	// loop (Mata function calls become very costly while it is in scope).
++	direct = (G^3 <= 64 * 1024^2 / 8)
++	if (direct) lookup = J(G^3, 1, 0)
 +
 +	// Pair counts are diagnostic-only. Tell the tiled worker not to scan each
 +	// acceptance matrix unless verbose output will actually report the count.
@@ -360,8 +364,8 @@ index 0000000..430e363
 +		cinfo = panelsetup(key[|lo \ hi|], 1) :+ (lo - 1)   // absolute rows
 +		ncell = rows(cinfo)
 +		ucid = key[cinfo[., 1]]
-+		A = asarray_create("real", 1)
-+		for (c = 1; c <= ncell; c++) asarray(A, ucid[c], c)
++		if (direct) lookup[ucid :+ 1] = (1::ncell)
++		else neighbors = reghdfe_conley_cell_neighbors(ucid, G, offs)
 +		for (ca = 1; ca <= ncell; ca++) {
 +			u = ucid[ca]
 +			cz = mod(u, G)
@@ -374,17 +378,46 @@ index 0000000..430e363
 +				nx = cx + offs[o, 1]; ny = cy + offs[o, 2]; nz = cz + offs[o, 3]
 +				if (nx < 0 | nx >= G | ny < 0 | ny >= G | nz < 0 | nz >= G) continue
 +				u = (nx * G + ny) * G + nz
-+				if (!asarray_contains(A, u)) continue
-+				cb = asarray(A, u)
++				if (direct) cb = lookup[u + 1]
++				else cb = neighbors[ca, o]
++				if (!cb) continue
 +				npairs = npairs + reghdfe_conley_cell_pair(M, U, S, T, k, cinfo[ca, 1], cinfo[ca, 2],
 +				                                       cinfo[cb, 1], cinfo[cb, 2], 0,
 +				                                       coscut, cutoff, kernel, dist, tile)
 +			}
 +		}
++		// Clear only occupied entries before the next period's cell map.
++		if (direct) lookup[ucid :+ 1] = J(ncell, 1, 0)
 +	}
 +	if (verbose) printf("{txt}   - spatial meat: %g rows, %g time blocks, %g accepted pairs (cell edge %g)\n",
 +	                    n, nb, npairs, edge)
 +	return(M + M')
++}
++
++// Build the sparse map in its own scope and release the dictionary before
++// returning. Columns retain the original 13-offset order; zero means absent.
++real matrix reghdfe_conley_cell_neighbors(real colvector ucid, real scalar G,
++                                       real matrix offs)
++{
++	transmorphic A
++	real matrix neighbors
++	real scalar c, o, u, cx, cy, cz, nx, ny, nz, ncell
++	ncell = rows(ucid)
++	neighbors = J(ncell, 13, 0)
++	A = asarray_create("real", 1)
++	for (c = 1; c <= ncell; c++) asarray(A, ucid[c], c)
++	for (c = 1; c <= ncell; c++) {
++		u = ucid[c]
++		cz = mod(u, G); cy = mod(floor(u / G), G); cx = floor(u / (G * G))
++		for (o = 1; o <= 13; o++) {
++			nx = cx + offs[o, 1]; ny = cy + offs[o, 2]; nz = cz + offs[o, 3]
++			if (nx < 0 | nx >= G | ny < 0 | ny >= G | nz < 0 | nz >= G) continue
++			u = (nx * G + ny) * G + nz
++			if (asarray_contains(A, u)) neighbors[c, o] = asarray(A, u)
++		}
++	}
++	A = J(0, 0, .)
++	return(neighbors)
 +}
 +
 +// One cell pair (rows ia..ib against ja..jb), tiled. `self` = same cell:
@@ -469,7 +502,6 @@ index 0000000..430e363
 +				W = acc
 +			}
 +			else {
-+				Dot = Ua * Ub'
 +				// Bartlett needs distances. The squared chord |u_i - u_j|^2 equals
 +				// 2 - 2 Dot, but that difference cancels at small angles: its
 +				// relative error is about 5e-12 in squared chord at 200 km
@@ -484,6 +516,7 @@ index 0000000..430e363
 +					a = (Ua[., 1] * eb' - ea * Ub[., 1]') :^ 2 + (Ua[., 2] * eb' - ea * Ub[., 2]') :^ 2 + (Ua[., 3] * eb' - ea * Ub[., 3]') :^ 2
 +				}
 +				else {
++					Dot = Ua * Ub'
 +					a = 2 :- 2 :* Dot
 +					a = a :* (a :> 0)
 +				}
@@ -582,17 +615,23 @@ index 0000000..430e363
 +	real scalar step_l, step_o, n_col, cf, n_col_full, nsteps
 +	external real rowvector fc_grid
 +	external real colvector fc_ring, fc_col
-+	ul = uniqrows(lat); uo = uniqrows(lon)
-+	if (rows(ul) < 2 | rows(uo) < 2) return(0)
++	ul = uniqrows(lat)
++	if (rows(ul) < 2) return(0)
 +	dl = ul[|2 \ rows(ul)|] - ul[|1 \ rows(ul)-1|]
-+	dol = uo[|2 \ rows(uo)|] - uo[|1 \ rows(uo)-1|]
-+	step_l = min(dl); step_o = min(dol)
-+	if (step_l <= 0 | step_o <= 0) return(0)
++	step_l = min(dl)
++	if (step_l <= 0) return(0)
 +	nsteps = round((ul[rows(ul)] - ul[1]) / step_l)
 +	if (nsteps >= 1) step_l = (ul[rows(ul)] - ul[1]) / nsteps
++	if (any(abs(dl :/ step_l - round(dl :/ step_l)) :> tol)) return(0)
++	// Scattered latitudes already rule out a raster: sort longitude only
++	// after latitude has passed its lattice test.
++	uo = uniqrows(lon)
++	if (rows(uo) < 2) return(0)
++	dol = uo[|2 \ rows(uo)|] - uo[|1 \ rows(uo)-1|]
++	step_o = min(dol)
++	if (step_o <= 0) return(0)
 +	nsteps = round((uo[rows(uo)] - uo[1]) / step_o)
 +	if (nsteps >= 1) step_o = (uo[rows(uo)] - uo[1]) / nsteps
-+	if (any(abs(dl :/ step_l - round(dl :/ step_l)) :> tol)) return(0)
 +	if (any(abs(dol :/ step_o - round(dol :/ step_o)) :> tol)) return(0)
 +	ring_d = round((lat :- ul[1]) :/ step_l)
 +	col_d = round((lon :- uo[1]) :/ step_o)
@@ -658,6 +697,7 @@ index 0000000..430e363
 +//               was requested and the aggregation broke the balance, the
 +//               unaggregated rows sorted by (time, unit)
 +//   fc_sp_balanced  1 when the balanced path applies to fc_sp_* rows
++//   fc_n_periods    period count, also used by the ado and Mata meat step
 +// Inputs:
 +//   Xstd     partialled-out regressors as returned by partial_out (n x K0,
 +//            standardized; the pre-solve columns with status 0)
@@ -728,13 +768,19 @@ index 0000000..430e363
 +	real scalar n, T, n_per, t
 +	external real matrix fc_S, fc_sp_S
 +	external real colvector fc_sp_lat, fc_sp_lon, fc_sp_time
-+	external real scalar fc_sp_balanced
++	external real scalar fc_sp_balanced, fc_n_periods
 +
 +	n = rows(fc_S)
++	// A constant time column (including omitted time()) needs no unique sort.
++	// Aggregation never removes a period, so this count applies to fc_sp_* too.
++	T = 1
++	if (n > 1) {
++		if (!all(time :== time[1])) T = rows(uniqrows(time))
++	}
++	fc_n_periods = T
 +	// Balanced-panel validation (same conditions and messages as the R package).
 +	if (balanced) {
 +		p = order((time, unit), (1, 2))
-+		T = rows(uniqrows(time))
 +		if (T > 1) {
 +			atime = time[p]
 +			ucheck = unit[p]
@@ -762,8 +808,7 @@ index 0000000..430e363
 +	reghdfe_conley_aggregate(fc_sp_lat, fc_sp_lon, fc_sp_time, fc_sp_S, pixel)
 +	if (verbose & rows(fc_sp_S) < n) printf("{txt}   - score pre-aggregation: %g rows -> %g cases (pixel = %g km)\n", n, rows(fc_sp_S), pixel)
 +	fc_sp_balanced = 0
-+	if (balanced & rows(uniqrows(fc_sp_time)) > 1) {
-+		T = rows(uniqrows(fc_sp_time))
++	if (balanced & T > 1) {
 +		n_per = rows(fc_sp_S) / T
 +		if (n_per == floor(n_per) & !any(panelsetup(fc_sp_time, 1)[., 2] - panelsetup(fc_sp_time, 1)[., 1] :+ 1 :!= n_per)) {
 +			fc_sp_balanced = 1
@@ -945,10 +990,17 @@ index 0000000..430e363
 +	real scalar T, n_per, kk, t
 +	real matrix Sstack
 +	real colvector plat, plon, ptime
++	external real scalar fc_n_periods
++	external real colvector fc_sp_time
 +	T = 1
 +	plat = lat; plon = lon; ptime = time; Sstack = S
-+	if (balanced & rows(uniqrows(time)) > 1) {
-+		T = rows(uniqrows(time))
++	if (balanced) {
++		// Preparation supplies the count for its own time vector. Keep the
++		// standalone matrix API valid for callers supplying other rows too.
++		if ((&time) == (&fc_sp_time)) T = fc_n_periods
++		else T = rows(uniqrows(time))
++	}
++	if (T > 1) {
 +		n_per = rows(S) / T
 +		kk = cols(S)
 +		Sstack = J(n_per, T * kk, .)

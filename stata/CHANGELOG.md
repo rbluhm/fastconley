@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Mata engine: the cell dictionary (a live Mata associative array) is no longer in scope during the pair traversal; cells are resolved through a direct-address numeric lookup (bounded at 64 MiB) or a precomputed neighbour table. A live associative array makes every Mata function call in scope roughly a hundred times slower, which is why the fallback could not finish one million points; the traversal order and results are unchanged.
+- Mata engine: default `tile(512)` (was 1024); 512 is fastest for both kernels at 50k-100k points because the tile-sized work matrices stay cache resident. Only the accumulation order changes.
+- Preparation: the coordinate merge returns immediately when every row is its own location, the period count is computed once and shared, the unused `Ua*Ub'` product is skipped below 200 km, and raster detection rejects on latitude before sorting longitude.
+
 - `fastconley, version` returns its fields in `r()`; `stata/bench/` holds the benchmark suite behind `stata/PERFORMANCE.md` (the R vignette's six sections timed with the plugin, the Mata fallback, and acreg).
 
 - `e(vce_seconds)` reports the wall-clock time of the covariance step alone (Mata timer slot 100), the quantity the benchmarks in `stata/PERFORMANCE.md` compare with the R package.

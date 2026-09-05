@@ -104,6 +104,26 @@ coverage) whose findings are fixed below.
 - Dead code from the pre-chord screens removed; the balanced path builds its
   coordinate cache from the first period only.
 
+## Performance (bit-identical)
+
+Three optimisation reviews (2026-09-05) led to preparation and engine changes
+that leave every result bit-identical (the 60-configuration bitwise battery,
+the standalone header check, and the plugin golden check all pass unchanged):
+
+- Balanced-panel coordinate validation compares each period's coordinates
+  with period 1 instead of grouping by unit twice; the 10,000-unit panel
+  call drops from 0.29 s to 0.07 s and a 500k-row panel from 3.9 s to 2.1 s.
+- The fitted design stays a matrix (no data.table round trip), felm's bread
+  is computed from the fit's design, and the serial HAC reuses the raw scores
+  through a row map instead of re-sorting the wide table; allocations fall by
+  a third at one million rows.
+- Raster detection rejects scattered data on latitude before sorting
+  longitude.
+- Engine: the raster Bartlett engine batches its weight FFTs so KissFFT's
+  worker and twiddle table are shared across ring pairs; the raster window
+  prepass and prefix build parallelise per ring; neighbour-range construction
+  uses monotone cursor sweeps instead of ten binary searches per cell.
+
 ## Tests and tooling
 
 - testthat grew from 48 to 106 expectations: independent dense references

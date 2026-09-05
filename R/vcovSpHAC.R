@@ -258,7 +258,8 @@ vcovSpHAC.felm <- function(reg,
     }
   }
   if (!is.null(model_data) && nrow(model_data) == N && is.null(reg$call$subset)) {
-    recovered <- as.data.frame(model_data)[, recover_names, drop = FALSE]
+    recovered <- lapply(recover_names, function(nm) model_data[[nm]])
+    names(recovered) <- recover_names
   } else {
     recovered <- tryCatch(
       expand.model.felm(model = reg, extras = recover_names,
@@ -283,10 +284,10 @@ vcovSpHAC.felm <- function(reg,
   unit_vec <- panel_value(unit, "unit", seq_len(N))
   time_vec <- panel_value(time, "time", rep(1L, N))
 
-  # reg$cY is deliberately not carried along -- only the centered design
-  # columns, FEs, coordinates, and residuals are used downstream.
+  # Keep the fitted design as a matrix; only metadata needs table sorting.
+  X <- reg$cX
+  if (!identical(colnames(X), Xvars)) X <- X[, Xvars, drop = FALSE]
   dt <- data.table::data.table(
-    reg$cX,
     unit = unit_vec,
     time = time_vec,
     lat = recovered[[lat]],
@@ -294,21 +295,17 @@ vcovSpHAC.felm <- function(reg,
   )
   # Weighted (WLS) fits: the meat scores are s_i = w_i * e_i * x_i and the
   # bread is (X'WX)^{-1}. lfe stores sqrt(w) in reg$weights, so square it.
-  # Folding w into the residual column covers both the spatial and the
-  # serial-HAC meat (both build scores as e * X downstream).
+  # Fold w into residuals before multiplying X, preserving (e * w) * X
+  # for both the spatial and serial-HAC scores.
   w <- if (!is.null(reg$weights)) as.numeric(reg$weights)^2 else NULL
   res <- as.numeric(reg$residuals)
   if (!is.null(w)) res <- res * w
-  dt[, e := res]
-
-  X <- as.matrix(dt[, Xvars, with = FALSE])
   n <- nrow(dt)
   invXX <- solve(if (is.null(w)) crossprod(X) else crossprod(X, X * w)) * n
-  rm(X)
 
   dof_scale <- ssc_scale(ssc, n, reg$N - reg$p)
 
-  vcovSpHAC_core(dt = dt, Xvars = Xvars, n = n, invXX = invXX,
+  vcovSpHAC_core(dt = dt, scores = X * res, Xvars = Xvars, n = n, invXX = invXX,
                  kernel = args$kernel, dist_fn = args$dist_fn,
                  dist_cutoff = dist_cutoff, lag_cutoff = lag_cutoff,
                  balanced_pnl = balanced_pnl, ncores = args$ncores,
@@ -482,8 +479,8 @@ vcovSpHAC.fixest <- function(reg,
   if (is_glm) {
     # M-estimation sandwich H^{-1} B H^{-1}: fixest stores the ML score
     # rows (FE profiling, weights, and offsets already folded in) and
-    # cov.iid = H^{-1}. The score matrix rides through the core as the
-    # "X" columns with e = 1, so every engine (pairwise, grid/FFT, serial
+    # cov.iid = H^{-1}. Multiplication by e = 1 produces the raw score
+    # matrix, so every engine (pairwise, grid/FFT, serial
     # HAC, pixel aggregation) sees the same score rows it would for OLS.
     if (!is.null(reg$isBounded) && any(reg$isBounded)) {
       stop("vcovSpHAC.fixest: fits with parameters estimated at a bound ",
@@ -500,7 +497,7 @@ vcovSpHAC.fixest <- function(reg,
       stop("Internal: score columns (", ncol(cX),
            ") do not match the coefficient count (", length(Xvars), ").")
     }
-    colnames(cX) <- Xvars
+    if (!identical(colnames(cX), Xvars)) colnames(cX) <- Xvars
     if (is.null(reg$cov.iid) || anyNA(reg$cov.iid)) {
       stop("vcovSpHAC.fixest: the fit's iid vcov (inverse Hessian) is ",
            "missing or contains NAs (collinearity?); cannot build the ",
@@ -514,7 +511,8 @@ vcovSpHAC.fixest <- function(reg,
            "feols(..., demeaned = TRUE) so the centered design matrix is available.")
     }
     if (is.null(Xvars)) Xvars <- colnames(reg$X_demeaned)
-    cX <- reg$X_demeaned[, Xvars, drop = FALSE]
+    cX <- reg$X_demeaned
+    if (!identical(colnames(cX), Xvars)) cX <- cX[, Xvars, drop = FALSE]
     e  <- as.numeric(reg$residuals)
     n  <- length(e)
     if (nrow(cX) != n) {
@@ -584,7 +582,7 @@ vcovSpHAC.fixest <- function(reg,
   n_origin <- reg$nobs_origin
   if (is.null(n_origin) || !is.finite(n_origin)) n_origin <- max(obs_idx, n)
   if (nrow(data) == n_origin) {
-    aligned <- FALSE
+    aligned <- identical(obs_idx, seq_len(n))
   } else if (nrow(data) == n) {
     aligned <- TRUE
   } else {
@@ -618,12 +616,10 @@ vcovSpHAC.fixest <- function(reg,
   if (!is.null(w)) e <- e * w
 
   dt <- data.table::data.table(
-    cX,
     unit = unit_v,
     time = time_v,
     lat  = lat_v,
-    lon  = lon_v,
-    e    = e
+    lon  = lon_v
   )
 
   # The core computes invXX %*% (XeeX / n) %*% invXX / n, i.e. it expects
@@ -637,7 +633,7 @@ vcovSpHAC.fixest <- function(reg,
 
   dof_scale <- ssc_scale(ssc, n, reg$nobs - reg$nparams)
 
-  vcovSpHAC_core(dt = dt, Xvars = Xvars, n = n, invXX = invXX,
+  vcovSpHAC_core(dt = dt, scores = cX * e, Xvars = Xvars, n = n, invXX = invXX,
                  kernel = args$kernel, dist_fn = args$dist_fn,
                  dist_cutoff = dist_cutoff, lag_cutoff = lag_cutoff,
                  balanced_pnl = balanced_pnl, ncores = args$ncores,
@@ -647,9 +643,10 @@ vcovSpHAC.fixest <- function(reg,
                  verbose = verbose)
 }
 
-# Shared post-extraction core. `dt` must carry Xvars, unit, time, lat, lon, e
-# (with any regression weights already folded into e on entry).
-vcovSpHAC_core <- function(dt, Xvars, n, invXX,
+# Shared post-extraction core. `dt` carries unit, time, lat, lon; `scores`
+# holds original fitted rows, with regression weights already folded into e
+# before multiplying by X. Sort metadata and its row map, never the design.
+vcovSpHAC_core <- function(dt, scores, Xvars, n, invXX,
                            kernel, dist_fn, dist_cutoff, lag_cutoff,
                            balanced_pnl, ncores, pixel, neighbor, csr_weight,
                            method, dof_scale = 1, psd_fix = FALSE, verbose) {
@@ -660,6 +657,7 @@ vcovSpHAC_core <- function(dt, Xvars, n, invXX,
   # spatial blocks, but its numeric spacing is meaningful to serial HAC.
   dt[, unit := to_group_id(dt[["unit"]])]
   dt[, time := to_time_value(dt[["time"]], lag_cutoff)]
+  data.table::set(dt, j = "score_row", value = seq_len(n))
 
   if (balanced_pnl) {
     data.table::setorderv(dt, c("time", "unit"))
@@ -697,10 +695,30 @@ vcovSpHAC_core <- function(dt, Xvars, n, invXX,
              "(or a unit is duplicated within a period). ",
              "Use balanced_pnl = FALSE.")
       }
-      coord_var <- dt[, list(n_lat = data.table::uniqueN(lat),
-                             n_lon = data.table::uniqueN(lon)),
-                      by = unit]
-      if (any(coord_var$n_lat > 1L) || any(coord_var$n_lon > 1L)) {
+      if (data.table::getNumericRounding() == 0L) {
+        # Unit alignment is established above. Compare each period with
+        # period 1, retaining exact equality (including signed zeros).
+        first <- seq_len(n_per)
+        lat1 <- dt[["lat"]][first]
+        lon1 <- dt[["lon"]][first]
+        varying_coords <- FALSE
+        for (period in seq.int(2L, length(period_n))) {
+          rows <- first + (period - 1L) * n_per
+          if (any(dt[["lat"]][rows] != lat1) ||
+              any(dt[["lon"]][rows] != lon1)) {
+            varying_coords <- TRUE
+            break
+          }
+        }
+      } else {
+        # uniqueN honours data.table's optional rounded equality. Preserve
+        # that less common mode without approximating its bit rounding.
+        coord_var <- dt[, list(n_lat = data.table::uniqueN(lat),
+                               n_lon = data.table::uniqueN(lon)),
+                        by = unit]
+        varying_coords <- any(coord_var$n_lat > 1L) || any(coord_var$n_lon > 1L)
+      }
+      if (varying_coords) {
         stop("balanced_pnl = TRUE requires time-invariant coordinates per unit, ",
              "but some units have varying lat or lon across periods.")
       }
@@ -709,8 +727,14 @@ vcovSpHAC_core <- function(dt, Xvars, n, invXX,
     data.table::setorderv(dt, "time")
   }
 
-  agg <- aggregate_scores(dt, Xvars, pixel = pixel,
+  # Avoid even the score gather when the fitted rows already have the
+  # required spatial order. Aggregation keeps its original summation order.
+  spatial_rows <- dt[["score_row"]]
+  scores_spatial <- if (identical(spatial_rows, seq_len(n))) scores else
+    scores[spatial_rows, , drop = FALSE]
+  agg <- aggregate_scores(dt, scores_spatial, Xvars, pixel = pixel,
                           balanced_pnl = balanced_pnl, verbose = verbose)
+  rm(scores_spatial)
 
   gi <- choose_grid_method(method, kernel, agg, dist_cutoff)
   if (verbose) {
@@ -764,7 +788,10 @@ vcovSpHAC_core <- function(dt, Xvars, n, invXX,
     data.table::setorderv(dt, c("unit", "time"))
 
     if (verbose) message("Starting serial HAC meat")
-    scores_serial <- as.matrix(dt[, Xvars, with = FALSE]) * dt[["e"]]
+    # Serial HAC always uses original observation scores, even when the
+    # spatial path collapsed co-located units or snapped them to pixels.
+    scores_serial <- scores[dt[["score_row"]], , drop = FALSE]
+    if (!is.null(rownames(scores_serial))) rownames(scores_serial) <- NULL
     XeeX_serial <- FastSerialHacPanel(
       unit = dt[["unit"]],
       time = dt[["time"]],
@@ -949,19 +976,27 @@ detect_coord_names <- function(nms, lat, lon) {
 # 0-based integer cell indices aligned to the input rows.
 detect_lonlat_grid <- function(lat, lon, tol = 1e-6) {
   ul <- sort(unique(lat))
-  uo <- sort(unique(lon))
-  if (length(ul) < 2L || length(uo) < 2L) return(NULL)
-  dl <- diff(ul); dol <- diff(uo)
-  step_l <- min(dl); step_o <- min(dol)
-  if (step_l <= 0 || step_o <= 0) return(NULL)
+  if (length(ul) < 2L) return(NULL)
+  dl <- diff(ul)
+  step_l <- min(dl)
+  if (step_l <= 0) return(NULL)
   if (any(abs(dl / step_l - round(dl / step_l)) > tol)) return(NULL)
-  if (any(abs(dol / step_o - round(dol / step_o)) > tol)) return(NULL)
   ring_d <- round((lat - ul[1L]) / step_l)
-  col_d  <- round((lon - uo[1L]) / step_o)
-  if (!all(is.finite(ring_d)) || !all(is.finite(col_d))) return(NULL)
-  if (max(ring_d) > .Machine$integer.max - 1 ||
-      max(col_d) > .Machine$integer.max - 1) return(NULL)
+  if (!all(is.finite(ring_d))) return(NULL)
+  if (max(ring_d) > .Machine$integer.max - 1) return(NULL)
   if (max(abs(lat - (ul[1L] + ring_d * step_l))) > tol * step_l) return(NULL)
+
+  # Most scattered samples already fail the latitude test. Delay longitude
+  # sorting and allocation until latitude has passed every lattice check.
+  uo <- sort(unique(lon))
+  if (length(uo) < 2L) return(NULL)
+  dol <- diff(uo)
+  step_o <- min(dol)
+  if (step_o <= 0) return(NULL)
+  if (any(abs(dol / step_o - round(dol / step_o)) > tol)) return(NULL)
+  col_d  <- round((lon - uo[1L]) / step_o)
+  if (!all(is.finite(col_d))) return(NULL)
+  if (max(col_d) > .Machine$integer.max - 1) return(NULL)
   if (max(abs(lon - (uo[1L] + col_d * step_o))) > tol * step_o) return(NULL)
   ring <- as.integer(ring_d)
   col  <- as.integer(col_d)
@@ -1059,9 +1094,8 @@ to_time_value <- function(x, lag_cutoff) {
 # pixel / 111 km and whose longitude step is pixel / (111 * cos(lat_rep)) km,
 # so cells stay roughly square at all latitudes. The representative coordinate
 # for a cell is the cell centre.
-aggregate_scores <- function(dt, Xvars, pixel, balanced_pnl, verbose) {
+aggregate_scores <- function(dt, scores, Xvars, pixel, balanced_pnl, verbose) {
   n <- nrow(dt)
-  scores <- as.matrix(dt[, Xvars, with = FALSE]) * dt[["e"]]
 
   if (pixel > 0) {
     lat_step <- pixel / 111.0

@@ -65,7 +65,7 @@
 {synopt :{opt thr:eads(#)}}threads for the plugin engine; default {cmd:c(processors_mach)}{p_end}
 {synopt :{opt neigh:bor(string)}}{opt grid} (default) or {opt band} candidate search (plugin only){p_end}
 {synopt :{opt csr:weight(string)}}{opt double} (default) or {opt float} neighbour-weight storage on the balanced path (plugin only){p_end}
-{synopt :{opt tile(#)}}Mata dense-block tile size; default 1024, hard cap 8192 and 1-GiB workspace guard{p_end}
+{synopt :{opt tile(#)}}Mata dense-block tile size; default 512, hard cap 8192 and 1-GiB workspace guard{p_end}
 {synopt :{opt v:erbose}}report engine progress{p_end}
 
 {syntab:Other}
@@ -252,7 +252,10 @@ strategy and neighbour-weight precision, mirroring the R package's
 
 {phang}
 {opt tile(#)} sets the dense block size the Mata engine uses inside each pair
-of neighbouring cells; larger tiles are faster but use more memory
+of neighbouring cells. 512 was the fastest setting for both kernels at 50,000 and
+100,000 points (the several tile-sized work matrices then stay cache resident;
+1024 was 20-30 percent slower, 256 slower again); it changes only the order of
+floating-point accumulation, not the accepted pairs or weights
 (estimated as 5 x #^2 x 8 bytes). Values above 8192 are rejected, as are
 values whose estimate exceeds 1 GiB. The Mata engine builds squared chords
 from coordinate differences below 200 km. At the 200-km switch, the measured

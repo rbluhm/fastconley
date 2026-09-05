@@ -823,9 +823,21 @@ inline void append_block_grid(const CoordCache& c, std::size_t bs, std::size_t b
 
   // Five forward cell-id intervals per cell; each maps to one contiguous
   // row range because consecutive occupied cells are contiguous rows.
-  // Pure per-cell output: safe and deterministic to parallelize.
+  // Within each family both endpoints are monotone in cu, after invalid
+  // boundary cells are skipped (including the clipped z endpoints). Use
+  // at most one coarse chunk per worker, seeding its cursors once per
+  // family. Monotone endpoints bound the total advances by O(ncb), apart
+  // from at most three overlapping cells per chunk boundary. Seeding costs
+  // O(nthreads * log(ncb)), with nthreads capped independently of ncb.
   grid.nbr.resize(grid.nbr.size() + 10 * ncb);
-  parallel_range(ncb, ncores, [&](std::size_t cdx_lo, std::size_t cdx_hi) {
+  const std::size_t range_threads = static_cast<std::size_t>(
+      std::min(1024, std::max(1, ncores)));
+  const std::size_t range_grain = std::max<std::size_t>(
+      8192, (ncb + range_threads - 1) / range_threads);
+  parallel_blocks(ncb, ncores, range_grain,
+                  [&](std::size_t cdx_lo, std::size_t cdx_hi) {
+  std::size_t lower[5] = {}, upper[5] = {};
+  bool seeded[5] = {};
   for (std::size_t cdx = cdx_lo; cdx < cdx_hi; ++cdx) {
     const std::uint64_t cu = ucid[cdx];
     const std::int64_t cz = static_cast<std::int64_t>(cu % uG);
@@ -846,10 +858,20 @@ inline void append_block_grid(const CoordCache& c, std::size_t bs, std::size_t b
                                   static_cast<std::uint64_t>(ny)) * uG;
       const std::uint64_t lo = base + static_cast<std::uint64_t>(zlo);
       const std::uint64_t hi = base + static_cast<std::uint64_t>(zhi);
-      const std::size_t clo = std::lower_bound(ucid.begin(), ucid.end(), lo) -
-                              ucid.begin();
-      const std::size_t chi = std::upper_bound(ucid.begin() + clo, ucid.end(), hi) -
-                              ucid.begin();
+      std::size_t& clo = lower[run];
+      std::size_t& chi = upper[run];
+      if (!seeded[run]) {
+        // Chunk zero can scan from zero. Later chunks start at their first
+        // valid interval, so boundary cells must not mark a family seeded.
+        if (cdx_lo != 0) {
+          clo = std::lower_bound(ucid.begin(), ucid.end(), lo) - ucid.begin();
+          chi = clo;
+        }
+        seeded[run] = true;
+      }
+      while (clo < ncb && ucid[clo] < lo) ++clo;
+      if (chi < clo) chi = clo;
+      while (chi < ncb && ucid[chi] <= hi) ++chi;
       out[2 * run] = row0 + ustart[clo];
       out[2 * run + 1] = row0 + ustart[chi];
       ++run;
@@ -1761,7 +1783,7 @@ inline arma::mat grid_meat(const int* ring, const int* col,
   {
     std::vector<double> permax(R, 0.0);
     std::vector<long> perds(R, 0);
-    parallel_range(R, ncores, [&](std::size_t lo, std::size_t hi) {
+    parallel_range_coarse(R, ncores, [&](std::size_t lo, std::size_t hi) {
       for (std::size_t r1 = lo; r1 < hi; ++r1) {
         const std::size_t r2_hi = std::min(R - 1, r1 + rho);
         for (std::size_t r2 = r1; r2 <= r2_hi; ++r2) {
@@ -1820,7 +1842,7 @@ inline arma::mat grid_meat(const int* ring, const int* col,
         for (std::size_t kk = 0; kk < k; ++kk) dst[kk] += scores(i, kk);
         ++ring_count[r];
       }
-      parallel_range(R, ncores, [&](std::size_t lo, std::size_t hi) {
+      parallel_range_coarse(R, ncores, [&](std::size_t lo, std::size_t hi) {
         for (std::size_t r = lo; r < hi; ++r) {
           if (ring_count[r] == 0) continue;
           double* Pr = P.data() + r * rowlen;
@@ -1935,6 +1957,19 @@ inline arma::mat grid_meat(const int* ring, const int* col,
   const std::size_t npad =
       wrap ? Cf : next_pow2(C + static_cast<std::size_t>(std::max(ds_max, 0L)));
   const std::size_t BAND_H = 128;
+  // A matrix FFT shares KissFFT's worker/twiddles across weight columns.
+  // Bound the real input + complex output to 1 MiB per active reducer, or
+  // one column if that alone is larger. A one-row matrix is treated as a
+  // vector by Armadillo, so npad == 1 must keep the scalar path. With FFTW3
+  // enabled, N_exec can change Armadillo's backend choice: keep N_exec = 1.
+#if defined(ARMA_USE_FFTW3)
+  const std::size_t WEIGHT_BATCH = 1;
+#else
+  const std::size_t WEIGHT_BATCH_BYTES = 1024 * 1024;
+  const std::size_t WEIGHT_BATCH = npad == 1 ? 1 :
+      std::max<std::size_t>(1, std::min<std::size_t>(16,
+          WEIGHT_BATCH_BYTES / (sizeof(double) + sizeof(std::complex<double>)) / npad));
+#endif
 
   std::vector<double> DS(R * C * k);  // raw dense scores, ring-major
   std::vector<arma::cx_mat> shat(R);  // per-ring score spectra (banded cache)
@@ -1980,7 +2015,9 @@ inline arma::mat grid_meat(const int* ring, const int* col,
       // ring is a heavy item -- ~2*rho weight FFTs).
       auto body = [&](std::size_t lo, std::size_t hi, arma::mat& meat) {
         std::vector<double> wbuf(static_cast<std::size_t>(cap) + 1);
-        arma::vec wpad(npad);
+        arma::mat wpad(npad, WEIGHT_BATCH);
+        arma::cx_mat what;
+        std::vector<std::size_t> weight_ring(WEIGHT_BATCH);
         std::vector<double> rew(npad);
         arma::cx_mat acc(npad, k);
         std::vector<double> cfr(C * k);
@@ -1990,32 +2027,45 @@ inline arma::mat grid_meat(const int* ring, const int* col,
           acc.zeros();
           bool any = false;
           const std::size_t r2_hi = std::min(R - 1, r1 + rho);
-          for (std::size_t r2 = r1; r2 <= r2_hi; ++r2) {
-            if (ring_count[r2] == 0) continue;
-            const RingPairWin win = grid_ring_window(gg, r1, r2, a_cutoff, cap);
-            if (win.ds < 0) continue;
-            const long ds = win.ds;
-            grid_bartlett_weights(gg, r1, r2, dist_id, cutoff, ds,
-                                  wbuf.data());
-            if (r2 == r1) {
-              for (long d = 0; d <= ds; ++d) wbuf[d] *= 0.5;
+          std::size_t next_r2 = r1;
+          while (next_r2 <= r2_hi) {
+            std::size_t nw = 0;
+            for (; next_r2 <= r2_hi && nw < WEIGHT_BATCH; ++next_r2) {
+              const std::size_t r2 = next_r2;
+              if (ring_count[r2] == 0) continue;
+              const RingPairWin win = grid_ring_window(gg, r1, r2, a_cutoff, cap);
+              if (win.ds < 0) continue;
+              const long ds = win.ds;
+              grid_bartlett_weights(gg, r1, r2, dist_id, cutoff, ds,
+                                    wbuf.data());
+              if (r2 == r1) {
+                for (long d = 0; d <= ds; ++d) wbuf[d] *= 0.5;
+              }
+              double* wp = wpad.colptr(nw);
+              std::fill(wp, wp + npad, 0.0);
+              wp[0] = wbuf[0];
+              for (long d = 1; d <= ds; ++d) {
+                wp[static_cast<std::size_t>(d)] = wbuf[d];
+                wp[npad - static_cast<std::size_t>(d)] = wbuf[d];
+              }
+              weight_ring[nw++] = r2;
             }
-            wpad.zeros();
-            wpad[0] = wbuf[0];
-            for (long d = 1; d <= ds; ++d) {
-              wpad[static_cast<std::size_t>(d)] = wbuf[d];
-              wpad[npad - static_cast<std::size_t>(d)] = wbuf[d];
-            }
+            if (nw == 0) break;
+            // Only transform filled columns, including a short final batch.
+            const arma::mat weights(wpad.memptr(), npad, nw, false, true);
+            what = arma::fft(weights);
             // w is even in the offset, so its DFT is real in exact
             // arithmetic; dropping the FP-noise imaginary part halves the
-            // accumulate cost.
-            const arma::cx_vec what = arma::fft(wpad);
-            for (std::size_t m = 0; m < npad; ++m) rew[m] = what[m].real();
-            const arma::cx_mat& S2 = shat[r2];
-            for (std::size_t kk = 0; kk < k; ++kk) {
-              std::complex<double>* a = acc.colptr(kk);
-              const std::complex<double>* s = S2.colptr(kk);
-              for (std::size_t m = 0; m < npad; ++m) a[m] += rew[m] * s[m];
+            // accumulate cost. Consume columns in the original r2 order.
+            for (std::size_t wi = 0; wi < nw; ++wi) {
+              const std::complex<double>* w = what.colptr(wi);
+              for (std::size_t m = 0; m < npad; ++m) rew[m] = w[m].real();
+              const arma::cx_mat& S2 = shat[weight_ring[wi]];
+              for (std::size_t kk = 0; kk < k; ++kk) {
+                std::complex<double>* a = acc.colptr(kk);
+                const std::complex<double>* s = S2.colptr(kk);
+                for (std::size_t m = 0; m < npad; ++m) a[m] += rew[m] * s[m];
+              }
             }
             any = true;
           }

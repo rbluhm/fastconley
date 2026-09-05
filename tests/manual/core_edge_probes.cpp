@@ -1,6 +1,10 @@
 // Focused standalone probes for conley_core.h boundary behavior.
-// Compile from the package root with the same C++14/header-only Armadillo
-// flags used by tests/manual/core_standalone_check.R.
+// Compile from the package root (create .scratch first):
+// ARMA_INC=$(Rscript -e 'cat(system.file("include", package="RcppArmadillo"))')
+// g++ -std=c++14 -O2 -pthread -DARMA_DONT_USE_WRAPPER -DARMA_DONT_USE_BLAS \
+//   -DARMA_DONT_USE_LAPACK -DARMA_DONT_USE_SUPERLU -I"$ARMA_INC" -Isrc \
+//   tests/manual/core_edge_probes.cpp -o .scratch/core_edge_probes
+// .scratch/core_edge_probes
 #include "conley_core.h"
 
 #include <chrono>
@@ -50,10 +54,189 @@ bool interrupt_now() {
   return true;
 }
 
+// Check the production cursor ranges against the previous binary searches.
+// Synthetic cell centres let us cover arbitrary occupied cell sets, including
+// cube faces and IDs near 2^63 - 1, independently of spherical sampling.
+void check_cell_ranges(std::vector<std::uint64_t> ids, std::int64_t G,
+                       std::mt19937_64& rng) {
+  if (!ids.empty()) ids.push_back(ids.front());  // duplicate rows in a cell
+  std::shuffle(ids.begin(), ids.end(), rng);
+  const std::uint64_t uG = static_cast<std::uint64_t>(G);
+  const std::size_t n = ids.size();
+  const conley::GridSpec spec{2.0 / static_cast<double>(G), G};
+  conley::CoordCache coords;
+  coords.x3.resize(2 * n);
+  coords.y3.resize(2 * n);
+  coords.z3.resize(2 * n);
+  for (std::size_t i = 0; i < 2 * n; ++i) {
+    const std::uint64_t id = ids[i % n];
+    coords.x3[i] = (static_cast<double>(id / (uG * uG)) + 0.5) * spec.cell - 1.0;
+    coords.y3[i] = (static_cast<double>((id / uG) % uG) + 0.5) * spec.cell - 1.0;
+    coords.z3[i] = (static_cast<double>(id % uG) + 0.5) * spec.cell - 1.0;
+  }
+  conley::CellGrid grid;
+  grid.row_cell.resize(2 * n);
+  std::vector<std::size_t> sorted;
+  std::vector<std::uint64_t> ordered = ids;
+  std::sort(ordered.begin(), ordered.end());
+  std::vector<std::uint64_t> ucid;
+  std::vector<std::size_t> ustart;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (i == 0 || ordered[i] != ordered[i - 1]) {
+      ucid.push_back(ordered[i]);
+      ustart.push_back(i);
+    }
+  }
+  ustart.push_back(n);
+  for (std::size_t block = 0; block < 2; ++block) {
+    const std::size_t row0 = block * n, cell0 = grid.cell_start.size();
+    conley::append_block_grid(coords, row0, row0 + n, spec, sorted, grid,
+                             block == 0 ? 1 : 4);
+    require(grid.cell_start.size() == cell0 + ucid.size(), "cell count");
+    for (std::size_t i = 0; i < n; ++i) {
+      require(ids[sorted[row0 + i] - row0] == ordered[i], "cell ordering");
+    }
+    for (std::size_t cdx = 0; cdx < ucid.size(); ++cdx) {
+      require(grid.cell_start[cell0 + cdx] == row0 + ustart[cdx], "cell start");
+      const std::uint64_t cu = ucid[cdx];
+      const std::int64_t cx = cu / (uG * uG), cy = (cu / uG) % uG, cz = cu % uG;
+      const std::int64_t intervals[5][4] = {
+        {cx, cy, cz + 1, cz + 1}, {cx, cy + 1, cz - 1, cz + 1},
+        {cx + 1, cy - 1, cz - 1, cz + 1}, {cx + 1, cy, cz - 1, cz + 1},
+        {cx + 1, cy + 1, cz - 1, cz + 1}
+      };
+      for (std::size_t run = 0; run < 5; ++run) {
+        const auto& in = intervals[run];
+        const std::int64_t zlo = std::max<std::int64_t>(0, in[2]);
+        const std::int64_t zhi = std::min(G - 1, in[3]);
+        std::size_t lo = row0, hi = row0;
+        if (in[0] >= 0 && in[0] < G && in[1] >= 0 && in[1] < G && zlo <= zhi) {
+          const std::uint64_t base = (static_cast<std::uint64_t>(in[0]) * uG + in[1]) * uG;
+          const auto clo = std::lower_bound(ucid.begin(), ucid.end(), base + zlo);
+          const auto chi = std::upper_bound(clo, ucid.end(), base + zhi);
+          lo += ustart[clo - ucid.begin()];
+          hi += ustart[chi - ucid.begin()];
+        }
+        const std::size_t pos = 10 * (cell0 + cdx) + 2 * run;
+        require(grid.nbr[pos] == lo && grid.nbr[pos + 1] == hi,
+                "cursor/binary range mismatch G=" + std::to_string(G));
+      }
+    }
+  }
+}
+
+void probe_cell_ranges() {
+  std::mt19937_64 rng(20260905);
+  std::size_t cases = 0;
+  const auto capped = conley::make_grid_spec(
+      conley::make_screen_params(1e-9, conley::DIST_SPHERICAL));
+  require(capped.G == 2097152, "tiny cutoff must exercise capped grid");
+  for (std::int64_t G : {1LL, 2LL, 3LL, 4LL, 17LL, 127LL, 2097152LL}) {
+    const std::uint64_t uG = static_cast<std::uint64_t>(G);
+    std::vector<std::uint64_t> faces;
+    const std::vector<std::int64_t> edge = {0, std::min<std::int64_t>(1, G - 1),
+                                           G / 2, std::max<std::int64_t>(0, G - 2), G - 1};
+    for (auto x : edge) for (auto y : edge) for (auto z : edge) {
+      faces.push_back((static_cast<std::uint64_t>(x) * uG + y) * uG + z);
+    }
+    check_cell_ranges({}, G, rng);
+    check_cell_ranges({uG * uG * uG - 1}, G, rng);
+    check_cell_ranges(faces, G, rng);
+    cases += 3;
+    for (int trial = 0; trial < 12; ++trial) {
+      std::vector<std::uint64_t> ids = faces;
+      for (std::size_t i = 0; i < 10000; ++i) {
+        ids.push_back(((rng() % uG) * uG + rng() % uG) * uG + rng() % uG);
+      }
+      check_cell_ranges(ids, G, rng);
+      ++cases;
+    }
+  }
+  // A parallel chunk starts inside cy == 0, where the cy - 1 family is
+  // invalid, and reaches cy == 1 later. Its first valid interval must seed
+  // the cursor then; the final x face also leaves whole families invalid.
+  const std::uint64_t G = static_cast<std::uint64_t>(capped.G);
+  std::vector<std::uint64_t> delayed;
+  for (std::uint64_t z = 0; z < 10000; ++z) {
+    delayed.push_back(z);
+    delayed.push_back(G + z);
+    delayed.push_back((G - 1) * G * G + z);
+  }
+  check_cell_ranges(delayed, capped.G, rng);
+  ++cases;
+  std::printf("neighbour cursor vs binary searches: %zu cell sets, two blocks each, all ranges identical\n", cases);
+}
+
+// Compare every weight spectrum on the small benchmark lattice, retaining
+// the imaginary component too. Exercise full batches and short tails.
+void probe_weight_fft() {
+  const std::size_t R = 180, C = 180;
+  conley::GridGeom gg;
+  gg.n_ring = R; gg.n_col = C;
+  gg.dlat_rad = gg.dlam_rad = 0.05 * conley::DE2RA;
+  gg.sphi.resize(R); gg.cphi.resize(R);
+  gg.cos_dl.resize(C); gg.s2h_dl.resize(C);
+  for (std::size_t r = 0; r < R; ++r) {
+    const double phi = (35.0 + r * 0.05) * conley::DE2RA;
+    gg.sphi[r] = std::sin(phi); gg.cphi[r] = std::cos(phi);
+  }
+  for (std::size_t d = 0; d < C; ++d) {
+    gg.cos_dl[d] = std::cos(d * gg.dlam_rad);
+    gg.s2h_dl[d] = conley::sq(std::sin(d * gg.dlam_rad / 2.0));
+  }
+  std::size_t checked = 0;
+  for (int distance : {conley::DIST_HAVERSINE, conley::DIST_SPHERICAL, conley::DIST_CHORD}) {
+    const auto screen = conley::make_screen_params(250.0, distance);
+    long ds_max = 0;
+    for (std::size_t r1 = 0; r1 < R; ++r1) for (std::size_t r2 = r1; r2 < R; ++r2) {
+      ds_max = std::max(ds_max, conley::grid_ring_window(
+          gg, r1, r2, screen.sin2_half_angular_cutoff, C - 1).ds);
+    }
+    const std::size_t npad = conley::next_pow2(C + ds_max);
+    for (std::size_t batch : {8, 16}) {
+      arma::mat weights(npad, batch);
+      std::vector<double> w(C);
+      for (std::size_t r1 = 0; r1 < R; ++r1) {
+        std::size_t nw = 0;
+        const auto check = [&]() {
+          if (nw == 0) return;
+          const arma::mat input(weights.memptr(), npad, nw, false, true);
+          const arma::cx_mat got = arma::fft(input);
+          for (std::size_t j = 0; j < nw; ++j) {
+            const arma::vec old_input = input.col(j);
+            const arma::cx_vec want = arma::fft(old_input);
+            require(std::memcmp(want.memptr(), got.colptr(j),
+                                npad * sizeof(std::complex<double>)) == 0,
+                    "batched weight FFT spectrum changed");
+            ++checked;
+          }
+        };
+        for (std::size_t r2 = r1; r2 < R; ++r2) {
+          const auto win = conley::grid_ring_window(
+              gg, r1, r2, screen.sin2_half_angular_cutoff, C - 1);
+          if (win.ds < 0) continue;
+          conley::grid_bartlett_weights(gg, r1, r2, distance, 250.0, win.ds, w.data());
+          if (r2 == r1) for (long d = 0; d <= win.ds; ++d) w[d] *= 0.5;
+          weights.col(nw).zeros();
+          weights(0, nw) = w[0];
+          for (long d = 1; d <= win.ds; ++d) {
+            weights(d, nw) = weights(npad - d, nw) = w[d];
+          }
+          if (++nw == batch) { check(); nw = 0; }
+        }
+        check();
+      }
+    }
+  }
+  std::printf("180x180 Bartlett weight FFTs: %zu spectra bit-identical (batches 8/16, all distances)\n", checked);
+}
+
 }  // namespace
 
 int main() {
   try {
+    probe_cell_ranges();
+    probe_weight_fft();
     const char* distances[] = {"haversine", "spherical", "chord"};
     const char* kernels[] = {"bartlett", "uniform"};
 

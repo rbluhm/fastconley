@@ -33,7 +33,7 @@ program Estimate, eclass
 		LATitude(varname numeric) LONgitude(varname numeric) CUToff(real) ///
 		[Absorb(string) NOAbsorb ///
 		 KERnel(string) DISTance(string) LAG(real 0) UNIT(varname) TIME(varname) ///
-		 BALanced PIXel(real 0) ENGine(string) METHod(string) THReads(real 0) TILE(real 1024) ///
+		 BALanced PIXel(real 0) ENGine(string) METHod(string) THReads(real 0) TILE(real 512) ///
 		 NEIGHbor(string) CSRweight(string) ///
 		 NOSSC NOPSDfix Verbose ///
 		 RESiduals(name) noCONStant ///
@@ -350,7 +350,7 @@ program Estimate, eclass
 	mata: st_local("n_sp", strofreal(rows(fc_sp_S)))
 	mata: st_local("n_full", strofreal(rows(fc_S)))
 	mata: st_local("sp_balanced", strofreal(fc_sp_balanced))
-	mata: st_local("n_periods", strofreal(rows(uniqrows(fc_time))))
+	mata: st_local("n_periods", strofreal(fc_n_periods))
 	loc method_used pairwise
 	if ("`engine'" == "plugin" & (`n_sp' > 2147483647 | (`lag' > 0 & `n_full' > 2147483647))) {
 		if ("`engine_request'" == "plugin") {
