@@ -375,5 +375,19 @@ economic production in the Caribbean and Central America.
 
 {title:Author}
 
+{pstd}Richard Bluhm{break}
+University of Stuttgart{break}
+Email: {browse "mailto:richard.bluhm@gmail.com":richard.bluhm@gmail.com}
+{p_end}
+
 {pstd}
-Richard Bluhm. Issues and source: {browse "https://github.com/rbluhm/fastconley"}.
+Source, issue tracker, and the R package whose engine this command shares:
+{browse "https://github.com/rbluhm/fastconley"}. Please report bugs there.
+{p_end}
+
+{title:Citation}
+
+{pstd}
+If you use {cmd:fastconley}, please cite Conley (1999) for the estimator and
+the package by name and version ({cmd:fastconley, version} prints it).
+{p_end}
