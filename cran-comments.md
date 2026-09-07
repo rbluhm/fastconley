@@ -17,7 +17,9 @@
 * win-builder R-devel (R Under development 2026-09-04 r90492 ucrt,
   x86_64-w64-mingw32, 0.11.0 tarball): Status: 1 NOTE (new submission;
   spell check on HAC) (https://win-builder.r-project.org/Q64nQgiG8KyN)
-* win-builder R-release (0.11.0 tarball uploaded 2026-09-05): result pending
+* win-builder R-release (R 4.6.1 ucrt, x86_64-w64-mingw32, 0.11.0 tarball):
+  Status: 1 NOTE (new submission; spell check on HAC)
+  (https://win-builder.r-project.org/K4ENW148dbpl)
 * macOS builder (Apple M1, macOS 26.6, R 4.6.1 patched, clang 1700, 0.11.0
   tarball, 2026-09-05): Status: OK, 0 notes
   (https://mac.R-project.org/macbuilder/results/1788638975-a75c4a580b33fc44/)
