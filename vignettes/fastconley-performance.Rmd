@@ -229,8 +229,9 @@ For `lfe`, use `keepCX = TRUE` when fitting the model. IV/2SLS fits (the
 and agree with the `fixest` IV path and an independent dense-R sandwich at
 machine precision. Other k-class estimators, including LIML, are not supported.
 Explicit `unit` and `time` names are matched to absorbed effects or recovered
-from the model data; when both names are omitted, the first two absorbed
-effects are the default when available.
+from the model data; when both names are omitted the data are one
+cross-sectional block (every pair within the cutoff enters), and nothing is
+inferred from the absorbed effects.
 
 ```{r quick-start-lfe, eval=FALSE}
 library(lfe)

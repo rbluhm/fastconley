@@ -31,9 +31,11 @@
 \arguments{
 \item{reg}{A fitted object of class "felm", including IV fits.}
 
-\item{unit}{Optional name of the panel unit variable. When both \code{unit}
-and \code{time} are omitted, the first two absorbed fixed effects are used
-when available; otherwise each row is its own unit.}
+\item{unit}{Optional name of the panel unit variable: an absorbed fixed
+effect or a column of the model data. When \code{unit} and \code{time}
+are both omitted the data are treated as one cross-section (each row its
+own unit, every pair within the cutoff enters); nothing is inferred from
+the absorbed fixed effects. Required for \code{lag_cutoff > 0}.}
 
 \item{time}{Optional name of the time variable. A supplied \code{time} is
 honoured even when \code{unit} is omitted (each row is then its own unit),

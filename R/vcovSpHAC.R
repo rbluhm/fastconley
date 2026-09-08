@@ -39,9 +39,11 @@ vcovSpHAC.default <- function(reg, ...) {
 #' \code{kclass} for ordinary 2SLS.
 #'
 #' @param reg A fitted object of class "felm", including IV fits.
-#' @param unit Optional name of the panel unit variable. When both \code{unit}
-#'   and \code{time} are omitted, the first two absorbed fixed effects are used
-#'   when available; otherwise each row is its own unit.
+#' @param unit Optional name of the panel unit variable: an absorbed fixed
+#'   effect or a column of the model data. When \code{unit} and \code{time}
+#'   are both omitted the data are treated as one cross-section (each row its
+#'   own unit, every pair within the cutoff enters); nothing is inferred from
+#'   the absorbed fixed effects. Required for \code{lag_cutoff > 0}.
 #' @param time Optional name of the time variable. A supplied \code{time} is
 #'   honoured even when \code{unit} is omitted (each row is then its own unit),
 #'   but \code{lag_cutoff > 0} requires \code{unit}. Character/factor times are
@@ -206,12 +208,15 @@ vcovSpHAC.felm <- function(reg,
          "different design; refit without `kclass` for 2SLS or use fixest.")
   }
 
+  # No panel structure is inferred from the absorbed fixed effects: with
+  # `unit` and `time` both NULL the data are one cross-sectional block (every
+  # pair within the cutoff enters, each row its own unit), exactly as the
+  # fixest method and as every release before 0.11.0 behaved. 0.11.0 briefly
+  # used the first two absorbed effects as unit and time, which silently
+  # restricted spatial pairs to within the second effect's groups (an ethnic
+  # group, a region) for anyone relying on the default; that rule is gone.
+  # Absorbed-effect names remain valid explicit `unit`/`time` values.
   fe_names <- names(reg$fe)
-  use_default_fes <- is.null(unit) && is.null(time) && length(fe_names) >= 2L
-  if (use_default_fes) {
-    unit <- fe_names[1L]
-    time <- fe_names[2L]
-  }
   if (lag_cutoff > 0 && is.null(unit)) {
     stop("lag_cutoff requires unit.")
   }

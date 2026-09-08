@@ -1,5 +1,17 @@
 # fastconley (development version)
 
+- **`vcovSpHAC.felm()` no longer infers `unit` and `time` from the absorbed
+  fixed effects.** 0.11.0 used the first two absorbed effects as unit and
+  time whenever both arguments were omitted, which silently restricted
+  spatial pairs to within the second effect's groups (a region, an ethnic
+  group) and moved Conley standard errors by percentages for anyone relying
+  on the default; every earlier release, and the fixest method, treated
+  such a fit as one cross-sectional block. That behaviour is restored:
+  with both arguments omitted every pair within the cutoff enters and each
+  row is its own unit. Absorbed-effect names remain valid explicit
+  `unit`/`time` values. Regression test added. Reported from a replication
+  pipeline whose published values were computed with the pre-0.11.0
+  behaviour.
 - `vcovSpHAC.felm()` no longer takes coordinate columns directly from a data
   frame it found by name in the caller's or the formula's environment: when
   `data =` is not supplied, rows are always recovered through the model-frame

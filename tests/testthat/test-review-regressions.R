@@ -19,19 +19,32 @@ test_that("felm resolves requested unit/time names and data-column fallbacks", {
   expect_error(call_vcov("missing_unit", "time"), "missing_unit")
 })
 
-test_that("felm uses the first two absorbed FEs only when neither name is passed", {
+test_that("felm matches unit/time by name and infers nothing from the absorbed FEs", {
   skip_if_not_installed("lfe")
   d <- make_balanced_panel(n_unit = 20L, n_time = 3L, k = 1L, seed = 92L)
   d$region <- d$unit %% 4L
-  fit <- lfe::felm(y ~ x1 | unit + time + region, data = d, keepCX = TRUE)
+  d$rowid <- seq_len(nrow(d))
+  fit <- lfe::felm(y ~ x1 | region + unit + time, data = d, keepCX = TRUE)
   args <- list(lat = "lat", lon = "lon", kernel = "uniform",
-               dist_fn = "haversine", dist_cutoff = 500, lag_cutoff = 1,
-               balanced_pnl = TRUE, ncores = 1, ssc = FALSE,
-               psd_fix = FALSE, data = d)
+               dist_fn = "haversine", dist_cutoff = 500, ncores = 1,
+               ssc = FALSE, psd_fix = FALSE, data = d)
+  # Named absorbed effects are honoured whatever their position in the fit
+  V_named <- do.call(vcovSpHAC, c(list(reg = fit, unit = "unit", time = "time",
+                                       lag_cutoff = 1, balanced_pnl = TRUE), args))
+  fit2 <- lfe::felm(y ~ x1 | unit + time + region, data = d, keepCX = TRUE)
+  V_named2 <- do.call(vcovSpHAC, c(list(reg = fit2, unit = "unit", time = "time",
+                                        lag_cutoff = 1, balanced_pnl = TRUE), args))
+  expect_equal(V_named, V_named2, tolerance = 1e-12)
+  # With neither name passed the fit is one cross-sectional block (no FE-derived
+  # time blocks, as in every release before 0.11.0)
   V_default <- do.call(vcovSpHAC, c(list(reg = fit), args))
-  V_named <- do.call(vcovSpHAC,
-                     c(list(reg = fit, unit = "unit", time = "time"), args))
-  expect_identical(V_default, V_named)
+  V_rowid <- do.call(vcovSpHAC, c(list(reg = fit, unit = "rowid"), args))
+  expect_identical(V_default, V_rowid)
+  expect_false(isTRUE(all.equal(V_default, V_named, tolerance = 1e-6)))
+  expect_error(do.call(vcovSpHAC, c(list(reg = fit, lag_cutoff = 1), args)),
+               "lag_cutoff requires unit")
+  expect_error(do.call(vcovSpHAC, c(list(reg = fit, unit = "nope"), args)),
+               "nope")
 })
 
 test_that("time without unit defines spatial blocks and lag requires unit", {
@@ -270,4 +283,29 @@ test_that("felm coordinate recovery never trusts a same-name frame in the caller
   v2_rec <- vcovSpHAC(fit2, lat = "lat", lon = "lon", dist_cutoff = 300, ncores = 1)
   expect_identical(v2_rec, v2_ref)
   expect_equal(fit2$N, n - 2L)
+})
+
+test_that("felm with absorbed effects and no unit/time is one cross-sectional block", {
+  skip_if_not_installed("lfe")
+  skip_if_not_installed("fixest")
+  set.seed(43)
+  n <- 240
+  d <- data.frame(x = rnorm(n), g1 = rep(1:6, 40), g2 = rep(1:3, 80),
+                  lat = runif(n, 30, 45), lon = runif(n, -110, -80))
+  d$y <- 0.5 * d$x + rnorm(n); d$rowid <- seq_len(n)
+  fl <- lfe::felm(y ~ x | g1 + g2, d, keepCX = TRUE)
+  v_default <- vcovSpHAC(fl, lat = "lat", lon = "lon", dist_cutoff = 400, ncores = 1, data = d)
+  v_rowid <- vcovSpHAC(fl, unit = "rowid", lat = "lat", lon = "lon", dist_cutoff = 400, ncores = 1, data = d)
+  expect_identical(unname(v_default), unname(v_rowid))
+  # lfe and fixest count absorbed parameters differently for the default ssc,
+  # so compare the uncorrected sandwiches
+  fx <- fixest::feols(y ~ x | g1 + g2, d, demeaned = TRUE)
+  v_fx <- vcovSpHAC(fx, lat = "lat", lon = "lon", dist_cutoff = 400, ncores = 1, data = d,
+                    ssc = FALSE, psd_fix = FALSE)
+  v_fl <- vcovSpHAC(fl, lat = "lat", lon = "lon", dist_cutoff = 400, ncores = 1, data = d,
+                    ssc = FALSE, psd_fix = FALSE)
+  expect_equal(unname(v_fl), unname(v_fx), tolerance = 1e-10)
+  # Blocking by the second effect is still available, explicitly, and differs
+  v_blocked <- vcovSpHAC(fl, time = "g2", lat = "lat", lon = "lon", dist_cutoff = 400, ncores = 1, data = d)
+  expect_false(isTRUE(all.equal(unname(v_default), unname(v_blocked), tolerance = 1e-6)))
 })
