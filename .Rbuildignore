@@ -18,3 +18,4 @@
 ^\.github$
 ^stata$
 ^.*\.log$
+^tests/testthat/testthat-problems\.rds$

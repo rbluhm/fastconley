@@ -1,3 +1,11 @@
+## Resubmission
+
+This 0.11.1 replaces fastconley 0.11.0, submitted on 2026-09-07 and still in
+the incoming queue. It fixes two regressions of 0.11.0 in the felm method
+(a silently changed default for panel blocking with absorbed fixed effects,
+and a fragile recovery of coordinate columns from the model call) reported by
+a downstream replication pipeline; see NEWS.md. No other changes.
+
 ## R CMD check results
 
 0 errors | 0 warnings | 1 note
@@ -8,7 +16,7 @@
 
 ## Test environments
 
-* local Ubuntu 24.04, R 4.6.1, `R CMD check --as-cran` (0.11.0 tarball):
+* local Ubuntu 24.04, R 4.6.1, `R CMD check --as-cran` (0.11.1 tarball):
   new-submission note plus two machine-local notes (the distribution's
   `-mno-omit-leaf-frame-pointer` compiler flag; no remote clock check)
 * GitHub Actions `R CMD check --as-cran --no-manual`, R release, with

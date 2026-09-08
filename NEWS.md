@@ -1,4 +1,8 @@
-# fastconley (development version)
+# fastconley 0.11.1
+
+Two regressions of 0.11.0 in `vcovSpHAC.felm()`, found by a replication
+pipeline within days of the release, are fixed. Results for fixest fits and
+for felm fits with explicit `unit`/`time` are unchanged.
 
 - **`vcovSpHAC.felm()` no longer infers `unit` and `time` from the absorbed
   fixed effects.** 0.11.0 used the first two absorbed effects as unit and

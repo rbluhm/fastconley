@@ -1,7 +1,7 @@
 Package: fastconley
 Type: Package
 Title: Fast Conley Standard Errors for 'lfe' and 'fixest' Models
-Version: 0.11.0.9000
+Version: 0.11.1
 Authors@R: person("Richard", "Bluhm", email = "richard.bluhm@gmail.com",
                   role = c("aut", "cre", "cph"))
 Maintainer: Richard Bluhm <richard.bluhm@gmail.com>
