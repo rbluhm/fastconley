@@ -23,6 +23,7 @@
   method = c("auto", "pairwise", "grid"),
   ssc = TRUE,
   psd_fix = TRUE,
+  df_resid = NULL,
   data = NULL,
   ...
 )
@@ -82,6 +83,10 @@ the default). See \code{\link{vcovSpHAC.felm}}.}
 
 \item{psd_fix}{Clamp negative eigenvalues when \code{TRUE} (the
 default). See \code{\link{vcovSpHAC.felm}}.}
+
+\item{df_resid}{Residual degrees of freedom for the small-sample
+correction; \code{NULL} (default) uses \code{nobs - nparams}, the
+\code{fixest} default count. See \code{\link{vcovSpHAC.felm}}.}
 
 \item{data}{Optional. The model frame to draw \code{lat}/\code{lon}/
 \code{unit}/\code{time} from. If \code{NULL} (default), the data is

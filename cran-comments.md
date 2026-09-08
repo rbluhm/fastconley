@@ -4,7 +4,9 @@ This 0.11.1 replaces fastconley 0.11.0, submitted on 2026-09-07 and still in
 the incoming queue. It fixes two regressions of 0.11.0 in the felm method
 (a silently changed default for panel blocking with absorbed fixed effects,
 and a fragile recovery of coordinate columns from the model call) reported by
-a downstream replication pipeline; see NEWS.md. No other changes.
+a downstream replication pipeline, and adds one argument (`df_resid`, an
+override for the residual degrees of freedom of the small-sample correction)
+requested by the same pipeline; see NEWS.md. No other changes.
 
 ## R CMD check results
 

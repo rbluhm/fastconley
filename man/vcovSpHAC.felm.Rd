@@ -23,6 +23,7 @@
   method = c("auto", "pairwise", "grid"),
   ssc = TRUE,
   psd_fix = TRUE,
+  df_resid = NULL,
   maxobsmem = 50000L,
   data = NULL,
   ...
@@ -108,12 +109,21 @@ estimated parameters including absorbed fixed-effect levels (taken from
 the regression's parameter count, independent of any clustering used when
 fitting). This matches \code{fixest}'s
 default Conley correction (its cluster adjustment is a no-op for Conley
-vcovs). Note that \code{K} is the fitting package's own count: with three
-or more absorbed fixed effects \code{lfe} and \code{fixest} can count the
-estimable levels differently (e.g. 30 versus 33 for the same model), so
-the two methods then differ by exactly that factor while their
-\code{ssc = FALSE} results are identical. Pass \code{FALSE} for no
-correction — that reproduces
+vcovs). \code{K} is the fitting package's own count (\code{lfe}:
+\code{N - p}; \code{fixest}: \code{nobs - nparams}), and the two
+packages count absorbed levels differently once a model has more than
+two fixed effects or the level graph is disconnected: \code{lfe}
+takes the exact rank of the first two factors (connected components)
+plus one reference per further factor, \code{fixest}'s default takes
+the sum of all levels minus (number of effects - 1) with no connectivity
+check, so e.g. a sample restriction that splits the first two factors
+into two components makes \code{fixest} count one parameter more. The
+two methods then differ by exactly that factor while their
+\code{ssc = FALSE} results are identical. Neither default is the exact
+rank in general (\code{lfe}'s \code{exactDOF = TRUE} is; \code{fixest}'s
+\code{ssc(K.exact = TRUE)} can undercount with three or more effects);
+pass \code{df_resid} to use a count you have verified. Pass \code{FALSE}
+for no correction — that reproduces
 \code{rbluhm/conley}, fastconley versions before 0.9.0, and
 \code{fixest} with \code{ssc(adj = FALSE, cluster.adj = FALSE)}.}
 
@@ -123,6 +133,15 @@ eigenvalues are clamped (to 1e-16, as \code{fixest}'s \code{vcov_fix}
 does) and a warning reports when the fix noticeably changed the matrix.
 If \code{FALSE}, the matrix is returned as computed, with a warning
 when it is not positive semi-definite.}
+
+\item{df_resid}{Residual degrees of freedom for the small-sample
+correction, i.e. the denominator of \code{n / df_resid}. \code{NULL}
+(default) uses the fit's own count as described under \code{ssc}. Pass a
+single number in \code{(0, n]} to override it, for example
+\code{n - ncol(X) - qr(model.matrix(~ factor(f1) + factor(f2)))$rank}
+with the exact rank of the absorbed design; the same value makes the
+\code{felm} and \code{fixest} methods agree. Only allowed with
+\code{ssc = TRUE}.}
 
 \item{maxobsmem}{Deprecated and ignored by the fast spatial path. Supplying
 it produces a warning; the argument remains for backward compatibility.}

@@ -1,8 +1,24 @@
 # fastconley 0.11.1
 
 Two regressions of 0.11.0 in `vcovSpHAC.felm()`, found by a replication
-pipeline within days of the release, are fixed. Results for fixest fits and
-for felm fits with explicit `unit`/`time` are unchanged.
+pipeline within days of the release, are fixed, and both methods gain a
+`df_resid` argument. Results for fixest fits and for felm fits with explicit
+`unit`/`time` are unchanged.
+
+- **New `df_resid` argument** (both methods): the residual degrees of
+  freedom used by the small-sample correction, `n / df_resid`. The default
+  `NULL` keeps the fit's own count (`lfe`: `N - p`; `fixest`:
+  `nobs - nparams`). The two packages count absorbed levels differently once
+  a model has more than two fixed effects or a sample restriction
+  disconnects the level graph of the first two (`lfe` takes the exact rank
+  of the first two factors, `fixest`'s default takes the sum of levels minus
+  the number of effects minus one), so felm and fixest fits of the same
+  model could get Conley standard errors differing by one or more
+  parameters' worth of correction; on a saturated four-factor design the
+  packages' default and "exact" counts spanned seventeen parameters on 2,400
+  observations. Passing the same `df_resid`, e.g. from the QR rank of the
+  absorbed design, makes the two methods agree. `?vcovSpHAC.felm` documents
+  the counting rules. Reported from the same pipeline.
 
 - **`vcovSpHAC.felm()` no longer infers `unit` and `time` from the absorbed
   fixed effects.** 0.11.0 used the first two absorbed effects as unit and
