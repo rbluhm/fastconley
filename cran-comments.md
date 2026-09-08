@@ -24,13 +24,15 @@ a downstream replication pipeline; see NEWS.md. No other changes.
   all OK (run for commit c548b97 / tag v0.11.0)
 * win-builder R-devel (R Under development 2026-09-04 r90492 ucrt,
   x86_64-w64-mingw32, 0.11.0 tarball): Status: 1 NOTE (new submission;
-  spell check on HAC) (https://win-builder.r-project.org/Q64nQgiG8KyN)
+  spell check on HAC) (https://win-builder.r-project.org/Q64nQgiG8KyN);
+  0.11.1 tarball uploaded 2026-09-08, result pending
 * win-builder R-release (R 4.6.1 ucrt, x86_64-w64-mingw32, 0.11.0 tarball):
   Status: 1 NOTE (new submission; spell check on HAC)
-  (https://win-builder.r-project.org/K4ENW148dbpl)
-* macOS builder (Apple M1, macOS 26.6, R 4.6.1 patched, clang 1700, 0.11.0
-  tarball, 2026-09-05): Status: OK, 0 notes
-  (https://mac.R-project.org/macbuilder/results/1788638975-a75c4a580b33fc44/)
+  (https://win-builder.r-project.org/K4ENW148dbpl); 0.11.1 tarball uploaded
+  2026-09-08, result pending
+* macOS builder (Apple M1, macOS 26.6, R 4.6.1 patched, clang 1700, 0.11.1
+  tarball, 2026-09-08): Status: OK, 0 notes
+  (https://mac.R-project.org/macbuilder/results/1788876060-3abf5845550f2976/)
 * Sanitizers: the C++ engine (all code in `src/conley_core.h`) built with
   gcc `-fsanitize=address,undefined` and exercised through its edge-case
   probes, the deterministic golden cases, and a 100,000-point benchmark at
