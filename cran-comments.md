@@ -34,7 +34,7 @@ requested by the same pipeline; see NEWS.md. No other changes.
   2026-09-08, result pending
 * macOS builder (Apple M1, macOS 26.6, R 4.6.1 patched, clang 1700, 0.11.1
   tarball, 2026-09-08): Status: OK, 0 notes
-  (https://mac.R-project.org/macbuilder/results/1788876060-3abf5845550f2976/)
+  (https://mac.R-project.org/macbuilder/results/1788878511-bf696e0265979a81/)
 * Sanitizers: the C++ engine (all code in `src/conley_core.h`) built with
   gcc `-fsanitize=address,undefined` and exercised through its edge-case
   probes, the deterministic golden cases, and a 100,000-point benchmark at
