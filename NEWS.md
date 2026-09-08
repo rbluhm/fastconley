@@ -1,3 +1,17 @@
+# fastconley (development version)
+
+- `vcovSpHAC.felm()` no longer takes coordinate columns directly from a data
+  frame it found by name in the caller's or the formula's environment: when
+  `data =` is not supplied, rows are always recovered through the model-frame
+  alignment (`expand.model.felm()`), as in versions before 0.11.0. In 0.11.0 a
+  frame with the same name as the one in the felm call and the same row
+  count, for example a per-outcome frame reassigned in a loop or a pooled
+  frame in the global environment, could be used unaligned, moving Conley
+  standard errors silently, or produce NA coordinates that the new validation
+  then rejected. A user-supplied `data =` with as many rows as the fit is
+  still taken as aligned. Pass `data =` explicitly inside helper functions
+  and loops. Regression test added.
+
 # fastconley 0.11.0
 
 Engine extraction, a Stata port sharing the same C++ engine, and a review

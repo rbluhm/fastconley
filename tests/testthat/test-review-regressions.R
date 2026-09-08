@@ -245,3 +245,29 @@ test_that("fixest path accepts a data frame already aligned with the fit", {
   v_rev <- vcovSpHAC(f_rev, lat = "lat", lon = "lon", dist_cutoff = 300, ncores = 1, data = d2)
   expect_equal(v_fwd, v_rev, tolerance = 1e-12)
 })
+
+test_that("felm coordinate recovery never trusts a same-name frame in the caller's scope", {
+  skip_if_not_installed("lfe")
+  set.seed(41)
+  n <- 120
+  d <- data.frame(x = rnorm(n), g = rep(1:4, 30), lat = runif(n, 30, 45), lon = runif(n, -110, -80))
+  d$y <- 0.5 * d$x + rnorm(n)
+  fit_in_function <- function(d) lfe::felm(y ~ x | g, d, keepCX = TRUE)   # formula env = this frame
+  fit <- fit_in_function(d)
+  v_ref <- vcovSpHAC(fit, lat = "lat", lon = "lon", dist_cutoff = 300, ncores = 1, data = d)
+  # A caller whose own `d` has the same row count but permuted rows (and an NA)
+  call_with_shadow <- function(fit, d_original) {
+    d <- d_original[rev(seq_len(nrow(d_original))), ]   # shadows the symbol in the felm call
+    d$lat[1] <- NA
+    vcovSpHAC(fit, lat = "lat", lon = "lon", dist_cutoff = 300, ncores = 1)
+  }
+  v_shadow <- call_with_shadow(fit, d)
+  expect_identical(v_shadow, v_ref)
+  # Listwise deletion in felm (NA outcome) must still align through the model frame
+  d2 <- d; d2$y[c(3, 50)] <- NA
+  fit2 <- fit_in_function(d2)
+  v2_ref <- vcovSpHAC(fit2, lat = "lat", lon = "lon", dist_cutoff = 300, ncores = 1, data = d2)
+  v2_rec <- vcovSpHAC(fit2, lat = "lat", lon = "lon", dist_cutoff = 300, ncores = 1)
+  expect_identical(v2_rec, v2_ref)
+  expect_equal(fit2$N, n - 2L)
+})

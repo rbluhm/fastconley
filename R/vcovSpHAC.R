@@ -216,9 +216,18 @@ vcovSpHAC.felm <- function(reg,
     stop("lag_cutoff requires unit.")
   }
 
+  # `data` supplied by the user is authoritative. Otherwise the frame named in
+  # the felm call is looked up ONLY to learn column names (auto-detection and
+  # the missing-column check); its rows are never used directly, because a
+  # symbol such as `d` can resolve to a different object than the one felm was
+  # fitted on (a loop that reassigns it, a pooled frame in the global
+  # environment). Rows for recovered data always come from
+  # expand.model.felm(), which re-evaluates the model frame in the formula's
+  # environment and aligns by model-frame rownames, as before 0.11.0.
+  user_data <- !is.null(data)
   model_data <- data
   if (is.null(model_data)) {
-    envs <- list(parent.frame(), environment(stats::formula(reg)))
+    envs <- list(environment(stats::formula(reg)), parent.frame())
     for (env in envs) {
       cand <- tryCatch(eval(reg$call$data, env), error = function(e) NULL)
       if (is.data.frame(cand) || data.table::is.data.table(cand)) {
@@ -257,13 +266,13 @@ vcovSpHAC.felm <- function(reg,
            paste(sprintf("'%s'", missing_names), collapse = ", "), ".")
     }
   }
-  if (!is.null(model_data) && nrow(model_data) == N && is.null(reg$call$subset)) {
-    recovered <- lapply(recover_names, function(nm) model_data[[nm]])
+  if (user_data && nrow(data) == N && is.null(reg$call$subset)) {
+    recovered <- lapply(recover_names, function(nm) data[[nm]])
     names(recovered) <- recover_names
   } else {
     recovered <- tryCatch(
       expand.model.felm(model = reg, extras = recover_names,
-                        na.expand = TRUE, data = model_data),
+                        na.expand = TRUE, data = if (user_data) data else NULL),
       error = function(e) {
         stop("Could not recover requested model-data columns: ",
              conditionMessage(e), call. = FALSE)
