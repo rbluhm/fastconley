@@ -28,14 +28,12 @@ in the same tarball; see NEWS.md. No other changes.
 * GitHub Actions `R CMD check --as-cran --no-manual`, R release, with
   `_R_CHECK_LIMIT_CORES_=true`: ubuntu-latest, macos-latest, windows-latest,
   all OK (run for commit c548b97 / tag v0.11.0)
-* win-builder R-devel (R Under development 2026-09-04 r90492 ucrt,
-  x86_64-w64-mingw32, 0.11.0 tarball): Status: 1 NOTE (new submission;
-  spell check on HAC) (https://win-builder.r-project.org/Q64nQgiG8KyN);
-  0.11.1 tarball uploaded 2026-09-15, result pending
-* win-builder R-release (R 4.6.1 ucrt, x86_64-w64-mingw32, 0.11.0 tarball):
-  Status: 1 NOTE (new submission; spell check on HAC)
-  (https://win-builder.r-project.org/K4ENW148dbpl); 0.11.1 tarball uploaded
-  2026-09-15, result pending
+* win-builder R-devel (R Under development 2026-09-14 r90539 ucrt,
+  x86_64-w64-mingw32, 0.11.1 tarball, 2026-09-15): Status: 1 NOTE (new
+  submission; spell check on HAC) (https://win-builder.r-project.org/R86Bs659yY9m)
+* win-builder R-release (R 4.6.1 ucrt, x86_64-w64-mingw32, 0.11.1 tarball,
+  2026-09-15): Status: 1 NOTE (new submission; spell check on HAC)
+  (https://win-builder.r-project.org/peigU3p8Hx33)
 * macOS builder (Apple M1, macOS 26.6, R 4.6.1 patched, clang 1700, 0.11.1
   tarball, 2026-09-15): Status: OK, 0 notes
   (https://mac.R-project.org/macbuilder/results/1789493782-a34c12ac14176254/)
