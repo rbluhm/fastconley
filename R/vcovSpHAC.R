@@ -11,6 +11,19 @@
 #'
 #' @param reg A fitted model object.
 #' @param ... Method-specific arguments.
+#' @return A numeric matrix (base \code{"matrix"}) of dimension \code{k x k},
+#'   where \code{k} is the number of estimated coefficients (absorbed fixed
+#'   effects excluded): the Conley spatial HAC estimate of the
+#'   variance-covariance matrix of the coefficient estimates, i.e. the
+#'   sandwich \code{bread \%*\% meat \%*\% bread} with the kernel-weighted
+#'   spatial (and, with \code{lag_cutoff > 0}, serial) cross products in
+#'   the meat. Row and column names are the coefficient names of the fit, so
+#'   the matrix can be passed wherever a \code{vcov} is expected, e.g.
+#'   \code{lmtest::coeftest(reg, vcov = V)} or
+#'   \code{summary(reg, vcov = V)} for fixest fits, and \code{sqrt(diag(V))}
+#'   gives the standard errors. The matrix is symmetric; with the default
+#'   \code{ssc = TRUE} it is scaled by \code{n / (n - K)}, and with the
+#'   default \code{psd_fix = TRUE} it is positive semi-definite.
 #' @export
 vcovSpHAC <- function(reg, ...) UseMethod("vcovSpHAC")
 
@@ -124,7 +137,10 @@ vcovSpHAC.default <- function(reg, ...) {
 #'   fit time (no NAs, no \code{subset}), the coordinates are then taken by
 #'   direct column access with no model-frame rebuild at all.
 #' @param ... Must be empty; unknown arguments are rejected.
-#' @return A variance-covariance matrix.
+#' @return A numeric \code{k x k} matrix, the Conley spatial HAC
+#'   variance-covariance estimate of the coefficients, with the coefficient
+#'   names as dimnames; see \code{\link{vcovSpHAC}} for the structure and
+#'   how to use it.
 #' @examples
 #' if (requireNamespace("lfe", quietly = TRUE)) {
 #'   ## Cross-section on a regular 0.5-degree raster with holes. method =
@@ -402,7 +418,10 @@ vcovSpHAC.felm <- function(reg,
 #'   recovered from the fit's call. Pass it explicitly if the original data
 #'   has gone out of scope, or if you want to override.
 #' @param ... Must be empty; unknown arguments are rejected.
-#' @return A variance-covariance matrix.
+#' @return A numeric \code{k x k} matrix, the Conley spatial HAC
+#'   variance-covariance estimate of the coefficients, with the coefficient
+#'   names as dimnames; see \code{\link{vcovSpHAC}} for the structure and
+#'   how to use it.
 #' @examples
 #' if (requireNamespace("fixest", quietly = TRUE)) {
 #'   ## feols must be fit with demeaned = TRUE (the keepCX analogue).

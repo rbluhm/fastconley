@@ -91,7 +91,10 @@ has gone out of scope, or if you want to override.}
 \item{...}{Must be empty; unknown arguments are rejected.}
 }
 \value{
-A variance-covariance matrix.
+A numeric \code{k x k} matrix, the Conley spatial HAC
+  variance-covariance estimate of the coefficients, with the coefficient
+  names as dimnames; see \code{\link{vcovSpHAC}} for the structure and
+  how to use it.
 }
 \description{
 Supports \code{fixest::feols()} (including IV/2SLS) and

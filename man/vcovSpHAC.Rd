@@ -11,6 +11,21 @@ vcovSpHAC(reg, ...)
 
 \item{...}{Method-specific arguments.}
 }
+\value{
+A numeric matrix (base \code{"matrix"}) of dimension \code{k x k},
+  where \code{k} is the number of estimated coefficients (absorbed fixed
+  effects excluded): the Conley spatial HAC estimate of the
+  variance-covariance matrix of the coefficient estimates, i.e. the
+  sandwich \code{bread \%*\% meat \%*\% bread} with the kernel-weighted
+  spatial (and, with \code{lag_cutoff > 0}, serial) cross products in
+  the meat. Row and column names are the coefficient names of the fit, so
+  the matrix can be passed wherever a \code{vcov} is expected, e.g.
+  \code{lmtest::coeftest(reg, vcov = V)} or
+  \code{summary(reg, vcov = V)} for fixest fits, and \code{sqrt(diag(V))}
+  gives the standard errors. The matrix is symmetric; with the default
+  \code{ssc = TRUE} it is scaled by \code{n / (n - K)}, and with the
+  default \code{psd_fix = TRUE} it is positive semi-definite.
+}
 \description{
 Computes Conley (1999) spatial HAC variance-covariance matrices for models
 estimated with \code{lfe::felm()} (OLS and IV/2SLS) or with

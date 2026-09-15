@@ -137,7 +137,10 @@ direct column access with no model-frame rebuild at all.}
 \item{...}{Must be empty; unknown arguments are rejected.}
 }
 \value{
-A variance-covariance matrix.
+A numeric \code{k x k} matrix, the Conley spatial HAC
+  variance-covariance estimate of the coefficients, with the coefficient
+  names as dimnames; see \code{\link{vcovSpHAC}} for the structure and
+  how to use it.
 }
 \description{
 The fit must have been called with \code{felm(..., keepCX = TRUE)} so the

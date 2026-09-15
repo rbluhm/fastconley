@@ -1,10 +1,16 @@
 ## Resubmission
 
-This 0.11.1 replaces fastconley 0.11.0, submitted on 2026-09-07 and still in
-the incoming queue. It fixes two regressions of 0.11.0 in the felm method
+This is a resubmission. The first submission (0.11.0, 2026-09-07) was
+returned with the request to add a \value section to vcovSpHAC.Rd, the
+generic's help page; it now documents the structure of the result (a k x k
+numeric matrix with the coefficient names as dimnames), what it means, and
+how it is used, and the two method pages describe their value the same way.
+
+The version is 0.11.1 because two regressions of 0.11.0 in the felm method
 (a silently changed default for panel blocking with absorbed fixed effects,
-and a fragile recovery of coordinate columns from the model call) reported by
-a downstream replication pipeline; see NEWS.md. No other changes.
+and a fragile recovery of coordinate columns from the model call), reported
+by a downstream replication pipeline after the first submission, are fixed
+in the same tarball; see NEWS.md. No other changes.
 
 ## R CMD check results
 

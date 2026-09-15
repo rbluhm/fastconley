@@ -27,6 +27,8 @@ for felm fits with explicit `unit`/`time` are unchanged.
   then rejected. A user-supplied `data =` with as many rows as the fit is
   still taken as aligned. Pass `data =` explicitly inside helper functions
   and loops. Regression test added.
+- Documentation: the `vcovSpHAC()` generic's help page gained a Value
+  section describing the returned matrix (CRAN request).
 
 # fastconley 0.11.0
 
