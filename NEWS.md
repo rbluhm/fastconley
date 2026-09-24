@@ -1,3 +1,78 @@
+# fastconley (development version)
+
+## Performance (bit-identical)
+
+A second optimisation round speeds up the pair loop itself, the
+balanced-panel path, and the fixed cost of every call. Every result is
+bit-identical to 0.11.1.
+
+- **Branch-free pair loop.** The fused grid loop screens each row's
+  candidates without branching (the accept flag advances a write cursor into
+  a bounded batch), evaluates Bartlett weights only for the survivors, and
+  folds them into the row's accumulator with the running sums held in
+  registers, up to 16 columns per pass. The accept/reject branch at the
+  cutoff boundary mispredicted often enough to dominate the old loop. Pair
+  work is about 1.7-2x faster from k = 8 upward (both kernels) and 1.35-1.65x
+  at k = 1 to 3.
+- **Balanced panels.** The per-period neighbour-list stream uses the same
+  register-held accumulation. Building the neighbour list no longer
+  evaluates Bartlett weights (`asin`/`sqrt`) just to count neighbours,
+  except within a relative 1e-12 of the cutoff, where a weight can round to
+  zero; the fill pass checks the count.
+- **Cell order.** Rows are put in cell order by a stable, parallel radix
+  sort instead of a serial comparison sort: the same order, 0.15 to 0.04 s
+  at one million rows on one thread (0.02 s on four) and 0.93 to 0.16 s at
+  four million.
+- **No-op aggregation skipped.** With `pixel = 0` and no two rows sharing
+  (time, lat, lon), as in scattered cross-sections and panels of distinct
+  unit locations, `vcovSpHAC()` no longer builds, groups, sorts, and copies
+  a table that merges nothing. It orders the rows as the aggregation would
+  and passes that order to the engine, which composes it into the score
+  gather it performs anyway (the internal `FastSpatialMeat()` gained
+  `rows =`). Shared locations aggregate exactly as before. This is most of
+  the per-call saving for small samples and cross-section loops.
+
+End to end, `vcovSpHAC()` on `fixest` fits with ten regressors and an
+intercept (five for the small samples), post-estimation only, on a 4-core
+VM with four threads unless noted; minimum of two interleaved runs, with
+identical matrices before and after:
+
+| data | cutoff | 0.11.1 | this version | speedup |
+|---|---:|---:|---:|---:|
+| global cross-section, 1,000,000 points, uniform | 100 km | 1.26 s | 0.61 s | 2.05x |
+| CONUS cross-section, 100,000 points, uniform, 1 thread | 500 km | 3.67 s | 2.06 s | 1.78x |
+| CONUS cross-section, 100,000 points, uniform | 500 km | 1.04 s | 0.57 s | 1.83x |
+| CONUS cross-section, 100,000 points, Bartlett, 1 thread | 500 km | 6.94 s | 3.90 s | 1.78x |
+| CONUS cross-section, 100,000 points, Bartlett | 500 km | 1.84 s | 1.08 s | 1.71x |
+| balanced panel, 50,000 units x 10, uniform, lag 1 | 500 km | 1.78 s | 0.96 s | 1.87x |
+| balanced panel, 50,000 units x 10, Bartlett, lag 1 | 500 km | 2.61 s | 1.66 s | 1.57x |
+| cross-section, 2,000 points, per call | 100 km | 7.0 ms | 4.0 ms | 1.75x |
+| cross-section, 20,000 points, per call | 100 km | 23.5 ms | 12.0 ms | 1.96x |
+
+- `CONLEY_CORE_VERSION` is 0.11.2 because the engine's `spatial_meat()`
+  entry point gained the optional score row map (numbers are unchanged).
+  The Stata ados still expect 0.11.1 and load the committed 0.11.1
+  plugins; the expectation moves with the CI-built 0.11.2 plugins, which
+  bring these engine speedups to Stata (see `stata/CHANGELOG.md`).
+
+## Tests and tooling
+
+- testthat grew by 41 expectations: the unique-location path against the
+  table aggregation (cross-sections and panels with permuted rows), shared
+  and negative-zero keys, the row map against a gathered score matrix on
+  every engine path, and identical covariances from the two aggregation
+  paths end to end.
+- `tests/manual/engine-ab-check.sh` compares the engine header bit for bit
+  with any git revision on randomized configurations: every kernel and
+  distance, k = 1 to 20, zero, tiny, capped, and antipodal cutoffs,
+  duplicate locations, lattice points exactly at the cutoff, balanced
+  (double and float weights) and band paths, 1 versus 4 threads, and row
+  maps.
+- This round was checked with the bitwise battery (60 of 60 configurations
+  `identical()` to a baseline install), the plugin golden check in strict
+  mode under GCC and Clang, the standalone header check, the edge probes,
+  and the A/B check (2,257 cases under GCC, 1,038 under Clang).
+
 # fastconley 0.11.1
 
 Two regressions of 0.11.0 in `vcovSpHAC.felm()`, found by a replication

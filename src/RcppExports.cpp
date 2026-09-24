@@ -12,8 +12,8 @@ Rcpp::Rostream<false>& Rcpp::Rcerr = Rcpp::Rcpp_cerr_get();
 #endif
 
 // FastSpatialMeat_cpp
-arma::mat FastSpatialMeat_cpp(Rcpp::NumericVector lat, Rcpp::NumericVector lon, Rcpp::NumericVector time, Rcpp::NumericMatrix scores, double cutoff, std::string kernel, std::string dist_fn, bool balanced_pnl, int ncores, std::string neighbor, std::string csr_weight);
-RcppExport SEXP _fastconley_FastSpatialMeat_cpp(SEXP latSEXP, SEXP lonSEXP, SEXP timeSEXP, SEXP scoresSEXP, SEXP cutoffSEXP, SEXP kernelSEXP, SEXP dist_fnSEXP, SEXP balanced_pnlSEXP, SEXP ncoresSEXP, SEXP neighborSEXP, SEXP csr_weightSEXP) {
+arma::mat FastSpatialMeat_cpp(Rcpp::NumericVector lat, Rcpp::NumericVector lon, Rcpp::NumericVector time, Rcpp::NumericMatrix scores, double cutoff, std::string kernel, std::string dist_fn, bool balanced_pnl, int ncores, std::string neighbor, std::string csr_weight, SEXP rows);
+RcppExport SEXP _fastconley_FastSpatialMeat_cpp(SEXP latSEXP, SEXP lonSEXP, SEXP timeSEXP, SEXP scoresSEXP, SEXP cutoffSEXP, SEXP kernelSEXP, SEXP dist_fnSEXP, SEXP balanced_pnlSEXP, SEXP ncoresSEXP, SEXP neighborSEXP, SEXP csr_weightSEXP, SEXP rowsSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -28,7 +28,8 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< int >::type ncores(ncoresSEXP);
     Rcpp::traits::input_parameter< std::string >::type neighbor(neighborSEXP);
     Rcpp::traits::input_parameter< std::string >::type csr_weight(csr_weightSEXP);
-    rcpp_result_gen = Rcpp::wrap(FastSpatialMeat_cpp(lat, lon, time, scores, cutoff, kernel, dist_fn, balanced_pnl, ncores, neighbor, csr_weight));
+    Rcpp::traits::input_parameter< SEXP >::type rows(rowsSEXP);
+    rcpp_result_gen = Rcpp::wrap(FastSpatialMeat_cpp(lat, lon, time, scores, cutoff, kernel, dist_fn, balanced_pnl, ncores, neighbor, csr_weight, rows));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -73,7 +74,7 @@ END_RCPP
 }
 
 static const R_CallMethodDef CallEntries[] = {
-    {"_fastconley_FastSpatialMeat_cpp", (DL_FUNC) &_fastconley_FastSpatialMeat_cpp, 11},
+    {"_fastconley_FastSpatialMeat_cpp", (DL_FUNC) &_fastconley_FastSpatialMeat_cpp, 12},
     {"_fastconley_FastSerialHacPanel_cpp", (DL_FUNC) &_fastconley_FastSerialHacPanel_cpp, 5},
     {"_fastconley_FastGridMeat_cpp", (DL_FUNC) &_fastconley_FastGridMeat_cpp, 14},
     {NULL, NULL, 0}

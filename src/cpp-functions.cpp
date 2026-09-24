@@ -28,6 +28,9 @@ inline void install_interrupt_hook() {
 
 }  // namespace
 
+// `rows` is NULL, or 1-based row numbers of `scores`, one per lat/lon/time
+// entry: the order in which the R side would otherwise have gathered a
+// reordered copy of the score matrix (see conley::spatial_meat).
 // [[Rcpp::export]]
 arma::mat FastSpatialMeat_cpp(Rcpp::NumericVector lat, Rcpp::NumericVector lon,
                           Rcpp::NumericVector time, Rcpp::NumericMatrix scores,
@@ -37,10 +40,26 @@ arma::mat FastSpatialMeat_cpp(Rcpp::NumericVector lat, Rcpp::NumericVector lon,
                           bool balanced_pnl = false,
                           int ncores = 1,
                           std::string neighbor = "grid",
-                          std::string csr_weight = "double") {
+                          std::string csr_weight = "double",
+                          SEXP rows = R_NilValue) {
   install_interrupt_hook();
-  const std::size_t n = static_cast<std::size_t>(scores.nrow());
+  const std::size_t n_scores = static_cast<std::size_t>(scores.nrow());
   const std::size_t k = static_cast<std::size_t>(scores.ncol());
+  const bool mapped = !Rf_isNull(rows);
+  std::vector<std::size_t> row_map;
+  if (mapped) {
+    if (TYPEOF(rows) != INTSXP) Rcpp::stop("rows must be an integer vector.");
+    const int* r = INTEGER(rows);
+    row_map.resize(static_cast<std::size_t>(XLENGTH(rows)));
+    for (std::size_t i = 0; i < row_map.size(); ++i) {
+      if (r[i] == NA_INTEGER || r[i] < 1 ||
+          static_cast<std::size_t>(r[i]) > n_scores) {
+        Rcpp::stop("rows must index rows of scores.");
+      }
+      row_map[i] = static_cast<std::size_t>(r[i]) - 1;
+    }
+  }
+  const std::size_t n = mapped ? row_map.size() : n_scores;
   if (static_cast<std::size_t>(lat.size()) != n ||
       static_cast<std::size_t>(lon.size()) != n ||
       static_cast<std::size_t>(time.size()) != n) {
@@ -56,13 +75,14 @@ arma::mat FastSpatialMeat_cpp(Rcpp::NumericVector lat, Rcpp::NumericVector lon,
   const arma::vec lat_v(lat.begin(), n, false, true);
   const arma::vec lon_v(lon.begin(), n, false, true);
   const arma::vec time_v(time.begin(), n, false, true);
-  const arma::mat S_col(scores.begin(), n, k, false, true);
+  const arma::mat S_col(scores.begin(), n_scores, k, false, true);
 
   bool unbalanced_fallback = false;
   arma::mat meat = conley::spatial_meat(lat_v, lon_v, time_v, S_col, cutoff,
                                         kernel, dist_fn, balanced_pnl, ncores,
                                         neighbor, csr_weight,
-                                        &unbalanced_fallback);
+                                        &unbalanced_fallback,
+                                        mapped ? &row_map : nullptr);
   if (unbalanced_fallback) {
     Rcpp::warning("balanced_pnl = TRUE but time blocks have unequal sizes; using the streaming path.");
   }

@@ -18,7 +18,7 @@
 // Engine version, reported by the Stata plugin's "check" subcommand and
 // compared against the ado's expectation. Bump on every change that alters
 // numerical results or the front-end entry points.
-#define CONLEY_CORE_VERSION "0.11.1"
+#define CONLEY_CORE_VERSION "0.11.2"
 
 #ifndef ARMA_64BIT_WORD
 #define ARMA_64BIT_WORD 1
@@ -193,12 +193,72 @@ void parallel_range_coarse(std::size_t n, int ncores, const Body& body) {
   }
 }
 
-// The comparator must define a strict total order (callers tiebreak on
-// index), so the sorted output is unique.
-template <typename It, typename Cmp>
-void sort_maybe_parallel(It first, It last, Cmp cmp, int ncores) {
-  (void)ncores;
-  std::sort(first, last, cmp);
+// Indices 0..n-1 in (key, index) order: a strict total order, so the output
+// is unique however it is computed. Large inputs use a stable LSD radix sort
+// (11-bit digits; a digit on which every key agrees is skipped, since a
+// stable pass over a constant digit is the identity), which is several times
+// faster than a comparison sort. Each pass counts per contiguous part and
+// scatters in (digit, part) order, so the parallel passes are stable and the
+// result does not depend on ncores.
+inline void radix_order(const std::vector<std::uint64_t>& key,
+                        std::vector<std::size_t>& ord, int ncores) {
+  const std::size_t n = key.size();
+  ord.resize(n);
+  std::iota(ord.begin(), ord.end(), 0);
+  if (n < 1024) {
+    std::sort(ord.begin(), ord.end(), [&](std::size_t a, std::size_t b) {
+      if (key[a] != key[b]) return key[a] < key[b];
+      return a < b;
+    });
+    return;
+  }
+  std::uint64_t varying = 0;
+  for (std::size_t i = 1; i < n; ++i) varying |= key[i] ^ key[0];
+  if (varying == 0) return;
+
+  constexpr int BITS = 11;
+  constexpr std::size_t RADIX = std::size_t(1) << BITS;
+  const std::size_t threads = static_cast<std::size_t>(std::min(1024, std::max(1, ncores)));
+  const std::size_t nparts = std::max<std::size_t>(
+      1, std::min<std::size_t>(threads, n / 65536));
+  const std::size_t part = (n + nparts - 1) / nparts;
+  std::vector<std::uint64_t> kcur(key), knext(n);
+  std::vector<std::size_t> onext(n);
+  std::vector<std::size_t> offset(nparts * RADIX);
+  for (int shift = 0; shift < 64; shift += BITS) {
+    if (((varying >> shift) & (RADIX - 1)) == 0) continue;
+    std::fill(offset.begin(), offset.end(), 0);
+    parallel_blocks(nparts, ncores, 1, [&](std::size_t p0, std::size_t p1) {
+      for (std::size_t p = p0; p < p1; ++p) {
+        std::size_t* cnt = &offset[p * RADIX];
+        const std::size_t hi = std::min(n, (p + 1) * part);
+        for (std::size_t i = p * part; i < hi; ++i) {
+          ++cnt[(kcur[i] >> shift) & (RADIX - 1)];
+        }
+      }
+    });
+    std::size_t total = 0;
+    for (std::size_t d = 0; d < RADIX; ++d) {
+      for (std::size_t p = 0; p < nparts; ++p) {
+        const std::size_t count = offset[p * RADIX + d];
+        offset[p * RADIX + d] = total;
+        total += count;
+      }
+    }
+    parallel_blocks(nparts, ncores, 1, [&](std::size_t p0, std::size_t p1) {
+      for (std::size_t p = p0; p < p1; ++p) {
+        std::size_t* next = &offset[p * RADIX];
+        const std::size_t hi = std::min(n, (p + 1) * part);
+        for (std::size_t i = p * part; i < hi; ++i) {
+          const std::size_t dst = next[(kcur[i] >> shift) & (RADIX - 1)]++;
+          knext[dst] = kcur[i];
+          onext[dst] = ord[i];
+        }
+      }
+    });
+    kcur.swap(knext);
+    ord.swap(onext);
+  }
 }
 
 struct CoordCache {
@@ -272,19 +332,13 @@ inline ScreenParams make_screen_params(double cutoff, int dist_id) {
 // (D, K) tag is fixed at the top of the spatial routine via an 8-way
 // switch in FastSpatialMeat, so each compiled body knows D and K at
 // compile time -- no runtime branching, no function-pointer indirection.
+//
+// It is composed of three pieces that the batched pair loops below call
+// directly, so every path applies literally the same arithmetic:
+//   screen_value<D>(u_i - u_j)   the quantity compared with the threshold,
+//   screen_threshold<D>(screen)  a pair is accepted iff value <= threshold,
+//   screen_weight<D, K>(value)   the kernel weight of an accepted pair.
 // ------------------------------------------------------------------
-
-template<int D, int K>
-inline double pair_weight(const CoordCache& c, std::size_t i, std::size_t j,
-                          double cutoff, const ScreenParams& screen);
-
-inline double pair_half_chord_sq(const CoordCache& c, std::size_t i,
-                                 std::size_t j) {
-  const double dx = c.x3[i] - c.x3[j];
-  const double dy = c.y3[i] - c.y3[j];
-  const double dz = c.z3[i] - c.z3[j];
-  return clamp01(0.25 * (dx * dx + dy * dy + dz * dz));
-}
 
 inline double great_circle_distance_from_a(double a) {
   const double root_a = std::sqrt(a);
@@ -299,82 +353,51 @@ inline double bartlett_weight(double distance, double cutoff) {
   return clamp01(1.0 - distance / cutoff);
 }
 
-// HAVERSINE × UNIFORM: stable half-chord threshold, no inverse trig.
-template<>
-inline double pair_weight<DIST_HAVERSINE, KERNEL_UNIFORM>(
-    const CoordCache& c, std::size_t i, std::size_t j,
-    double cutoff, const ScreenParams& screen) {
-  (void)cutoff;
-  // The haversine 'a' = sin^2(theta/2) equals |u_i - u_j|^2 / 4 exactly, so
-  // the cached unit vectors give it with three subtractions and no per-pair
-  // trig. The subtraction cancels at small angles exactly as dlat / dlon do
-  // in the classic form, so precision is unchanged; the accept test is the
-  // same a-test as before. (Per-pair sin/atan2 were also the reason the
-  // mingw-w64 build was 5x slower than MSVC: its libm implements them in
-  // x87 microcode.)
-  const double a = pair_half_chord_sq(c, i, j);
-  if (a > screen.sin2_half_angular_cutoff) return 0.0;
-  return 1.0;
+// Screen value of a pair from its unit-vector difference (dx, dy, dz) =
+// u_i - u_j. Haversine and spherical use the haversine 'a' =
+// sin^2(theta/2), which equals |u_i - u_j|^2 / 4 exactly, so the cached unit
+// vectors give it with three subtractions and no per-pair trig. The
+// subtraction cancels at small angles exactly as dlat / dlon do in the
+// classic form, so precision is unchanged, and this stable half-chord
+// threshold avoids endpoint roundoff at exact duplicates and antipodes.
+// (Per-pair sin/atan2 were also the reason the mingw-w64 build was 5x
+// slower than MSVC: its libm implements them in x87 microcode.) Chord uses
+// the squared unit chord 4a, compared against (cutoff / R)^2 with no sqrt.
+template<int D>
+inline double screen_value(double dx, double dy, double dz) {
+  const double a = clamp01(0.25 * (dx * dx + dy * dy + dz * dz));
+  return D == DIST_CHORD ? 4.0 * a : a;
 }
 
-// HAVERSINE × BARTLETT: the same stable screen and distance as spherical.
-template<>
-inline double pair_weight<DIST_HAVERSINE, KERNEL_BARTLETT>(
-    const CoordCache& c, std::size_t i, std::size_t j,
-    double cutoff, const ScreenParams& screen) {
-  // See the UNIFORM specialization for the chord form of 'a'. Accepted
-  // pairs get the distance 2R asin(sqrt a), which is well conditioned for
-  // a <= 0.5 (angles up to 90 degrees); the atan2 form covers the rest.
-  const double a = pair_half_chord_sq(c, i, j);
-  if (a > screen.sin2_half_angular_cutoff) return 0.0;
-  return bartlett_weight(great_circle_distance_from_a(a), cutoff);
+template<int D>
+inline double screen_threshold(const ScreenParams& screen) {
+  return D == DIST_CHORD ? screen.chord_cutoff_sq
+                         : screen.sin2_half_angular_cutoff;
 }
 
-// SPHERICAL × UNIFORM: the stable half-chord threshold avoids endpoint
-// roundoff at exact duplicates and antipodes.
-template<>
-inline double pair_weight<DIST_SPHERICAL, KERNEL_UNIFORM>(
-    const CoordCache& c, std::size_t i, std::size_t j,
-    double cutoff, const ScreenParams& screen) {
-  (void)cutoff;
-  const double a = pair_half_chord_sq(c, i, j);
-  return a <= screen.sin2_half_angular_cutoff ? 1.0 : 0.0;
+// Kernel weight of an accepted pair from its screen value. Bartlett
+// haversine / spherical distances are 2R asin(sqrt a), well conditioned for
+// a <= 0.5 (angles up to 90 degrees), with the atan2 form covering the rest;
+// chord takes its straight-line sqrt, only for accepted pairs.
+template<int D, int K>
+inline double screen_weight(double value, double cutoff) {
+  if (K == KERNEL_UNIFORM) return 1.0;
+  if (D == DIST_CHORD) return bartlett_weight(AVG_ERAD * std::sqrt(value), cutoff);
+  return bartlett_weight(great_circle_distance_from_a(value), cutoff);
 }
 
-// SPHERICAL × BARTLETT: stable half-chord screen and distance.
-template<>
-inline double pair_weight<DIST_SPHERICAL, KERNEL_BARTLETT>(
-    const CoordCache& c, std::size_t i, std::size_t j,
-    double cutoff, const ScreenParams& screen) {
-  const double a = pair_half_chord_sq(c, i, j);
-  if (a > screen.sin2_half_angular_cutoff) return 0.0;
-  return bartlett_weight(great_circle_distance_from_a(a), cutoff);
+template<int D>
+inline double pair_screen(const CoordCache& c, std::size_t i, std::size_t j) {
+  return screen_value<D>(c.x3[i] - c.x3[j], c.y3[i] - c.y3[j],
+                         c.z3[i] - c.z3[j]);
 }
 
-// CHORD × UNIFORM: squared Euclidean threshold on unit vectors, no sqrt.
-template<>
-inline double pair_weight<DIST_CHORD, KERNEL_UNIFORM>(
-    const CoordCache& c, std::size_t i, std::size_t j,
-    double cutoff, const ScreenParams& screen) {
-  (void)cutoff;
-  const double dx = c.x3[i] - c.x3[j];
-  const double dy = c.y3[i] - c.y3[j];
-  const double dz = c.z3[i] - c.z3[j];
-  const double d2 = 4.0 * clamp01(0.25 * (dx * dx + dy * dy + dz * dz));
-  return d2 <= screen.chord_cutoff_sq ? 1.0 : 0.0;
-}
-
-// CHORD × BARTLETT: same threshold; sqrt only for accepted pairs.
-template<>
-inline double pair_weight<DIST_CHORD, KERNEL_BARTLETT>(
-    const CoordCache& c, std::size_t i, std::size_t j,
-    double cutoff, const ScreenParams& screen) {
-  const double dx = c.x3[i] - c.x3[j];
-  const double dy = c.y3[i] - c.y3[j];
-  const double dz = c.z3[i] - c.z3[j];
-  const double d2 = 4.0 * clamp01(0.25 * (dx * dx + dy * dy + dz * dz));
-  if (d2 > screen.chord_cutoff_sq) return 0.0;
-  return bartlett_weight(AVG_ERAD * std::sqrt(d2), cutoff);
+template<int D, int K>
+inline double pair_weight(const CoordCache& c, std::size_t i, std::size_t j,
+                          double cutoff, const ScreenParams& screen) {
+  const double value = pair_screen<D>(c, i, j);
+  if (!(value <= screen_threshold<D>(screen))) return 0.0;
+  return screen_weight<D, K>(value, cutoff);
 }
 
 inline CoordCache make_coord_cache(const arma::vec& lat, const arma::vec& lon,
@@ -409,14 +432,17 @@ inline CoordCache make_coord_cache(const arma::vec& lat, const arma::vec& lon,
 // score matrix the R side hands over (scores = e * X, possibly aggregated).
 // Row `pos` of the buffer is row `perm[pos]` of `Scol`, so the meat workers
 // see row-contiguous, permutation-applied reads with no intermediate
-// unsorted copy.
+// unsorted copy. With a row map, row `pos` is row `(*row_map)[perm[pos]]`:
+// a front-end reordering of its score rows is composed into this same
+// gather instead of being materialized as a reordered copy of `Scol`.
 struct RowMajorScores {
   std::size_t n;
   std::size_t k;
   std::vector<double> s;
 
   RowMajorScores(const arma::mat& Scol, const std::vector<std::size_t>& perm,
-                 int ncores)
+                 int ncores,
+                 const std::vector<std::size_t>* row_map = nullptr)
       : n(perm.size()), k(Scol.n_cols),
         s(perm.size() * static_cast<std::size_t>(Scol.n_cols)) {
     const double* base = Scol.memptr();
@@ -424,7 +450,7 @@ struct RowMajorScores {
     const std::size_t kk_n = k;
     parallel_range(n, ncores, [&](std::size_t lo, std::size_t hi) {
       for (std::size_t pos = lo; pos < hi; ++pos) {
-        const std::size_t src = perm[pos];
+        const std::size_t src = row_map ? (*row_map)[perm[pos]] : perm[pos];
         double* dst = s.data() + pos * kk_n;
         for (std::size_t kk = 0; kk < kk_n; ++kk) dst[kk] = base[kk * ldn + src];
       }
@@ -483,6 +509,75 @@ arma::mat reduce_deterministic(std::size_t n, std::size_t k, std::size_t chunk,
 // results never depend on ncores.
 constexpr std::size_t ROW_CHUNK = 1024;
 constexpr std::size_t BLOCK_CHUNK = 128;
+
+// ------------------------------------------------------------------
+// Register-blocked neighbour accumulation: c[0..k) += sum_t w_t * row(idx_t)
+// (w_t = 1 when unweighted) over a list of rows of a row-major buffer with
+// `stride` doubles per row. Up to ACC_BLOCK columns are taken in one pass
+// (wider rows in blocks of ACC_BLOCK plus the rest) with their partial sums
+// held in registers across the whole list, instead of a runtime-k loop that
+// loads and stores c for every neighbour. Each c[kk] still receives its
+// additions in list order, so the result is bit-identical to the plain loop.
+// The unroll pragmas matter: at -O2, GCC otherwise vectorizes only even
+// widths and leaves an odd-width block as a scalar loop over memory.
+// ------------------------------------------------------------------
+constexpr int ACC_BLOCK = 16;
+
+template <int W, bool WEIGHTED, typename WT>
+inline void accumulate_block(double* c, const double* rows, std::size_t stride,
+                             const std::uint32_t* idx, const WT* w,
+                             std::size_t m) {
+  double r[W];
+#pragma GCC unroll 16
+  for (int j = 0; j < W; ++j) r[j] = c[j];
+  for (std::size_t t = 0; t < m; ++t) {
+    const double* s = rows + static_cast<std::size_t>(idx[t]) * stride;
+    if (WEIGHTED) {
+      const double wt = static_cast<double>(w[t]);
+#pragma GCC unroll 16
+      for (int j = 0; j < W; ++j) r[j] += wt * s[j];
+    } else {
+#pragma GCC unroll 16
+      for (int j = 0; j < W; ++j) r[j] += s[j];
+    }
+  }
+#pragma GCC unroll 16
+  for (int j = 0; j < W; ++j) c[j] = r[j];
+}
+
+// accumulate_block for a runtime width in [0, W].
+template <int W, bool WEIGHTED, typename WT>
+struct AccumulateUpTo {
+  static void run(std::size_t width, double* c, const double* rows,
+                  std::size_t stride, const std::uint32_t* idx, const WT* w,
+                  std::size_t m) {
+    if (width == static_cast<std::size_t>(W)) {
+      accumulate_block<W, WEIGHTED>(c, rows, stride, idx, w, m);
+    } else {
+      AccumulateUpTo<W - 1, WEIGHTED, WT>::run(width, c, rows, stride, idx, w, m);
+    }
+  }
+};
+
+template <bool WEIGHTED, typename WT>
+struct AccumulateUpTo<0, WEIGHTED, WT> {
+  static void run(std::size_t, double*, const double*, std::size_t,
+                  const std::uint32_t*, const WT*, std::size_t) {}
+};
+
+template <bool WEIGHTED, typename WT>
+inline void accumulate_rows(double* c, std::size_t k, const double* rows,
+                            std::size_t stride, const std::uint32_t* idx,
+                            const WT* w, std::size_t m) {
+  if (m == 0) return;
+  const std::size_t block = static_cast<std::size_t>(ACC_BLOCK);
+  std::size_t off = 0;
+  for (; off + block <= k; off += block) {
+    accumulate_block<ACC_BLOCK, WEIGHTED>(c + off, rows + off, stride, idx, w, m);
+  }
+  AccumulateUpTo<ACC_BLOCK - 1, WEIGHTED, WT>::run(k - off, c + off, rows + off,
+                                                   stride, idx, w, m);
+}
 
 // Reorder a CoordCache by an index permutation. Band-only latitude/longitude
 // arrays remain absent on the cell-grid path.
@@ -791,14 +886,8 @@ inline void append_block_grid(const CoordCache& c, std::size_t bs, std::size_t b
   // (cell id, original index) order: a strict total order, so the sorted
   // output is unique and deterministic (parallel or not), and rows of a
   // cell are contiguous with consecutive cells contiguous in row space.
-  std::vector<std::size_t> ord(nb);
-  std::iota(ord.begin(), ord.end(), 0);
-  sort_maybe_parallel(ord.begin(), ord.end(),
-                      [&](std::size_t a, std::size_t b) {
-                        if (cid[a] != cid[b]) return cid[a] < cid[b];
-                        return a < b;
-                      },
-                      ncores);
+  std::vector<std::size_t> ord;
+  radix_order(cid, ord, ncores);
 
   const std::size_t row0 = sorted_idx.size();
   std::vector<std::uint64_t> ucid;
@@ -899,31 +988,79 @@ inline void for_each_grid_candidate(const CellGrid& grid, std::size_t pos, F fn)
   }
 }
 
+// Candidates screened per batch in meat_stream_grid (bounded buffers).
+constexpr std::size_t PAIR_BLOCK = 2048;
+
 // Grid analogue of meat_stream_band: fused candidate scan + score
 // accumulation, O(n) memory, no CSR. Inputs are pre-permuted to grid order.
+//
+// Each row's candidates are screened branch-free in scan order: the accept
+// flag advances a write cursor into a bounded batch instead of taking a
+// branch, which near the cutoff boundary mispredicts often enough to
+// dominate the loop. The survivors then get their kernel weights (exact
+// zeros are dropped, as the per-candidate loop skipped them) and are
+// folded into the row accumulator by accumulate_rows. The pairs, weights,
+// and per-element summation order are those of a per-candidate loop, so
+// the meat is bit-identical to it.
 template<int D, int K>
 arma::mat meat_stream_grid(const RowMajorScores& S, const CoordCache& coord,
                            const CellGrid& grid, double cutoff,
                            const ScreenParams& screen, int ncores) {
   const std::size_t k = S.k;
+  const double thr = screen_threshold<D>(screen);
+  const double* X = coord.x3.data();
+  const double* Y = coord.y3.data();
+  const double* Z = coord.z3.data();
   auto body = [&](std::size_t lo, std::size_t hi, arma::mat& meat) {
     std::vector<double> c(k, 0.0);
+    std::vector<std::uint32_t> idx(PAIR_BLOCK);
+    std::vector<double> val(K == KERNEL_UNIFORM ? 0 : PAIR_BLOCK);
     for (std::size_t pos = lo; pos < hi; ++pos) {
       const double* si = S.row(pos);
       for (std::size_t kk = 0; kk < k; ++kk) {
         c[kk] = 0.5 * si[kk];
       }
 
-      for_each_grid_candidate(grid, pos, [&](std::size_t q) {
-        const double w = pair_weight<D, K>(coord, pos, q, cutoff, screen);
-        if (w == 0.0) return;
-        const double* sj = S.row(q);
+      const double xi = X[pos], yi = Y[pos], zi = Z[pos];
+      std::size_t m = 0;
+      const auto flush = [&]() {
         if (K == KERNEL_UNIFORM) {
-          for (std::size_t kk = 0; kk < k; ++kk) c[kk] += sj[kk];
+          accumulate_rows<false, double>(c.data(), k, S.s.data(), k,
+                                         idx.data(), nullptr, m);
         } else {
-          for (std::size_t kk = 0; kk < k; ++kk) c[kk] += w * sj[kk];
+          std::size_t kept = 0;
+          for (std::size_t t = 0; t < m; ++t) {
+            const double w = screen_weight<D, K>(val[t], cutoff);
+            idx[kept] = idx[t];
+            val[kept] = w;
+            kept += (w != 0.0);
+          }
+          accumulate_rows<true>(c.data(), k, S.s.data(), k, idx.data(),
+                                val.data(), kept);
         }
-      });
+        m = 0;
+      };
+      // At batch start m <= PAIR_BLOCK / 2, so each pass takes at least half
+      // a batch and every cursor write stays inside the buffers.
+      const auto scan = [&](std::size_t q, std::size_t q_end) {
+        while (q < q_end) {
+          const std::size_t stop = q + std::min(q_end - q, PAIR_BLOCK - m);
+          for (; q < stop; ++q) {
+            const double v = screen_value<D>(xi - X[q], yi - Y[q], zi - Z[q]);
+            idx[m] = static_cast<std::uint32_t>(q);
+            if (K != KERNEL_UNIFORM) val[m] = v;
+            m += (v <= thr);
+          }
+          if (m > PAIR_BLOCK / 2) flush();
+        }
+      };
+      // The for_each_grid_candidate order: own cell after pos, then the five
+      // forward neighbour ranges.
+      const std::uint32_t cell = grid.row_cell[pos];
+      scan(pos + 1, grid.cell_start[cell + 1]);
+      const std::size_t* r = &grid.nbr[10 * static_cast<std::size_t>(cell)];
+      for (int s = 0; s < 5; ++s) scan(r[2 * s], r[2 * s + 1]);
+      flush();
 
       for (std::size_t k1 = 0; k1 < k; ++k1) {
         const double s1 = si[k1];
@@ -951,11 +1088,30 @@ struct GridCsrCountWorkerT {
                       double cutoff, const ScreenParams& screen)
       : grid(grid), c(c), counts(counts), cutoff(cutoff), screen(screen) {}
 
+  // Counts the candidates with pair_weight != 0 without evaluating most
+  // weights. The uniform weight is 1 whenever the screen accepts. A
+  // Bartlett weight clamp01(1 - d / cutoff) can only round to 0 for a
+  // screen value within a relative 1e-12 of the threshold: below that
+  // band the distance d is at least ~5e-13 relatively short of the cutoff
+  // (d is increasing in the screen value with elasticity >= 1/2), far
+  // outside the few-ulp error of evaluating it. So only the band pays for
+  // asin/sqrt, the rest is a branch-free count, and the fill pass (which
+  // checks it) writes exactly these pairs. A subnormal threshold has no
+  // band to spare and falls back to evaluating every accepted pair.
   void operator()(std::size_t begin, std::size_t end) {
+    const double thr = screen_threshold<D>(screen);
+    double thr_safe = thr;
+    if (K != KERNEL_UNIFORM) {
+      thr_safe = thr >= 1e-280 ? thr * (1.0 - 1e-12) : 0.0;
+    }
     for (std::size_t pos = begin; pos < end; ++pos) {
       std::size_t n_found = 0;
       for_each_grid_candidate(grid, pos, [&](std::size_t q) {
-        if (pair_weight<D, K>(c, pos, q, cutoff, screen) != 0.0) ++n_found;
+        const double v = pair_screen<D>(c, pos, q);
+        n_found += (v <= thr_safe);
+        if (K != KERNEL_UNIFORM && v > thr_safe && v <= thr) {
+          n_found += (screen_weight<D, K>(v, cutoff) != 0.0);
+        }
       });
       counts[pos] = n_found;
     }
@@ -986,9 +1142,11 @@ struct GridCsrFillWorkerT {
   void operator()(std::size_t begin, std::size_t end) {
     for (std::size_t pos = begin; pos < end; ++pos) {
       std::size_t out = row_ptr[pos];
+      const std::size_t out_end = row_ptr[pos + 1];
       for_each_grid_candidate(grid, pos, [&](std::size_t q) {
         const double w = pair_weight<D, K>(c, pos, q, cutoff, screen);
         if (w != 0.0) {
+          if (out == out_end) fail("internal: CSR fill exceeds its count");
           col_idx[out] = static_cast<std::uint32_t>(q);
           if (K != KERNEL_UNIFORM) {
             if (wfloat) weight_f[out] = static_cast<float>(w);
@@ -997,6 +1155,7 @@ struct GridCsrFillWorkerT {
           ++out;
         }
       });
+      if (out != out_end) fail("internal: CSR fill falls short of its count");
     }
   }
 };
@@ -1115,19 +1274,21 @@ arma::mat meat_from_csr_periodmajor(const RowMajorScores& S,
     std::vector<double> c(k, 0.0);
     for (std::size_t b = 0; b < T; ++b) {
       const std::size_t base = block_start[b];
+      const double* period_rows = S.row(base);
       for (std::size_t pos = lo; pos < hi; ++pos) {
         const double* si = S.row(base + pos);
         for (std::size_t kk = 0; kk < k; ++kk) {
           c[kk] = 0.5 * si[kk];
         }
-        for (std::size_t ep = row_ptr[pos]; ep < row_ptr[pos + 1]; ++ep) {
-          const double* sj = S.row(base + static_cast<std::size_t>(col_idx[ep]));
-          if (K == KERNEL_UNIFORM) {
-            for (std::size_t kk = 0; kk < k; ++kk) c[kk] += sj[kk];
-          } else {
-            const double wgt = static_cast<double>(weight[ep]);
-            for (std::size_t kk = 0; kk < k; ++kk) c[kk] += wgt * sj[kk];
-          }
+        // The row's CSR slice, in stored order (see accumulate_rows).
+        const std::size_t e0 = row_ptr[pos];
+        const std::size_t m = row_ptr[pos + 1] - e0;
+        if (K == KERNEL_UNIFORM) {
+          accumulate_rows<false, WT>(c.data(), k, period_rows, k,
+                                     col_idx.data() + e0, nullptr, m);
+        } else {
+          accumulate_rows<true, WT>(c.data(), k, period_rows, k,
+                                    col_idx.data() + e0, weight.data() + e0, m);
         }
         for (std::size_t k1 = 0; k1 < k; ++k1) {
           const double s1 = si[k1];
@@ -1161,8 +1322,9 @@ arma::mat meat_from_csr_dispatch(const RowMajorScores& S,
 template<int D, int K>
 arma::mat fast_spatial_general(const arma::vec& lat, const arma::vec& lon,
                                const arma::vec& time, const arma::mat& S_col,
-                               double cutoff, int ncores) {
-  const std::size_t n = S_col.n_rows;
+                               double cutoff, int ncores,
+                               const std::vector<std::size_t>* row_map) {
+  const std::size_t n = lat.n_elem;
   const CoordCache c = make_coord_cache(lat, lon, true, ncores, n);
 
   const TimeBlocks blocks = make_time_blocks(time);
@@ -1182,7 +1344,7 @@ arma::mat fast_spatial_general(const arma::vec& lat, const arma::vec& lon,
   // indexes both buffers by sorted position directly, so every read is
   // sequential -- independent of how the caller laid out the input.
   const CoordCache c_sorted = permute_coord_cache(c, sorted_idx, ncores);
-  const RowMajorScores S_sorted(S_col, sorted_idx, ncores);
+  const RowMajorScores S_sorted(S_col, sorted_idx, ncores, row_map);
 
   const ScreenParams screen = make_screen_params(cutoff, D);
   return meat_stream_band<D, K>(S_sorted, row_end, c_sorted, cutoff, screen, ncores);
@@ -1191,7 +1353,8 @@ arma::mat fast_spatial_general(const arma::vec& lat, const arma::vec& lon,
 template<int D, int K>
 arma::mat fast_spatial_balanced(const arma::vec& lat, const arma::vec& lon,
                                 const arma::vec& time, const arma::mat& S_col,
-                                double cutoff, bool wfloat, int ncores) {
+                                double cutoff, bool wfloat, int ncores,
+                                const std::vector<std::size_t>* row_map) {
   const TimeBlocks blocks = make_time_blocks(time);
   const std::size_t n_per = blocks.end[0] - blocks.start[0];
   const std::size_t T = blocks.start.size();
@@ -1217,14 +1380,14 @@ arma::mat fast_spatial_balanced(const arma::vec& lat, const arma::vec& lon,
   CsrGraph graph = build_csr<D, K>(identity_perm, row_end, c_block0_sorted,
                                    cutoff, wfloat, ncores);
 
-  std::vector<std::size_t> global_perm(S_col.n_rows);
+  std::vector<std::size_t> global_perm(time.n_elem);
   for (std::size_t b = 0; b < T; ++b) {
     const std::size_t base = blocks.start[b];
     for (std::size_t pos = 0; pos < n_per; ++pos) {
       global_perm[base + pos] = base + sorted_rel[pos];
     }
   }
-  const RowMajorScores S_sorted(S_col, global_perm, ncores);
+  const RowMajorScores S_sorted(S_col, global_perm, ncores, row_map);
   return meat_from_csr_dispatch<K>(S_sorted, blocks.start, n_per, graph,
                                    wfloat, ncores);
 }
@@ -1234,8 +1397,9 @@ arma::mat fast_spatial_balanced(const arma::vec& lat, const arma::vec& lon,
 template<int D, int K>
 arma::mat fast_spatial_general_grid(const arma::vec& lat, const arma::vec& lon,
                                     const arma::vec& time, const arma::mat& S_col,
-                                    double cutoff, int ncores) {
-  const std::size_t n = S_col.n_rows;
+                                    double cutoff, int ncores,
+                                    const std::vector<std::size_t>* row_map) {
+  const std::size_t n = lat.n_elem;
   if (n > static_cast<std::size_t>(std::numeric_limits<uint32_t>::max())) {
     fail("The grid neighbor path supports at most 2^32 - 1 rows; "
          "use neighbor = \"band\".");
@@ -1255,7 +1419,7 @@ arma::mat fast_spatial_general_grid(const arma::vec& lat, const arma::vec& lon,
   grid.cell_start.push_back(n);
 
   const CoordCache c_sorted = permute_coord_cache(c, sorted_idx, ncores);
-  const RowMajorScores S_sorted(S_col, sorted_idx, ncores);
+  const RowMajorScores S_sorted(S_col, sorted_idx, ncores, row_map);
 
   return meat_stream_grid<D, K>(S_sorted, c_sorted, grid, cutoff, screen, ncores);
 }
@@ -1265,7 +1429,8 @@ arma::mat fast_spatial_general_grid(const arma::vec& lat, const arma::vec& lon,
 template<int D, int K>
 arma::mat fast_spatial_balanced_grid(const arma::vec& lat, const arma::vec& lon,
                                      const arma::vec& time, const arma::mat& S_col,
-                                     double cutoff, bool wfloat, int ncores) {
+                                     double cutoff, bool wfloat, int ncores,
+                                     const std::vector<std::size_t>* row_map) {
   const TimeBlocks blocks = make_time_blocks(time);
   const std::size_t n_per = blocks.end[0] - blocks.start[0];
   const std::size_t T = blocks.start.size();
@@ -1290,14 +1455,14 @@ arma::mat fast_spatial_balanced_grid(const arma::vec& lat, const arma::vec& lon,
   for (std::size_t i = 0; i < n_per; ++i) {
     sorted_rel[i] = sorted_abs[i] - blocks.start[0];
   }
-  std::vector<std::size_t> global_perm(S_col.n_rows);
+  std::vector<std::size_t> global_perm(time.n_elem);
   for (std::size_t b = 0; b < T; ++b) {
     const std::size_t base = blocks.start[b];
     for (std::size_t pos = 0; pos < n_per; ++pos) {
       global_perm[base + pos] = base + sorted_rel[pos];
     }
   }
-  const RowMajorScores S_sorted(S_col, global_perm, ncores);
+  const RowMajorScores S_sorted(S_col, global_perm, ncores, row_map);
   return meat_from_csr_dispatch<K>(S_sorted, blocks.start, n_per, graph,
                                    wfloat, ncores);
 }
@@ -1309,34 +1474,36 @@ template<int D, int K>
 inline arma::mat fast_spatial_dispatch(const arma::vec& lat, const arma::vec& lon,
                                        const arma::vec& time, const arma::mat& S_col,
                                        double cutoff, int ncores, bool balanced,
-                                       bool use_grid, bool wfloat) {
+                                       bool use_grid, bool wfloat,
+                                       const std::vector<std::size_t>* row_map) {
   if (balanced) {
-    if (use_grid) return fast_spatial_balanced_grid<D, K>(lat, lon, time, S_col, cutoff, wfloat, ncores);
-    return fast_spatial_balanced<D, K>(lat, lon, time, S_col, cutoff, wfloat, ncores);
+    if (use_grid) return fast_spatial_balanced_grid<D, K>(lat, lon, time, S_col, cutoff, wfloat, ncores, row_map);
+    return fast_spatial_balanced<D, K>(lat, lon, time, S_col, cutoff, wfloat, ncores, row_map);
   }
-  if (use_grid) return fast_spatial_general_grid<D, K>(lat, lon, time, S_col, cutoff, ncores);
-  return fast_spatial_general<D, K>(lat, lon, time, S_col, cutoff, ncores);
+  if (use_grid) return fast_spatial_general_grid<D, K>(lat, lon, time, S_col, cutoff, ncores, row_map);
+  return fast_spatial_general<D, K>(lat, lon, time, S_col, cutoff, ncores, row_map);
 }
 
 inline arma::mat dispatch_spatial(int dist_id, int kernel_id,
                            const arma::vec& lat, const arma::vec& lon,
                            const arma::vec& time, const arma::mat& S_col,
                            double cutoff, int ncores, bool balanced,
-                           bool use_grid, bool wfloat) {
+                           bool use_grid, bool wfloat,
+                           const std::vector<std::size_t>* row_map) {
   const int tag = (dist_id << 4) | kernel_id;
   switch (tag) {
     case (DIST_HAVERSINE << 4) | KERNEL_UNIFORM:
-      return fast_spatial_dispatch<DIST_HAVERSINE, KERNEL_UNIFORM>(lat, lon, time, S_col, cutoff, ncores, balanced, use_grid, wfloat);
+      return fast_spatial_dispatch<DIST_HAVERSINE, KERNEL_UNIFORM>(lat, lon, time, S_col, cutoff, ncores, balanced, use_grid, wfloat, row_map);
     case (DIST_HAVERSINE << 4) | KERNEL_BARTLETT:
-      return fast_spatial_dispatch<DIST_HAVERSINE, KERNEL_BARTLETT>(lat, lon, time, S_col, cutoff, ncores, balanced, use_grid, wfloat);
+      return fast_spatial_dispatch<DIST_HAVERSINE, KERNEL_BARTLETT>(lat, lon, time, S_col, cutoff, ncores, balanced, use_grid, wfloat, row_map);
     case (DIST_SPHERICAL << 4) | KERNEL_UNIFORM:
-      return fast_spatial_dispatch<DIST_SPHERICAL, KERNEL_UNIFORM>(lat, lon, time, S_col, cutoff, ncores, balanced, use_grid, wfloat);
+      return fast_spatial_dispatch<DIST_SPHERICAL, KERNEL_UNIFORM>(lat, lon, time, S_col, cutoff, ncores, balanced, use_grid, wfloat, row_map);
     case (DIST_SPHERICAL << 4) | KERNEL_BARTLETT:
-      return fast_spatial_dispatch<DIST_SPHERICAL, KERNEL_BARTLETT>(lat, lon, time, S_col, cutoff, ncores, balanced, use_grid, wfloat);
+      return fast_spatial_dispatch<DIST_SPHERICAL, KERNEL_BARTLETT>(lat, lon, time, S_col, cutoff, ncores, balanced, use_grid, wfloat, row_map);
     case (DIST_CHORD << 4) | KERNEL_UNIFORM:
-      return fast_spatial_dispatch<DIST_CHORD, KERNEL_UNIFORM>(lat, lon, time, S_col, cutoff, ncores, balanced, use_grid, wfloat);
+      return fast_spatial_dispatch<DIST_CHORD, KERNEL_UNIFORM>(lat, lon, time, S_col, cutoff, ncores, balanced, use_grid, wfloat, row_map);
     case (DIST_CHORD << 4) | KERNEL_BARTLETT:
-      return fast_spatial_dispatch<DIST_CHORD, KERNEL_BARTLETT>(lat, lon, time, S_col, cutoff, ncores, balanced, use_grid, wfloat);
+      return fast_spatial_dispatch<DIST_CHORD, KERNEL_BARTLETT>(lat, lon, time, S_col, cutoff, ncores, balanced, use_grid, wfloat, row_map);
   }
   fail("Unsupported (dist_id, kernel_id) combination.");
 }
@@ -1614,14 +1781,21 @@ inline arma::mat self_only_meat(const arma::mat& scores, int ncores) {
 // balanced_pnl is requested but the blocks have unequal sizes, the
 // general path is used and *unbalanced_fallback is set so the front-end
 // can warn.
+//
+// With a row map, row i of the input (lat[i], lon[i], time[i]) takes its
+// scores from row (*row_map)[i] (0-based) of `scores`, so a front-end that
+// has only reordered its rows passes the order instead of a reordered copy
+// of the score matrix; the engine composes it into the gather it performs
+// anyway. Without one, scores row i belongs to input row i.
 inline arma::mat spatial_meat(const arma::vec& lat, const arma::vec& lon,
                               const arma::vec& time, const arma::mat& scores,
                               double cutoff, const std::string& kernel,
                               const std::string& dist_fn, bool balanced_pnl,
                               int ncores, const std::string& neighbor,
                               const std::string& csr_weight,
-                              bool* unbalanced_fallback = nullptr) {
-  const std::size_t n = scores.n_rows;
+                              bool* unbalanced_fallback = nullptr,
+                              const std::vector<std::size_t>* row_map = nullptr) {
+  const std::size_t n = row_map ? row_map->size() : scores.n_rows;
   const std::size_t k = scores.n_cols;
   ncores = normalize_ncores(ncores);
   const int kernel_id = parse_kernel_id(kernel);
@@ -1654,6 +1828,11 @@ inline arma::mat spatial_meat(const arma::vec& lat, const arma::vec& lon,
   }
   validate_time(time, n);
   validate_scores(scores);
+  if (row_map) {
+    for (std::size_t i = 0; i < n; ++i) {
+      if ((*row_map)[i] >= scores.n_rows) fail("score row map out of range");
+    }
+  }
   if (n == 0) {
     return arma::mat(k, k, arma::fill::zeros);
   }
@@ -1665,7 +1844,8 @@ inline arma::mat spatial_meat(const arma::vec& lat, const arma::vec& lon,
     *unbalanced_fallback = balanced_pnl && multi && !same_block_size(blocks);
   }
   return dispatch_spatial(dist_id, kernel_id, lat, lon, time, scores,
-                          cutoff, ncores, use_balanced, use_grid, wfloat);
+                          cutoff, ncores, use_balanced, use_grid, wfloat,
+                          row_map);
 }
 
 // Serial (within-unit, across-time) HAC meat. Rows must be sorted by

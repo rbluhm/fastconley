@@ -5,7 +5,9 @@
 # straight through: the engine runs its own std::thread pool
 # (src/conley_core.h). `scores` is the score matrix e * X (possibly
 # pre-aggregated); passing `X` and `e` instead is supported for convenience
-# and computes `scores <- X * e` once.
+# and computes `scores <- X * e` once. `rows` (FastSpatialMeat only) gives,
+# for each lat/lon/time entry, the row of `scores` holding its scores, so a
+# reordering reaches the engine as an index instead of a reordered copy.
 
 .as_dbl_vector <- function(x) {
   if (is.double(x)) x else as.numeric(x)
@@ -21,12 +23,13 @@ FastSpatialMeat <- function(lat, lon, time, X = NULL, e = NULL, cutoff,
                             kernel = "bartlett", dist_fn = "haversine",
                             balanced_pnl = FALSE, ncores = 1L,
                             neighbor = "grid", scores = NULL,
-                            csr_weight = "double") {
+                            csr_weight = "double", rows = NULL) {
   if (is.null(scores)) scores <- X * e
+  if (!is.null(rows) && !is.integer(rows)) rows <- as.integer(rows)
   .Call(`_fastconley_FastSpatialMeat_cpp`,
         .as_dbl_vector(lat), .as_dbl_vector(lon), .as_dbl_vector(time),
         .as_dbl_matrix(scores), cutoff, kernel, dist_fn, balanced_pnl,
-        ncores, neighbor, csr_weight)
+        ncores, neighbor, csr_weight, rows)
 }
 
 FastSerialHacPanel <- function(unit, time, cutoff, X = NULL, e = NULL,

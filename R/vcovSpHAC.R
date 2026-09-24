@@ -760,14 +760,11 @@ vcovSpHAC_core <- function(dt, scores, Xvars, n, invXX,
     data.table::setorderv(dt, "time")
   }
 
-  # Avoid even the score gather when the fitted rows already have the
-  # required spatial order. Aggregation keeps its original summation order.
-  spatial_rows <- dt[["score_row"]]
-  scores_spatial <- if (identical(spatial_rows, seq_len(n))) scores else
-    scores[spatial_rows, , drop = FALSE]
-  agg <- aggregate_scores(dt, scores_spatial, Xvars, pixel = pixel,
+  # Spatial-engine rows: aggregated (time, lat, lon) cases, or, when every
+  # location is already unique, the rows themselves in that order, with
+  # agg$rows mapping them to rows of `scores` (see aggregate_scores).
+  agg <- aggregate_scores(dt, scores, Xvars, pixel = pixel,
                           balanced_pnl = balanced_pnl, verbose = verbose)
-  rm(scores_spatial)
 
   gi <- choose_grid_method(method, kernel, agg, dist_cutoff)
   if (verbose) {
@@ -786,13 +783,16 @@ vcovSpHAC_core <- function(dt, scores, Xvars, n, invXX,
       balanced_pnl = balanced_pnl,
       ncores = ncores,
       neighbor = neighbor,
-      csr_weight = csr_weight
+      csr_weight = csr_weight,
+      rows = agg$rows
     )
   }
   XeeX <- if (!is.null(gi)) {
     run_grid <- function() {
+      grid_scores <- if (is.null(agg$rows)) agg$scores else
+        agg$scores[agg$rows, , drop = FALSE]
       FastGridMeat(
-        ring = gi$ring, col = gi$col, time = agg$time, scores = agg$scores,
+        ring = gi$ring, col = gi$col, time = agg$time, scores = grid_scores,
         lat0 = gi$lat0, dlat = gi$dlat, dlon = gi$dlon,
         n_ring = gi$n_ring, n_col = gi$n_col, n_col_full = gi$n_col_full,
         cutoff = dist_cutoff, dist_fn = dist_fn, kernel = kernel,
@@ -1120,15 +1120,42 @@ to_time_value <- function(x, lag_cutoff) {
 
 # Build per-time-block aggregated scores. Returns a list with element-wise
 # vectors plus the score matrix ready to hand to FastSpatialMeat: lat, lon,
-# time, scores.
+# time, scores, rows. `scores` holds the fitted rows, row i of `dt` taking
+# its scores from row dt$score_row[i]. In the result, spatial row i takes its
+# scores from scores[rows[i], ] when `rows` is non-NULL (FastSpatialMeat
+# composes that gather into its own), and from scores[i, ] otherwise.
 #
 # At pixel = 0 we collapse rows whose (lat, lon) match exactly. At pixel > 0
 # we first snap (lat, lon) to a uniform grid whose latitude step is
 # pixel / 111 km and whose longitude step is pixel / (111 * cos(lat_rep)) km,
 # so cells stay roughly square at all latitudes. The representative coordinate
 # for a cell is the cell centre.
+#
+# When no two rows share (time, lat, lon), as in scattered cross-sections and
+# panels of distinct locations, there is nothing to collapse: the rows are put
+# in (time, lat, lon) order, the order the table aggregation would produce,
+# and only that order is passed on. The engine sees the same rows in the same
+# order, so results are bit-identical, without the table build, grouping,
+# sort, and score copies.
 aggregate_scores <- function(dt, scores, Xvars, pixel, balanced_pnl, verbose) {
   n <- nrow(dt)
+  score_rows <- dt[["score_row"]]
+
+  if (pixel == 0) {
+    ord <- unique_location_order(dt[["time"]], dt[["lat"]], dt[["lon"]])
+    if (!is.null(ord)) {
+      rows <- score_rows[ord]
+      if (identical(rows, seq_len(n))) rows <- NULL
+      return(list(
+        lat = dt[["lat"]][ord], lon = dt[["lon"]][ord],
+        time = dt[["time"]][ord], scores = scores, rows = rows
+      ))
+    }
+  }
+  # The table aggregation sums scores in the row order of `dt`.
+  if (!identical(score_rows, seq_len(n))) {
+    scores <- scores[score_rows, , drop = FALSE]
+  }
 
   if (pixel > 0) {
     lat_step <- pixel / 111.0
@@ -1177,15 +1204,50 @@ aggregate_scores <- function(dt, scores, Xvars, pixel, balanced_pnl, verbose) {
               "skipping aggregation. Pass balanced_pnl = FALSE to silence.")
       return(list(
         lat = dt[["lat"]], lon = dt[["lon"]], time = dt[["time"]],
-        scores = scores
+        scores = scores, rows = NULL
       ))
     }
   }
 
   list(
     lat = agg[["lat"]], lon = agg[["lon"]], time = agg[["time"]],
-    scores = as.matrix(agg[, Xvars, with = FALSE])
+    scores = as.matrix(agg[, Xvars, with = FALSE]), rows = NULL
   )
+}
+
+# The (time, lat, lon) row order when no two rows share all three keys, or
+# NULL when some do and must be summed. Also NULL when a key holds a negative
+# zero (grouping treats it as equal to zero) or data.table's rounded numeric
+# equality is on: the table aggregation then decides what is a duplicate.
+unique_location_order <- function(time, lat, lon) {
+  if (data.table::getNumericRounding() != 0L) return(NULL)
+  if (has_negative_zero(time) || has_negative_zero(lat) ||
+      has_negative_zero(lon)) {
+    return(NULL)
+  }
+  ord <- order(time, lat, lon, method = "radix")
+  n <- length(ord)
+  if (n > 1L) {
+    # Sorted keys put a repeated key next to its twin. Latitude rarely
+    # repeats in scattered data, so it is compared first.
+    la <- lat[ord]
+    same <- which(la[-1L] == la[-n])
+    if (length(same)) {
+      lo <- lon[ord]
+      same <- same[lo[same + 1L] == lo[same]]
+      if (length(same)) {
+        tt <- time[ord]
+        if (any(tt[same + 1L] == tt[same])) return(NULL)
+      }
+    }
+  }
+  ord
+}
+
+has_negative_zero <- function(x) {
+  if (!is.double(x)) return(FALSE)
+  zero <- which(x == 0)
+  length(zero) > 0L && any(1 / x[zero] < 0)
 }
 
 expand.model.felm <- function(model, extras, envir = environment(formula(model)),
