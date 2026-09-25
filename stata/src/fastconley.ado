@@ -576,7 +576,7 @@ end
 program LoadPlugin, rclass
 	* Keep the expected shared-engine revision in exactly one place. The
 	* integrator changes only this constant when the new plugins land.
-	loc expected_engine_version "0.11.1"
+	loc expected_engine_version "0.11.2"
 	return local expected "`expected_engine_version'"
 	return local tried "$FASTCONLEY_PLUGIN_TRIED"
 	return local loader_rcs "$FASTCONLEY_PLUGIN_RCS"

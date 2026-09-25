@@ -259,7 +259,7 @@ end
 
 
 program FastconleyRHLoad, rclass
-	loc expected_engine_version "0.11.1"
+	loc expected_engine_version "0.11.2"
 	return local expected "`expected_engine_version'"
 	if ("$FASTCONLEY_RH_PLUGIN_FILE" == "") {
 		return scalar ok = 0
