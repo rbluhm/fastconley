@@ -1,6 +1,11 @@
-# Build the pkgdown site, then scrub CLAUDE.md (internal dev instructions)
-# from the published output. pkgdown renders every top-level .md file with
-# no exclude option, so the removal has to happen post-build.
+# Local preview of the pkgdown site. The published site is built by
+# .github/workflows/pkgdown.yml and deployed to the gh-pages branch (the CRAN
+# release from main at the root, the development version from dev under
+# /dev/); docs/ is gitignored and no longer committed.
+#
+# The local tree has CLAUDE.md (internal dev instructions, gitignored), which
+# pkgdown renders like every top-level .md file, so this script scrubs it
+# from the output. A CI checkout never has the file.
 #
 # Usage: Rscript pkgdown/build-site.R
 
