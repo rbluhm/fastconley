@@ -55,13 +55,13 @@ real scalar fastconley_numeric_string(string colvector x)
 // optionally after snapping to a pixel-km grid (same arithmetic as the R
 // package's aggregate_scores). Returns rows sorted by (time, lat, lon).
 // ---------------------------------------------------------------------------
-void fastconley_aggregate(real colvector lat, real colvector lon,
-                          real colvector time, real matrix S, real scalar pixel)
+// Pixel-snapped aggregation keys (klat, klon); the plugin path passes the
+// same keys to the compiled engine, so the snapping arithmetic lives here only.
+void fastconley_pixel_keys(real colvector lat, real colvector lon, real scalar pixel,
+                           real colvector klat, real colvector klon)
 {
-	real colvector klat, klon, p, coslat, lon_step, grp
-	real matrix keys, info
-	real scalar lat_step, n
-	n = rows(S)
+	real colvector coslat, lon_step
+	real scalar lat_step
 	if (pixel > 0) {
 		lat_step = pixel / 111
 		klat = round(lat :/ lat_step) :* lat_step
@@ -74,6 +74,16 @@ void fastconley_aggregate(real colvector lat, real colvector lon,
 		klat = lat
 		klon = lon
 	}
+}
+
+void fastconley_aggregate(real colvector lat, real colvector lon,
+                          real colvector time, real matrix S, real scalar pixel)
+{
+	real colvector klat, klon, p, grp
+	real matrix keys, info
+	real scalar n
+	n = rows(S)
+	fastconley_pixel_keys(lat, lon, pixel, klat, klon)
 	keys = (time, klat, klon)
 	p = order(keys, (1, 2, 3))
 	keys = keys[p, .]
@@ -536,6 +546,20 @@ void fastconley_prepare(real matrix Xstd, real rowvector status0,
                         real colvector time, real colvector unit,
                         real scalar balanced, real scalar pixel, real scalar verbose)
 {
+	fastconley_prepare_scores(Xstd, status0, status1, stdevs, means, resid, w,
+		report_constant, tmp_N, time, unit)
+	fastconley_prepare_rows(lat, lon, time, unit, balanced, pixel, verbose)
+}
+
+// Step 1a: bread and scores only (fc_D, fc_kk, fc_S, fc_time, fc_unit). The
+// compiled engine's vce call does step 1b itself on the raw rows.
+void fastconley_prepare_scores(real matrix Xstd, real rowvector status0,
+                        real rowvector status1, real rowvector stdevs,
+                        real rowvector means, real colvector resid,
+                        real colvector w, real scalar report_constant,
+                        real scalar tmp_N,
+                        real colvector time, real colvector unit)
+{
 	real rowvector ok0, keep, means_x, side
 	real matrix X, inv_xx
 	real colvector e
@@ -572,8 +596,6 @@ void fastconley_prepare(real matrix Xstd, real rowvector status0,
 	fc_S = X :* e
 	fc_time = time
 	fc_unit = unit
-
-	fastconley_prepare_rows(lat, lon, time, unit, balanced, pixel, verbose)
 }
 
 // Step 1b (shared by OLS and IV): balanced-panel validation, aggregation of

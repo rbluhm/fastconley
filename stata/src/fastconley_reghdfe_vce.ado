@@ -140,98 +140,89 @@ program define fastconley_reghdfe_vce, sclass
 		if (!c(rc)) mata: fc_unit = fastconley_group_codes(st_sdata(HDFE.sample, "`unit'"))
 		else mata: fc_unit = st_data(HDFE.sample, "`unit'")
 	}
-	mata: fastconley_prepare(fc_Xstd, fc_status, fc_status, fc_stdevs, HDFE.solution.means, ///
-		HDFE.solution.resid, fc_w, HDFE.solution.report_constant, fc_tmpN, fc_lat, fc_lon, ///
-		fc_time, fc_unit, `balanced_flag', `pixel', `verbose_flag')
+	* Scores and bread. With the compiled engine, one plugin call then does
+	* the row preparation (balanced-panel validation, aggregation of identical
+	* locations, lattice choice, the (unit, time) sort) on the raw sample rows;
+	* the Mata engine prepares the rows in Mata.
+	mata: fastconley_prepare_scores(fc_Xstd, fc_status, fc_status, fc_stdevs, HDFE.solution.means, ///
+		HDFE.solution.resid, fc_w, HDFE.solution.report_constant, fc_tmpN, fc_time, fc_unit)
 	mata: st_local("kk", strofreal(fc_kk))
 	mata: st_local("dof_adj", strofreal(`ssc' ? HDFE.solution.N / (HDFE.solution.N - HDFE.solution.df_m - HDFE.df_a) : 1, "%21.17g"))
-	mata: st_local("n_sp", strofreal(rows(fc_sp_S)))
 	mata: st_local("n_full", strofreal(rows(fc_S)))
-	mata: st_local("sp_balanced", strofreal(fc_sp_balanced))
-	mata: st_local("n_periods", strofreal(rows(uniqrows(fc_time))))
-
 	loc method_used pairwise
-	if ("`engine'" == "plugin" & (`n_sp' > 2147483647 | (`lag' > 0 & `n_full' > 2147483647))) {
+	if ("`engine'" == "plugin" & `n_full' > 2147483647) {
 		if ("`engine_request'" == "plugin") {
-			di as error "engine(plugin) supports at most 2,147,483,647 prepared rows; use engine(mata)"
+			di as error "engine(plugin) supports at most 2,147,483,647 observations; use engine(mata)"
 			exit 198
 		}
 		loc engine mata
 		if ("`method'" == "grid") loc method pairwise
-		if (`verbose_flag') di as text "note: prepared sample exceeds the plugin row-index limit; using the Mata pairwise engine"
+		if (`verbose_flag') di as text "note: sample exceeds the plugin row-index limit; using the Mata pairwise engine"
 	}
 
 	if ("`engine'" == "plugin") {
-		loc use_grid 0
-		if ("`method'" != "pairwise") {
-			loc grid_tol 1e-6
-			loc lat_type : type `latitude'
-			loc lon_type : type `longitude'
-			if ("`lat_type'" == "float" | "`lon_type'" == "float") loc grid_tol 1e-3
-			mata: fc_use_grid = fastconley_choose_grid("`method'", "`kernel'", fc_sp_lat, fc_sp_lon, fc_sp_time, fc_kk, `cutoff', `grid_tol')
-			mata: st_local("use_grid", strofreal(fc_use_grid))
+		* float coordinates carry ~6e-8 relative rounding noise: loosen the lattice test
+		loc grid_tol 1e-6
+		loc lat_type : type `latitude'
+		loc lon_type : type `longitude'
+		if ("`lat_type'" == "float" | "`lon_type'" == "float") loc grid_tol 1e-3
+		loc haskeys = (`pixel' > 0)
+		loc hasunit = (`balanced_flag' | `lag' > 0)
+		* The raw sample rows go to the compiled engine through temporary
+		* variables (rows 1..n_full): lat lon [klat klon] time [unit] scores.
+		tempvar v_lat v_lon v_klat v_klon v_time v_unit
+		loc cvars `v_lat' `v_lon'
+		loc cols "fc_lat, fc_lon"
+		if (`haskeys') {
+			loc cvars `cvars' `v_klat' `v_klon'
+			loc cols "`cols', fc_klat, fc_klon"
+			mata: fc_klat = .; fc_klon = .
+			mata: fastconley_pixel_keys(fc_lat, fc_lon, `pixel', fc_klat, fc_klon)
 		}
-		tempvar v_lat v_lon v_time
+		loc cvars `cvars' `v_time'
+		loc cols "`cols', fc_time"
+		if (`hasunit') {
+			loc cvars `cvars' `v_unit'
+			loc cols "`cols', fc_unit"
+		}
 		loc svars
 		forvalues j = 1/`kk' {
 			tempvar s`j'
 			loc svars `svars' `s`j''
 		}
-		foreach v in `v_lat' `v_lon' `v_time' `svars' {
+		foreach v in `cvars' `svars' {
 			qui gen double `v' = .
 		}
-		mata: st_store((1::rows(fc_sp_S)), tokens("`v_lat' `v_lon' `v_time' `svars'"), (fc_sp_lat, fc_sp_lon, fc_sp_time, fc_sp_S))
-		tempname M sc_cutoff sc_lag sc_lat0 sc_dlat sc_dlon
+		mata: st_store((1::rows(fc_S)), tokens("`cvars' `svars'"), (`cols', fc_S))
+		tempname Ms Mse sc_cutoff sc_lag sc_tol
 		scalar `sc_cutoff' = `cutoff'
 		scalar `sc_lag' = `lag'
-		matrix `M' = J(`kk', `kk', 0)
-		loc done 0
-		if (`use_grid') {
-			tempvar v_ring v_col
-			qui gen double `v_ring' = .
-			qui gen double `v_col' = .
-			mata: st_store((1::rows(fc_sp_S)), tokens("`v_ring' `v_col'"), (fc_ring, fc_col))
-			mata: st_numscalar("`sc_lat0'", fc_grid[1])
-			mata: st_numscalar("`sc_dlat'", fc_grid[2])
-			mata: st_numscalar("`sc_dlon'", fc_grid[4])
-			mata: st_local("gargs", "`sc_lat0' `sc_dlat' `sc_dlon' " + invtokens(strofreal(fc_grid[(5, 6, 7)], "%21.17g")))
-			if (`verbose_flag') di as text "# Conley spatial meat (plugin, grid engine, `kernel' kernel, `distance' distance, cutoff `cutoff' km, `threads' threads)"
-			loc fc_plugin_error
-			cap plugin call fastconley_rh_plugin `v_ring' `v_col' `v_time' `svars' in 1/`n_sp', ///
-				grid `gargs' `sc_cutoff' `distance' `kernel' `threads' `M'
-			loc grid_rc = c(rc)
-			if (`grid_rc' == 0) {
-				loc done 1
-				loc method_used grid
-			}
-			else if ("`method'" == "auto" & strpos(`"`fc_plugin_error'"', "dateline")) {
-				if (`verbose_flag') di as text "   - lattice does not tile the dateline; falling back to the pairwise engine"
-			}
-			else {
-				if (`"`fc_plugin_error'"' != "") di as error "fastconley plugin: `fc_plugin_error'"
-				else di as error "fastconley plugin grid call failed with return code `grid_rc'"
-				exit 198
-			}
+		scalar `sc_tol' = `grid_tol'
+		matrix `Ms' = J(`kk', `kk', 0)
+		matrix `Mse' = J(`kk', `kk', 0)
+		if (`verbose_flag') di as text "# Conley meat (plugin, `kernel' kernel, `distance' distance, cutoff `cutoff' km, `threads' threads)"
+		loc fc_plugin_error
+		plugin call fastconley_rh_plugin `cvars' `svars' in 1/`n_full', ///
+			vce `sc_cutoff' `kernel' `distance' `balanced_flag' `threads' grid double ///
+			`method' `sc_tol' `sc_lag' `haskeys' `hasunit' `Ms' `Mse'
+		loc method_used `fc_method_used'
+		if (`verbose_flag') {
+			if (`fc_n_sp' < `n_full') di as text "   - score pre-aggregation: `n_full' rows -> `fc_n_sp' cases (pixel = `pixel' km)"
+			if ("`fc_agg_fallback'" == "1") di as text "   - pre-aggregation produced different case counts per period; using unaggregated rows"
+			if ("`fc_dateline_fallback'" == "1") di as text "   - lattice does not tile the dateline; falling back to the pairwise engine"
+			di as text "   - spatial meat: `method_used' engine" _c
+			if ("`fc_serial_done'" == "1") di as text "; serial HAC meat with lag cutoff `lag'"
+			else di ""
 		}
-		if (!`done') {
-			if (`verbose_flag') di as text "# Conley spatial meat (plugin, pairwise engine, `kernel' kernel, `distance' distance, cutoff `cutoff' km, `threads' threads)"
-			plugin call fastconley_rh_plugin `v_lat' `v_lon' `v_time' `svars' in 1/`n_sp', ///
-				spatial `sc_cutoff' `kernel' `distance' `sp_balanced' `threads' grid double `M'
-			if ("`fc_unbalanced_fallback'" == "1") di as text "note: balanced requested but period sizes differ after aggregation; general path used"
+		if ("`fc_unbalanced_fallback'" == "1") {
+			di as text "note: balanced requested but period sizes differ after aggregation; general path used"
 		}
-		mata: fc_meat = st_matrix("`M'")
-		if (`lag' > 0 & `n_periods' > 1) {
-			if (`verbose_flag') di as text "# Serial HAC meat (plugin, lag cutoff `lag')"
-			tempvar v_unit
-			qui gen double `v_unit' = .
-			mata: fc_p = order((fc_unit, fc_time), (1, 2))
-			mata: st_store((1::rows(fc_S)), tokens("`v_unit' `v_time' `svars'"), (fc_unit[fc_p], fc_time[fc_p], fc_S[fc_p, .]))
-			matrix `M' = J(`kk', `kk', 0)
-			plugin call fastconley_rh_plugin `v_unit' `v_time' `svars' in 1/`n_full', serial `sc_lag' `threads' `M'
-			mata: fc_meat = fc_meat + st_matrix("`M'")
-		}
+		mata: fc_meat = st_matrix("`Ms'")
+		if ("`fc_serial_done'" == "1") mata: fc_meat = fc_meat + st_matrix("`Mse'")
 	}
 	else {
+		mata: fastconley_prepare_rows(fc_lat, fc_lon, fc_time, fc_unit, `balanced_flag', `pixel', `verbose_flag')
+		mata: st_local("n_periods", strofreal(fc_n_periods))
 		mata: fc_meat = fastconley_meat_mata(fc_sp_lat, fc_sp_lon, fc_sp_time, fc_sp_S, fc_sp_balanced, ///
 			`cutoff', "`kernel'", "`distance'", `tile', `verbose_flag')
 		if (`lag' > 0 & `n_periods' > 1) {
@@ -259,7 +250,7 @@ end
 
 
 program FastconleyRHLoad, rclass
-	loc expected_engine_version "0.11.2"
+	loc expected_engine_version "0.11.3"
 	return local expected "`expected_engine_version'"
 	if ("$FASTCONLEY_RH_PLUGIN_FILE" == "") {
 		return scalar ok = 0

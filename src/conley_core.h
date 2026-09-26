@@ -18,7 +18,7 @@
 // Engine version, reported by the Stata plugin's "check" subcommand and
 // compared against the ado's expectation. Bump on every change that alters
 // numerical results or the front-end entry points.
-#define CONLEY_CORE_VERSION "0.11.2"
+#define CONLEY_CORE_VERSION "0.11.3"
 
 #ifndef ARMA_64BIT_WORD
 #define ARMA_64BIT_WORD 1
@@ -521,6 +521,19 @@ constexpr std::size_t BLOCK_CHUNK = 128;
 // The unroll pragmas matter: at -O2, GCC otherwise vectorizes only even
 // widths and leaves an odd-width block as a scalar loop over memory.
 // ------------------------------------------------------------------
+// meat += si * c' for one row. Walks each column of the column-major
+// accumulator contiguously; every element still receives exactly one
+// addition per row, in row order, so the result is bit-identical to the
+// row-wise loop it replaces (which strided by k and dominated beyond k ~ 25).
+inline void add_outer(arma::mat& meat, const double* si, const double* c,
+                      std::size_t k) {
+  for (std::size_t k2 = 0; k2 < k; ++k2) {
+    const double c2 = c[k2];
+    double* col = meat.colptr(k2);
+    for (std::size_t k1 = 0; k1 < k; ++k1) col[k1] += si[k1] * c2;
+  }
+}
+
 constexpr int ACC_BLOCK = 16;
 
 template <int W, bool WEIGHTED, typename WT>
@@ -1062,12 +1075,7 @@ arma::mat meat_stream_grid(const RowMajorScores& S, const CoordCache& coord,
       for (int s = 0; s < 5; ++s) scan(r[2 * s], r[2 * s + 1]);
       flush();
 
-      for (std::size_t k1 = 0; k1 < k; ++k1) {
-        const double s1 = si[k1];
-        for (std::size_t k2 = 0; k2 < k; ++k2) {
-          meat(k1, k2) += s1 * c[k2];
-        }
-      }
+      add_outer(meat, si, &c[0], k);
     }
   };
   arma::mat meat = reduce_deterministic(S.n, k, ROW_CHUNK, ncores, body);
@@ -1241,12 +1249,7 @@ arma::mat meat_stream_band(const RowMajorScores& S,
         }
       }
 
-      for (std::size_t k1 = 0; k1 < k; ++k1) {
-        const double s1 = si[k1];
-        for (std::size_t k2 = 0; k2 < k; ++k2) {
-          meat(k1, k2) += s1 * c[k2];
-        }
-      }
+      add_outer(meat, si, &c[0], k);
     }
   };
   arma::mat meat = reduce_deterministic(S.n, k, ROW_CHUNK, ncores, body);
@@ -1290,12 +1293,7 @@ arma::mat meat_from_csr_periodmajor(const RowMajorScores& S,
           accumulate_rows<true, WT>(c.data(), k, period_rows, k,
                                     col_idx.data() + e0, weight.data() + e0, m);
         }
-        for (std::size_t k1 = 0; k1 < k; ++k1) {
-          const double s1 = si[k1];
-          for (std::size_t k2 = 0; k2 < k; ++k2) {
-            meat(k1, k2) += s1 * c[k2];
-          }
-        }
+        add_outer(meat, si, &c[0], k);
       }
     }
   };
@@ -1590,12 +1588,7 @@ inline arma::mat serial_hac_panel(const arma::vec& times, double cutoff,
           c[kk] = coef * A[kk] - inv * B[kk];
         }
         const double* si = S.row(i);
-        for (std::size_t k1 = 0; k1 < k; ++k1) {
-          const double s1 = si[k1];
-          for (std::size_t k2 = 0; k2 < k; ++k2) {
-            meat(k1, k2) += s1 * c[k2];
-          }
-        }
+        add_outer(meat, si, &c[0], k);
       }
     }
   };

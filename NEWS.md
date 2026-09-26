@@ -31,6 +31,12 @@ bit-identical to 0.11.1.
   gather it performs anyway (the internal `FastSpatialMeat()` gained
   `rows =`). Shared locations aggregate exactly as before. This is most of
   the per-call saving for small samples and cross-section loops.
+- **Many regressors.** The per-row k x k update of the meat walks the
+  column-major accumulator column by column instead of striding across it.
+  Every element still receives one addition per row in row order, so the
+  result is unchanged bit for bit; the spatial meat is about 1.1x faster at
+  k = 30 and 1.2x at k = 100 (200,000 points, one thread) and unchanged at
+  small k. Engine version 0.11.3.
 
 End to end, `vcovSpHAC()` on `fixest` fits with ten regressors and an
 intercept (five for the small samples), post-estimation only, on a 4-core

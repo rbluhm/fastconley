@@ -39,6 +39,8 @@ static char g_version[256] = "";
 static char g_build[256] = "";
 static char g_plugin_error[512] = "";
 static char g_unbalanced[32] = "";
+static char g_method_used[32] = "";
+static char g_n_sp[64] = "";
 static char g_last_error[512] = "";
 
 /* The reference C++ generator uses std::mt19937_64. This is its specified
@@ -190,6 +192,10 @@ static ST_retcode my_macresave(char *name, char *value) {
     copy_string(g_plugin_error, sizeof(g_plugin_error), value);
   } else if (strcmp(name, "_fc_unbalanced_fallback") == 0) {
     copy_string(g_unbalanced, sizeof(g_unbalanced), value);
+  } else if (strcmp(name, "_fc_method_used") == 0) {
+    copy_string(g_method_used, sizeof(g_method_used), value);
+  } else if (strcmp(name, "_fc_n_sp") == 0) {
+    copy_string(g_n_sp, sizeof(g_n_sp), value);
   }
   return 0;
 }
@@ -239,6 +245,8 @@ static ST_retcode my_scalaruse(char *name, ST_double *out) {
   else if (strcmp(name, "fc_dlon") == 0) *out = 18.0;
   else if (strcmp(name, "fc_grid_cutoff") == 0) *out = 2500.0;
   else if (strcmp(name, "fc_missing") == 0) *out = MISSING_VALUE;
+  else if (strcmp(name, "fc_tol") == 0) *out = 1e-6;
+  else if (strcmp(name, "fc_zero") == 0) *out = 0.0;
   else return 1;
   return 0;
 }
@@ -339,6 +347,22 @@ int main(int argc, char **argv) {
                      (char *)"20", (char *)"fc_grid_cutoff",
                      (char *)"haversine", (char *)"bartlett", (char *)"2",
                      (char *)"FC_RESULT"};
+  /* vce: the raw-row call (lat lon time scores; no pixel keys, no unit) */
+  char *vce_bh[] = {(char *)"vce", (char *)"fc_cutoff", (char *)"bartlett",
+                    (char *)"haversine", (char *)"0", (char *)"2",
+                    (char *)"grid", (char *)"double", (char *)"pairwise",
+                    (char *)"fc_tol", (char *)"fc_zero", (char *)"0",
+                    (char *)"0", (char *)"FC_RESULT", (char *)"FC_RESULT2"};
+  char *vce_us_auto[] = {(char *)"vce", (char *)"fc_cutoff", (char *)"uniform",
+                         (char *)"spherical", (char *)"0", (char *)"2",
+                         (char *)"grid", (char *)"double", (char *)"auto",
+                         (char *)"fc_tol", (char *)"fc_zero", (char *)"0",
+                         (char *)"0", (char *)"FC_RESULT", (char *)"FC_RESULT2"};
+  char *vce_grid_forced[] = {(char *)"vce", (char *)"fc_cutoff", (char *)"uniform",
+                             (char *)"spherical", (char *)"0", (char *)"2",
+                             (char *)"grid", (char *)"double", (char *)"grid",
+                             (char *)"fc_tol", (char *)"fc_zero", (char *)"0",
+                             (char *)"0", (char *)"FC_RESULT", (char *)"FC_RESULT2"};
   char *missing_scalar[] = {(char *)"spatial", (char *)"fc_missing",
                             (char *)"uniform", (char *)"haversine", (char *)"0",
                             (char *)"1", (char *)"band", (char *)"double",
@@ -415,6 +439,25 @@ int main(int argc, char **argv) {
                       "grid_wrap_uniform_spherical")) return 1;
   if (run_matrix_call(call, MODE_GRID, 12, grid_bh,
                       "grid_wrap_bartlett_haversine")) return 1;
+
+  /* vce sorts the rows itself (by time, lat, lon), which only reorders
+     additions within engine cells: equal to the spatial cases to 1e-12. */
+  g_method_used[0] = g_n_sp[0] = '\0';
+  if (run_matrix_call(call, MODE_SPATIAL, 15, vce_bh,
+                      "spatial_cross_bartlett_haversine")) return 1;
+  printf("vce pairwise -> method %s, %s rows\n", g_method_used, g_n_sp);
+  if (strcmp(g_method_used, "pairwise") != 0 || atoi(g_n_sp) != NROW) return 1;
+  g_method_used[0] = '\0';
+  if (run_matrix_call(call, MODE_SPATIAL, 15, vce_us_auto,
+                      "spatial_cross_uniform_spherical")) return 1;
+  printf("vce auto on scattered points -> method %s\n", g_method_used);
+  if (strcmp(g_method_used, "pairwise") != 0) return 1;
+  g_mode = MODE_SPATIAL;
+  reset_call();
+  rc = call(15, vce_grid_forced);
+  printf("vce method(grid) on scattered points -> rc %d, fc_plugin_error=%s\n",
+         (int)rc, g_plugin_error);
+  if (rc != 3498 || strstr(g_plugin_error, "method(grid)") == NULL) return 1;
 
   g_mode = MODE_SPATIAL;
   reset_call();
