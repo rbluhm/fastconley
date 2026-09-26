@@ -1,3 +1,4 @@
+plugin_rerun: 2026-09-26 (engine 0.11.3, build 5f7cfdd; plugin rows only, same machine; Mata and acreg rows are from run_date)
 run_date: 2026-09-05T17:27:50Z
 threads: 1 4 8 16
 reps: 2

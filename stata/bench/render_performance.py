@@ -120,7 +120,8 @@ L.append("- Every fastconley call uses `nossc nopsdfix` so that its covariance i
          "covariance time (of two), with its own total.\n")
 L.append("## Machine\n")
 L.append("| item | value |\n|---|---|")
-L.append(f"| run date | {sess('run_date')} |")
+rerun = sess('plugin_rerun')
+L.append(f"| run date | {sess('run_date')}" + (f"; plugin rows re-timed {rerun}" if rerun else "") + " |")
 L.append(f"| CPU | {sess('Model name')} |")
 L.append(f"| logical CPUs | {sess('CPU(s)')} |")
 L.append(f"| memory | {' '.join(session.split('Mem:')[1].split()[:1]) + ' GB' if 'Mem:' in session else ''} |")
@@ -258,22 +259,27 @@ L.append("acreg is not attempted here: its cost grows with n², and its whole-co
 # ---------------------------------------------------------------- overhead
 L.append("## Fixed preparation cost\n")
 L.append("`cutoff(-1)` keeps only the diagonal of the meat, so `e(vce_seconds)` then measures everything except "
-         "the pair enumeration and accumulation: reading the sample into Mata, sorting by period, merging "
-         "identical coordinates, marshalling scores into temporary variables for the plugin, the engine's own "
-         "coordinate cache, sort, and score gather (a negative cutoff still runs the engine's band path), and "
-         "assembling the sandwich. It is therefore an upper bound on the Stata-side preparation, measured on "
-         "data generated with a different seed than the timed runs.\n")
+         "the pair enumeration and accumulation. With the plugin (engine 0.11.3 and later) that is: computing the "
+         "scores and the bread in Mata, copying the raw sample rows into temporary variables, the plugin reading "
+         "them through Stata's plugin interface, its own row preparation in C++ (sorting, merging identical "
+         "coordinates, the lattice check, the unit-time sort for `lag()`), the engine's coordinate cache, sort, "
+         "and score gather (a negative cutoff runs the engine's band path, whose sort is more expensive than the "
+         "cell grid's), and assembling the sandwich. The Mata column is the fallback, which prepares the rows in "
+         "Mata. The runs use data generated with a different seed than the timed runs.\n")
 L.append("| observations | plugin (8 thr.) | Mata |")
 L.append("|---:|---:|---:|")
 for n in sorted({int(float(r["n_obs"])) for r in rows if r["section"] == "overhead"}):
     p = first(rows, section="overhead", engine="plugin", n_obs=str(n))
     m2 = first(rows, section="overhead", engine="mata", n_obs=str(n))
     L.append(f"| {n:,} | {fmt_s(stata_time(p))} | {fmt_s(stata_time(m2))} |")
-L.append("\nAt one million rows this fixed work is most of the covariance time reported above, which is why the "
-         "plugin's thread scaling looks flat there: the pair work itself is a fraction of a second at 16 threads. "
-         "Splitting the fixed part between the Mata preparation and the engine's own sort and gather, and trimming "
-         "the Mata side (skipping the coordinate merge when locations are unique, streaming scores to the plugin "
-         "without temporary variables), is the obvious next optimisation for very large samples.\n")
+L.append("\nUntil engine 0.11.2 the ado prepared the rows in Mata: three sorts of the sample, a `uniqrows()` of "
+         "the latitudes to reject scattered data under `method(auto)`, and a second copy of the rows for `lag()`, "
+         "which made this fixed work most of the covariance time at one million rows. Engine 0.11.3 moved that "
+         "preparation into the plugin, which halved the one-million-row time. What remains fixed on the Stata side is "
+         "the data movement: in a timer split of the one-million-row case at 8 threads, computing scores and bread "
+         "took about 0.17 s and copying the rows into temporary variables about 0.25 s, and the plugin reads those "
+         "13 million values one call at a time through the plugin interface. Because the no-pairs run takes the band "
+         "path, it can exceed the full cell-grid run; read it as an upper bound.\n")
 
 # ---------------------------------------------------------------- how to read / reproduce
 L.append("## Reading the numbers\n")
@@ -281,11 +287,20 @@ L.append("- The plugin is the same C++ engine as the R package, so plugin and R 
          "front-end (Stata tempvars versus R memory aliasing), by build flags (the plugin uses -O3, R its "
          "default -O2), and by the engine changes since the R numbers were recorded.")
 L.append("- Thread scaling flattens beyond 8 threads on this 12-core, 16-thread laptop (hybrid P/E cores and "
-         "memory bandwidth), and at one million rows the fixed preparation cost dominates (see the previous section). "
+         "memory bandwidth), and at one million rows moving the data between Stata and the plugin is a large share "
+         "of the time (see the previous section). "
          "Stata's own licence (MP with 4 cores here) does not limit the plugin's `threads()`.")
-L.append("- The Mata fallback is 5 to 8 times slower than the single-threaded plugin but has the same "
-         "complexity, so it remains usable up to a million observations (15 s at 100 km). It is what "
-         "`engine(auto)` uses when no plugin is available for the platform.")
+ratios = []
+for r in rows:
+    if r["section"] == "cross_section" and r["engine"] == "mata" and num(r["vce_seconds"]):
+        p1 = first(rows, section="cross_section", engine="plugin", threads="1", n_obs=r["n_obs"], cutoff_km=r["cutoff_km"])
+        if p1 and num(p1["vce_seconds"]):
+            ratios.append(num(r["vce_seconds"]) / num(p1["vce_seconds"]))
+span = f"{min(ratios):.0f} to {max(ratios):.0f} times" if ratios else "several times"
+L.append(f"- On the scattered cross-sections the Mata fallback is {span} slower than the single-threaded plugin "
+         "(the two columns come from runs three weeks apart on the same machine, see the run date above) but has "
+         "the same complexity, so it remains usable up to a million observations. It is what `engine(auto)` uses "
+         "when no plugin is available for the platform.")
 L.append("- acreg and fastconley agree to about 1e-5 on the uniform kernel and 1e-6 on Bartlett at these "
          "cutoffs; the residual is acreg's planar distance approximation, not a difference in the estimator.\n")
 L.append("## Reproducing\n")
