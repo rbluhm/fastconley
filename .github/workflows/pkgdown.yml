@@ -1,0 +1,73 @@
+name: pkgdown
+
+# Builds the documentation site and deploys it to the gh-pages branch, which
+# GitHub Pages serves. _pkgdown.yml sets `development: mode: auto`, so the
+# version number decides where a build goes:
+#   x.y.z      (main, the CRAN release)  -> site root
+#   x.y.z.9000 (dev)                     -> /dev/
+# Each deploy replaces only its own part of gh-pages.
+
+on:
+  push:
+    branches: [main, dev]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deploy at a time; a queued build waits instead of racing on gh-pages.
+concurrency:
+  group: pkgdown
+  cancel-in-progress: false
+
+jobs:
+  pkgdown:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: r-lib/actions/setup-pandoc@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2.12.1
+      - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2.12.1
+        with:
+          use-public-rspm: true
+      - uses: r-lib/actions/setup-r-dependencies@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2.12.1
+        with:
+          extra-packages: any::pkgdown, local::.
+          needs: website
+
+      - name: Build site
+        run: pkgdown::build_site_github_pages(new_process = FALSE, install = FALSE)
+        shell: Rscript {0}
+
+      # Internal developer notes (CLAUDE.md, notes/) are gitignored, so a CI
+      # checkout never has them; fail loudly if that ever changes.
+      - name: Check for internal files
+        run: |
+          if find docs -iname '*claude*' | grep -q .; then
+            echo "internal developer file in the built site" >&2
+            exit 1
+          fi
+
+      - name: Deploy the released site (root, keeps /dev)
+        if: github.event_name != 'pull_request' && hashFiles('docs/dev/index.html') == ''
+        uses: JamesIves/github-pages-deploy-action@fa24774553152dd7873cd16ebd8d959b010c5445 # v4.9.0
+        with:
+          branch: gh-pages
+          folder: docs
+          clean: true
+          clean-exclude: dev
+
+      - name: Deploy the development site (/dev)
+        if: github.event_name != 'pull_request' && hashFiles('docs/dev/index.html') != ''
+        uses: JamesIves/github-pages-deploy-action@fa24774553152dd7873cd16ebd8d959b010c5445 # v4.9.0
+        with:
+          branch: gh-pages
+          folder: docs/dev
+          target-folder: dev
+          clean: true

@@ -3,13 +3,49 @@ url: https://rbluhm.github.io/fastconley/
 template:
   bootstrap: 5
 
+# Two sites from one configuration: a released version (x.y.z, built from
+# main) goes to the site root, an in-development version (x.y.z.9000, built
+# from dev) to /dev/, with a red version label and a noindex tag. The
+# pkgdown workflow (.github/workflows/pkgdown.yml) builds both.
+development:
+  mode: auto
+
 home:
   title: "fastconley: Fast and exact Conley standard errors"
+  links:
+  - text: Stata command (reghdfe models)
+    href: https://github.com/rbluhm/fastconley/tree/main/stata
+  sidebar:
+    structure: [versions, links, license, citation, authors, dev]
+    components:
+      versions:
+        title: Versions
+        text: |
+          [![CRAN release](https://www.r-pkg.org/badges/version/fastconley)](https://CRAN.R-project.org/package=fastconley)
+          [![Development version](https://img.shields.io/github/r-package/v/rbluhm/fastconley/dev?label=dev&color=orange)](https://github.com/rbluhm/fastconley/tree/dev)
+
+          Documentation for the
+          [CRAN release](https://rbluhm.github.io/fastconley/) and for the
+          [development version](https://rbluhm.github.io/fastconley/dev/)
+          ([changes since the release](https://rbluhm.github.io/fastconley/dev/news/index.html)).
 
 navbar:
   structure:
-    left: [intro, reference, articles, news]
-    right: [search, github]
+    left: [intro, reference, articles, news, stata]
+    right: [versions, search, github]
+  components:
+    stata:
+      text: Stata
+      href: https://github.com/rbluhm/fastconley/tree/main/stata
+    versions:
+      text: Versions
+      menu:
+      - text: Released version (CRAN)
+        href: https://rbluhm.github.io/fastconley/
+      - text: Development version (dev branch)
+        href: https://rbluhm.github.io/fastconley/dev/
+      - text: CRAN package page
+        href: https://CRAN.R-project.org/package=fastconley
 
 reference:
 - title: Conley spatial HAC standard errors
