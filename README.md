@@ -1,8 +1,16 @@
 # fastconley
 
-Fast Conley (1999) spatial HAC standard errors for `lfe::felm()` (OLS and IV/2SLS) and `fixest` models — `feols()` (OLS and IV), `feglm()`, and `fepois()` — in R.
+<!-- badges: start -->
+[![CRAN release](https://www.r-pkg.org/badges/version/fastconley)](https://CRAN.R-project.org/package=fastconley)
+[![CRAN downloads](https://cranlogs.r-pkg.org/badges/grand-total/fastconley)](https://CRAN.R-project.org/package=fastconley)
+[![Development version](https://img.shields.io/github/r-package/v/rbluhm/fastconley/dev?label=dev&color=orange)](https://github.com/rbluhm/fastconley/tree/dev)
+[![R-CMD-check](https://github.com/rbluhm/fastconley/actions/workflows/R-CMD-check.yml/badge.svg?branch=dev)](https://github.com/rbluhm/fastconley/actions/workflows/R-CMD-check.yml)
+[![Stata plugin build](https://github.com/rbluhm/fastconley/actions/workflows/stata-plugin.yml/badge.svg?branch=dev)](https://github.com/rbluhm/fastconley/actions/workflows/stata-plugin.yml)
+<!-- badges: end -->
 
-Documentation site: **<https://rbluhm.github.io/fastconley/>** — function reference, changelog, and the [performance vignette](https://rbluhm.github.io/fastconley/articles/fastconley-performance.html).
+Fast Conley (1999) spatial HAC standard errors for `lfe::felm()` (OLS and IV/2SLS) and `fixest` models — `feols()` (OLS and IV), `feglm()`, and `fepois()` — in R. A Stata command with the same engine, `fastconley` for `reghdfe`-style models, lives in [`stata/`](https://github.com/rbluhm/fastconley/tree/main/stata).
+
+Documentation: **[CRAN release](https://rbluhm.github.io/fastconley/)** and **[development version](https://rbluhm.github.io/fastconley/dev/)** — function reference, changelog, and the [performance vignette](https://rbluhm.github.io/fastconley/articles/fastconley-performance.html).
 
 `fastconley` is a drop-in replacement for the spatial path of [`rbluhm/conley`](https://github.com/rbluhm/conley) that scales to large cross-sections and high-dimensional regressions. `vcovSpHAC()` still accepts `felm` fits with the same call signature it always did; numerical equivalence with upstream `conley` holds at machine precision for the three supported distance functions (the upstream-only `dist_fn = "flatearth"` option was dropped, and `pixel` was added as a new optional argument — see the [Compatibility](#compatibility-with-rbluhmconley) section for the full diff). `vcovSpHAC()` is also now an S3 generic with a `fixest` method.
 
@@ -10,9 +18,17 @@ The original `conley` package was written by Richard Bluhm with contributions fr
 
 ## Installation
 
+Install the released version from [CRAN](https://CRAN.R-project.org/package=fastconley):
+
 ```r
-# install.packages("remotes")
-remotes::install_github("rbluhm/fastconley")
+install.packages("fastconley")
+```
+
+Or the development version from the `dev` branch on GitHub ([what changed since the release](https://rbluhm.github.io/fastconley/dev/news/index.html)):
+
+```r
+# install.packages("pak")
+pak::pak("rbluhm/fastconley@dev")
 ```
 
 `fastconley` installs alongside the original `conley` package (different `Package:` name), so you can keep both libraries loaded in different R sessions to compare results.
